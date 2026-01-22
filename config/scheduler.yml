@@ -1,0 +1,7 @@
+jobs:
+  full_pipeline:
+    enabled: true
+    trigger: cron
+    schedule:
+      hour: 11
+      minute: 54

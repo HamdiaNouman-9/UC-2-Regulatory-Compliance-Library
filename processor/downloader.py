@@ -4,9 +4,10 @@ import hashlib
 from pathlib import Path
 import time
 import requests
-from urllib.parse import urlparse, parse_qs
-from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse
 import unicodedata
+import subprocess
+import sys
 
 
 class Downloader:
@@ -45,8 +46,7 @@ class Downloader:
         if not name:
             return "document"
 
-        return name[:200]    # Avoid very long filenames
-
+        return name[:200]
 
     # FILE HASH
     def _compute_hash(self, file_path: Path) -> str:
@@ -56,23 +56,31 @@ class Downloader:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-
     def download(self, document) -> tuple[str, str]:
-        """Accepts dict or RegulatoryDocument"""
+        """Accepts either dict or object with attributes"""
 
-        title = getattr(document, "title", None) or document.get("title")
+        def get_attr_or_key(obj, *keys):
+            """Try to get attribute or dict key in order."""
+            for key in keys:
+                # Try attribute
+                val = getattr(obj, key, None)
+                if val is not None:
+                    return val
+                # Try dictionary key
+                if isinstance(obj, dict) and key in obj:
+                    return obj[key]
+            return None
+
+        title = get_attr_or_key(document, "title") or "document"
         title = self._sanitize_filename(title)
 
         # Determine main working URL
-        url = (
-            getattr(document, "document_url", None)
-            or getattr(document, "english_url", None)
-            or getattr(document, "circular_url", None)
-            or getattr(document, "urdu_url", None)
-            or document.get("document_url")
-            or document.get("english_url")
-            or document.get("circular_url")
-            or document.get("urdu_url")
+        url = get_attr_or_key(
+            document,
+            "document_url",
+            "english_url",
+            "circular_url",
+            "urdu_url"
         )
 
         if not url or url.lower().startswith("javascript"):
@@ -81,25 +89,28 @@ class Downloader:
         filename_safe = title
         ext = self._extract_extension(url)
 
-
-        # NEW: SPECIAL SECP RULE — detect binary download URLs
-        if "wpdmdl" in url or "download" in url.lower():
-            print("[Downloader] Detected SECP direct-download URL → binary download")
-            return self._download_binary(url, filename_safe, ext or "pdf")
-
-        # NORMAL binary downloads
+        # Quick binary download check
         if ext in self.DIRECT_DOWNLOAD_EXTENSIONS:
             return self._download_binary(url, filename_safe, ext)
 
-        return self._html_to_pdf(url, filename_safe)
+        # HEAD request to detect content type
+        try:
+            head = self.session.head(url, allow_redirects=True, timeout=15)
+            content_type = head.headers.get("Content-Type", "").lower()
+            if "pdf" in content_type:
+                print(f"[Downloader] HEAD detected PDF → binary download: {url}")
+                return self._download_binary(url, filename_safe, "pdf")
+        except Exception as e:
+            print(f"[Downloader] HEAD request failed for {url}: {e}")
 
+        # Default: HTML → PDF using subprocess to avoid asyncio conflicts
+        return self._html_to_pdf_subprocess(url, filename_safe)
 
     def _extract_extension(self, url: str) -> str:
         path = urlparse(url).path
         if "." in path:
             return path.split(".")[-1].lower()
         return ""
-
 
     def _download_binary(self, url: str, filename: str, ext: str):
         file_path = self.download_dir / f"{filename}.{ext}"
@@ -123,34 +134,63 @@ class Downloader:
 
         raise RuntimeError(f"[Downloader] FAILED to download file after retries → {url}")
 
-
-    def _html_to_pdf(self, url: str, filename: str):
+    def _html_to_pdf_subprocess(self, url: str, filename: str):
+        """
+        Use subprocess to run Playwright in a separate process.
+        This avoids asyncio event loop conflicts with Twisted/Scrapy.
+        """
         file_path = self.download_dir / f"{filename}.pdf"
+
+        # Create a temporary Python script to run Playwright
+        script_content = f'''
+import sys
+import asyncio
+from pathlib import Path
+from playwright.async_api import async_playwright
+
+async def render_pdf(url, output_path):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle", timeout=200000)
+
+        # Check for iframe
+        frames = page.frames
+        if len(frames) > 1:
+            await frames[1].pdf(path=output_path, format="A4", print_background=True)
+        else:
+            await page.pdf(path=output_path, format="A4", print_background=True)
+
+        await browser.close()
+
+if __name__ == "__main__":
+    asyncio.run(render_pdf("{url}", r"{file_path}"))
+'''
 
         for attempt in range(1, self.retries + 1):
             try:
-                with sync_playwright() as pw:
-                    browser = pw.chromium.launch(headless=self.headless)
-                    context = browser.new_context()
-                    page = context.new_page()
+                # Write temporary script
+                temp_script = self.download_dir / f"_temp_playwright_{os.getpid()}.py"
+                with open(temp_script, "w", encoding="utf-8") as f:
+                    f.write(script_content)
 
-                    page.goto(url, wait_until="networkidle", timeout=200000)
+                # Run in subprocess
+                result = subprocess.run(
+                    [sys.executable, str(temp_script)],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
 
-                    # Detect SBP iframe
-                    iframe = next((f for f in page.frames if f != page.main_frame), None)
+                # Clean up temp script
+                temp_script.unlink(missing_ok=True)
 
-                    if iframe:
-                        print("[Downloader] Rendering iframe → PDF")
-                        iframe.wait_for_load_state("networkidle")
-                        iframe.pdf(path=str(file_path), format="A4", print_background=True)
-                    else:
-                        print("[Downloader] Rendering main page → PDF")
-                        page.pdf(path=str(file_path), format="A4", print_background=True)
-
-                    browser.close()
-
-                file_hash = self._compute_hash(file_path)
-                return str(file_path), file_hash
+                if result.returncode == 0 and file_path.exists():
+                    file_hash = self._compute_hash(file_path)
+                    print(f"[Downloader] Saved PDF: {file_path}")
+                    return str(file_path), file_hash
+                else:
+                    raise RuntimeError(f"Subprocess failed: {result.stderr}")
 
             except Exception as e:
                 print(f"[Downloader] HTML→PDF failed ({attempt}/{self.retries}): {e}")
