@@ -264,47 +264,75 @@ class SBPCircularsSpider(scrapy.Spider):
                     self.logger.info(f"[DPC] Found DPC Year link: {year} -> {href}")
         return sorted(years, key=lambda x: int(x["year"]), reverse=True)
 
-
     def parse_dpc_year(self, response):
         path = response.meta["path"]
         year = response.meta["year"]
-        year_url = response.meta["year_url"]
-        self.logger.info(f"[DPC] Parsing year page: {year} @ {response.url}")
 
-        # Table of items is basically bullet lists. Find any <a> under the main container
-        for a in response.xpath(
-                "//a[contains(translate(@href, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '.pdf')]"):
-            title = clean(a.xpath("text()").get())
-            href = a.xpath("@href").get()
-            url = response.urljoin(href)
+        for li in response.xpath("//li"):
+            links = li.xpath(".//a[@href]")
+            if not links:
+                continue
 
-            # classify circular vs circular letter
+            main_link = None
+            annexures = []
+
+            for a in links:
+                title = clean(a.xpath("text()").get())
+                href = a.xpath("@href").get()
+                url = response.urljoin(href)
+
+                title_lower = title.lower()
+
+                if title_lower.startswith("annex"):
+                    annexures.append({
+                        "title": title,
+                        "url": url
+                    })
+                else:
+                    main_link = {
+                        "title": title,
+                        "url": url
+                    }
+
+            # skip if no main circular found
+            if not main_link:
+                continue
+
+            # classify circular vs letter
             category = "Circular"
-            title_lower = title.lower()
-            if "letter" in title_lower:
+            if "letter" in main_link["title"].lower():
                 category = "Circular Letter"
 
-            doc_path = ["SBP", "Circulars/Notifications", "Circulars", *path, year, category, title]
+            doc_path = [
+                "SBP",
+                "Circulars/Notifications",
+                "Circulars",
+                *path,
+                year,
+                category,
+                main_link["title"]
+            ]
 
             reg_doc = RegulatoryDocument(
-                regulator="DPC",
+                regulator="SBP",
                 source_system="DPC-CIRCULAR",
                 category=category,
-                title=title,
-                document_url=url,
+                title=main_link["title"],
+                document_url=main_link["url"],
                 urdu_url=None,
                 published_date=None,
-                reference_no=title.split(" ")[-1] if title else None,
+                reference_no=None,
                 department=path,
                 year=year,
                 source_page_url=response.url,
                 doc_path=doc_path,
-                extra_meta={}
+                extra_meta={
+                    "annexures": annexures
+                }
             )
 
             if self.shared_items is not None:
                 self.shared_items.append(reg_doc)
-                self.logger.info(f"[DPC] Added doc: {title} -> {url}")
 
             yield reg_doc
 
