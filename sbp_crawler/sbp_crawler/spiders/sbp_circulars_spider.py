@@ -155,6 +155,7 @@ class SBPCircularsSpider(scrapy.Spider):
         self.logger.info(f"[DEPT] {' / '.join(path)}")
 
         if "dpc.org.pk" in response.url:
+            self.logger.info(f"Reached DPC department page: {response.url}")
             years = self._discover_years_dpc(response)
             for y in years:
                 yield scrapy.Request(
@@ -235,8 +236,6 @@ class SBPCircularsSpider(scrapy.Spider):
                 meta={"path": path, "year": None, "year_url": response.url},
                 dont_filter=True,
             )
-
-    # YEAR DISCOVERY
     def _discover_years(self, response):
         out, seen = [], set()
         for a in response.xpath("//a[@href]"):
@@ -252,16 +251,62 @@ class SBPCircularsSpider(scrapy.Spider):
             out.append({"year": year, "url": url})
         return sorted(out, key=lambda x: int(x["year"]), reverse=True)
 
-    # YEAR DISCOVERY (DPC)
-
+    # YEAR DISCOVERY
     def _discover_years_dpc(self, response):
         years = []
-        for a in response.xpath("//div[contains(@class,'btn-group')]//a[@href]"):
-            year_text = clean("".join(a.xpath(".//text()").getall()))
+        for a in response.xpath("//a[@href]"):
             href = a.xpath("@href").get()
-            if year_text.isdigit() and href.startswith("Cir-"):
-                years.append({"year": year_text, "url": response.urljoin(href)})
+            if href and href.startswith("Cir-"):
+                m = re.search(r'Cir-(\d{4})\.htm', href)
+                if m:
+                    year = m.group(1)
+                    years.append({"year": year, "url": response.urljoin(href)})
+                    self.logger.info(f"[DPC] Found DPC Year link: {year} -> {href}")
         return sorted(years, key=lambda x: int(x["year"]), reverse=True)
+
+
+    def parse_dpc_year(self, response):
+        path = response.meta["path"]
+        year = response.meta["year"]
+        year_url = response.meta["year_url"]
+        self.logger.info(f"[DPC] Parsing year page: {year} @ {response.url}")
+
+        # Table of items is basically bullet lists. Find any <a> under the main container
+        for a in response.xpath(
+                "//a[contains(translate(@href, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '.pdf')]"):
+            title = clean(a.xpath("text()").get())
+            href = a.xpath("@href").get()
+            url = response.urljoin(href)
+
+            # classify circular vs circular letter
+            category = "Circular"
+            title_lower = title.lower()
+            if "letter" in title_lower:
+                category = "Circular Letter"
+
+            doc_path = ["SBP", "Circulars/Notifications", "Circulars", *path, year, category, title]
+
+            reg_doc = RegulatoryDocument(
+                regulator="DPC",
+                source_system="DPC-CIRCULAR",
+                category=category,
+                title=title,
+                document_url=url,
+                urdu_url=None,
+                published_date=None,
+                reference_no=title.split(" ")[-1] if title else None,
+                department=path,
+                year=year,
+                source_page_url=response.url,
+                doc_path=doc_path,
+                extra_meta={}
+            )
+
+            if self.shared_items is not None:
+                self.shared_items.append(reg_doc)
+                self.logger.info(f"[DPC] Added doc: {title} -> {url}")
+
+            yield reg_doc
 
     # SBP YEAR / TABLE PAGE
     def parse_year(self, response):
@@ -384,58 +429,7 @@ class SBPCircularsSpider(scrapy.Spider):
             )
             if self.shared_items is not None:
                 self.shared_items.append(reg_doc)
-            # Yield as RegulatoryDocument
             yield reg_doc
 
-    # DPC YEAR PAGE
 
-    def parse_dpc_year(self, response):
-        path = response.meta["path"]
-        year = response.meta["year"]
-        year_url = response.meta["year_url"]
-
-        for li in response.xpath("//li"):
-            links = li.xpath(".//a[contains(@href,'.pdf')]")
-            if not links:
-                continue
-
-            main = links[0]
-            main_title = clean(main.xpath("text()").get())
-            main_url = main.xpath("@href").get()
-
-            if not main_title:
-                continue
-
-            category = "Circular"
-            if main_url:
-                url_lower = main_url.lower()
-                # handle CL1.pdf and CL_1.pdf
-                if '/cl' in url_lower and re.search(r'/cl_?\d+\.', url_lower):
-                    category = "Circular Letter"
-
-            annexures = []
-            for a in links[1:]:
-                annexures.append({
-                    "title": clean(a.xpath("text()").get()),
-                    "url": a.xpath("@href").get()
-                })
-            doc_path = ["SBP", "Circulars/Notifications", "Circulars"] + path + [year or "NA", category, main_title]
-            reg_doc=RegulatoryDocument(
-                regulator="DPC",
-                source_system="DPC-CIRCULAR",
-                category=category,
-                title=main_title,
-                document_url=main_url,
-                urdu_url=None,
-                published_date=None,
-                reference_no=main_title.split(" - ")[0] if " - " in main_title else None,
-                department=path,
-                year=year,
-                source_page_url=year_url,
-                doc_path=doc_path,
-                extra_meta={"annexures": annexures } if annexures else {}
-            )
-            if self.shared_items is not None:
-                self.shared_items.append(reg_doc)
-            yield reg_doc
 

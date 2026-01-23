@@ -60,7 +60,11 @@ class Orchestrator:
         new_docs, existing_docs = [], []
 
         for doc in all_documents:
-            logger.info(f"Checking document: {doc.title}, published_date={doc.published_date}")
+            logger.info(
+                f"Checking document: {doc.title}, "
+                f"published_date={doc.published_date}, "
+                f"regulator={getattr(doc, 'regulator', None)}"
+            )
 
             if doc.published_date:
                 exists = self.check_exists_in_db(
@@ -88,7 +92,25 @@ class Orchestrator:
                     new_docs.append(doc)
                 continue
 
-            logger.warning(f"Skipping {doc.title} because published_date is missing")
+            if getattr(doc, "source_system", "").upper() == "DPC-CIRCULAR":
+                logger.info(f"DPC document without published_date → allowed: {doc.title}")
+
+                exists = self.check_exists_in_db(
+                    doc.title,
+                    None,
+                    getattr(doc, "doc_path", None)
+                )
+
+                if exists:
+                    existing_docs.append(doc)
+                else:
+                    new_docs.append(doc)
+                continue
+
+            logger.warning(
+                f"Skipping {doc.title} "
+                f"(missing published_date, regulator={doc.regulator})"
+            )
 
         return new_docs, existing_docs
 
