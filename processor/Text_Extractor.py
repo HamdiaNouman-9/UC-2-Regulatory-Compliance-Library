@@ -1,38 +1,22 @@
 import os
-import json
 import logging
 import re
-import requests
-import base64
-import io
-from typing import Dict, Any, List
-from dotenv import load_dotenv
-from bs4 import BeautifulSoup
+from typing import Dict, Tuple, List
 from PIL import Image
 import pytesseract
 
-#OCR dependency - will warn if missing
 try:
-
+    import fitz  # PyMuPDF
+    import pdf2image
 
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
-    logging.warning(
-        "pytesseract not installed. OCR functionality disabled.\n"
-        "Install with: pip install pytesseract pillow\n"
-        "Also install Tesseract OCR engine and Arabic language pack."
-    )
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-class OCRProcessor:
-    """
-    Handles OCR extraction from base64 images in HTML documents.
-    Critical for processing scanned KSA regulatory documents (bilingual Arabic/English).
-    """
 
+class OCRProcessor:
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
     @staticmethod
@@ -48,101 +32,203 @@ class OCRProcessor:
             return False
 
     @staticmethod
-    def extract_text_from_html(html: str, lang: str = 'ara+eng') -> str:
-        soup = BeautifulSoup(html, 'html.parser')
+    def extract_text_from_pdf_smart(pdf_path: str) -> Tuple[str, Dict]:
+        """
+        Smart PDF extraction:
+        1. Open PDF
+        2. Try native text extraction on first few pages
+        3. If mostly empty → PDF is scanned, use OCR on all pages
+        4. If native extraction works → use it, OCR only broken pages
+        5. Combine all good pages
+        """
 
-        for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'svg']):
-            tag.decompose()
+        pdf_doc = fitz.open(pdf_path)
+        total_pages = len(pdf_doc)
+        logger.info(f"Processing PDF: {total_pages} pages")
 
-        # Attempt 1: Native text extraction
-        text = soup.get_text(separator='\n\n').strip()
-        text = re.sub(r'\s+', ' ', text)
+        # Check first 3 pages to determine if PDF is scanned
+        is_scanned = OCRProcessor._is_pdf_scanned(pdf_doc)
 
-        if len(text) > 500:
-            logger.info(f"Standard text extraction successful ({len(text)} chars)")
-            return text.strip()
+        if is_scanned:
+            logger.warning("PDF appears to be scanned images - will use OCR on all pages")
+            pdf_doc.close()
+            return OCRProcessor._ocr_entire_pdf(pdf_path, total_pages)
 
-        logger.warning(
-            f"Low native text ({len(text)} chars). "
-            f"Falling back to OCR on embedded images."
-        )
+        # PDF has extractable text - proceed with smart filtering
+        good_pages = []
+        bad_pages = []
+        ocr_pages = []
 
-        if not OCR_AVAILABLE:
-            raise ValueError("OCR required but pytesseract is not available")
+        for page_num in range(total_pages):
+            page = pdf_doc[page_num]
+            text = page.get_text("text")
 
-        soup = BeautifulSoup(html, 'html.parser')
-        extracted_texts = []
-        images_processed = 0
-
-        for idx, img in enumerate(soup.find_all('img'), start=1):
-            src = img.get('src', '')
-            if not src or 'base64' not in src.lower():
+            # Check 1: Is this page useful?
+            if OCRProcessor._is_bad_page(text):
+                bad_pages.append(page_num + 1)
+                logger.info(f"Page {page_num + 1}: Skipped (bad quality)")
                 continue
 
-            try:
-                encoded = src.split(',', 1)[1]
-                image_data = base64.b64decode(encoded)
-                image = Image.open(io.BytesIO(image_data))
+            # Check 2: Is the text readable?
+            if OCRProcessor._is_text_broken(text):
+                logger.info(f"Page {page_num + 1}: Text broken, using OCR...")
+                text = OCRProcessor._ocr_single_page(pdf_path, page_num + 1)
+                ocr_pages.append(page_num + 1)
 
-                try:
-                    import numpy as np
-                    import cv2
+            good_pages.append({
+                'num': page_num + 1,
+                'text': text
+            })
+            logger.info(f"Page {page_num + 1}: OK ({len(text)} chars)")
 
-                    img_np = np.array(image)
-                    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-                    gray = cv2.threshold(
-                        gray, 0, 255,
-                        cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                    )[1]
-                    image = Image.fromarray(gray)
+        pdf_doc.close()
 
-                except ImportError:
-                    pass
+        # Combine all good pages
+        final_text = "\n\n".join([
+            f"PAGE {p['num']}\n{p['text']}"
+            for p in good_pages
+        ])
 
-                # OCR
-                ocr_text = pytesseract.image_to_string(
-                    image,
-                    lang=lang,
-                    config='--psm 6 --oem 3'
-                ).strip()
+        metadata = {
+            'total_pages': total_pages,
+            'good_pages': len(good_pages),
+            'bad_pages': len(bad_pages),
+            'ocr_pages': len(ocr_pages)
+        }
 
-                if ocr_text and len(ocr_text) > 50:
-                    extracted_texts.append(
-                        f"\n\n--- PAGE {idx} ---\n\n{ocr_text}"
-                    )
-                    images_processed += 1
-
-            except Exception as e:
-                logger.warning(f"OCR failed on image {idx}: {str(e)[:120]}")
-                continue
-
-        if not extracted_texts:
-            raise ValueError("OCR failed to extract text from any embedded images")
-
-        combined_text = "\n\n".join(extracted_texts)
         logger.info(
-            f"OCR complete: {images_processed} pages, "
-            f"{len(combined_text)} chars"
+            f" Done: {len(good_pages)}/{total_pages} pages kept, "
+            f"{len(ocr_pages)} needed OCR"
         )
 
-        return OCRProcessor._clean_ocr_text(combined_text)
+        return final_text, metadata
 
     @staticmethod
-    def _clean_ocr_text(text: str) -> str:
-        """Post-process OCR output to remove common artifacts"""
-        # Fix common OCR errors in Arabic/English mixed text
-        text = re.sub(r'\n{3,}', '\n\n', text)  # Excessive newlines
-        text = re.sub(r'[ \t]{2,}', ' ', text)  # Excessive spaces
-        text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)  # Fix hyphenated word breaks
-        text = text.strip()
+    def _is_pdf_scanned(pdf_doc) -> bool:
+        """
+        Check if PDF is scanned (images) or has extractable text
+        Tests first 3 pages
+        """
+        pages_to_check = min(3, len(pdf_doc))
+        total_text_length = 0
 
-        # Remove footer/page number patterns common in SAMA documents
-        lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            # Skip lines that look like page numbers or document footers
-            if re.fullmatch(r'(page\s*\d+|\d+|sama\s*document|\d+\s*of\s*\d+)', line.strip().lower()):
+        for page_num in range(pages_to_check):
+            page = pdf_doc[page_num]
+            text = page.get_text("text").strip()
+            total_text_length += len(text)
+
+        # If first 3 pages have < 300 total chars, it's likely scanned
+        avg_per_page = total_text_length / pages_to_check
+
+        logger.info(f"First {pages_to_check} pages avg text: {avg_per_page:.0f} chars/page")
+
+        if avg_per_page < 100:
+            return True  # Scanned PDF
+        return False  # Native text available
+
+    @staticmethod
+    def _ocr_entire_pdf(pdf_path: str, total_pages: int) -> Tuple[str, Dict]:
+        """
+        OCR all pages of a scanned PDF with smart filtering
+        """
+        logger.info(f"Starting OCR on all {total_pages} pages...")
+
+        good_pages = []
+        bad_pages = []
+
+        for page_num in range(1, total_pages + 1):
+            logger.info(f"OCR processing page {page_num}/{total_pages}...")
+
+            text = OCRProcessor._ocr_single_page(pdf_path, page_num)
+
+            # Filter bad pages even after OCR
+            if OCRProcessor._is_bad_page(text):
+                bad_pages.append(page_num)
+                logger.info(f"Page {page_num}: Skipped after OCR (low quality)")
                 continue
-            cleaned_lines.append(line)
 
-        return '\n'.join(cleaned_lines).strip()
+            good_pages.append({
+                'num': page_num,
+                'text': text
+            })
+            logger.info(f"Page {page_num}: OK ({len(text)} chars)")
+
+        # Combine all good pages
+        final_text = "\n\n".join([
+            f"PAGE {p['num']}\n{p['text']}"
+            for p in good_pages
+        ])
+
+        metadata = {
+            'total_pages': total_pages,
+            'good_pages': len(good_pages),
+            'bad_pages': len(bad_pages),
+            'ocr_pages': len(good_pages)  # All good pages used OCR
+        }
+
+        logger.info(
+            f" OCR complete: {len(good_pages)}/{total_pages} pages kept"
+        )
+
+        return final_text, metadata
+
+    @staticmethod
+    def _is_bad_page(text: str) -> bool:
+        """Check if page is garbage (cover, metadata, etc)"""
+        if len(text) < 200:
+            return True
+
+        # Count real words
+        words = [w for w in text.split() if len(w) > 3]
+        if len(words) < 30:
+            return True
+
+        # Too many numbers? Probably metadata
+        numbers = sum(c.isdigit() for c in text)
+        if numbers / max(len(text), 1) > 0.5:
+            return True
+
+        # No Arabic or English? Probably garbage
+        has_arabic = bool(re.search(r'[\u0600-\u06FF]{3,}', text))
+        has_english = bool(re.search(r'[a-zA-Z]{3,}', text))
+        if not (has_arabic or has_english):
+            return True
+
+        return False
+
+    @staticmethod
+    def _is_text_broken(text: str) -> bool:
+        """Check if extracted text is garbled"""
+        sample = text[:500]
+
+        # Too many weird characters?
+        if sample.count('\\u') > 15:
+            return True
+
+        # Can't read most characters?
+        readable = sum(c.isprintable() or c.isspace() for c in sample)
+        if len(sample) > 0 and readable / len(sample) < 0.7:
+            return True
+
+        return False
+
+    @staticmethod
+    def _ocr_single_page(pdf_path: str, page_num: int) -> str:
+        """Use OCR on one page"""
+        try:
+            images = pdf2image.convert_from_path(
+                pdf_path,
+                first_page=page_num,
+                last_page=page_num,
+                dpi=300
+            )
+
+            text = pytesseract.image_to_string(
+                images[0],
+                lang='ara+eng'
+            )
+
+            return text.strip()
+        except Exception as e:
+            logger.error(f"OCR failed on page {page_num}: {e}")
+            return ""

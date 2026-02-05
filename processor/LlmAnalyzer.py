@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from processor.Text_Extractor import OCRProcessor
 import pytesseract
+from utils.lang_detector import detect_language
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class LLMAnalyzer:
 
     def __init__(
             self,
-            model: str = "anthropic/claude-3.5-sonnet",
+            model: str = "deepseek/deepseek-v3.2",
             max_chunk_size: int = 12000,
             min_text_length: int = 300
     ):
@@ -40,8 +41,22 @@ class LLMAnalyzer:
                 "           Then download ara.traineddata from https://github.com/tesseract-ocr/tessdata"
             )
 
-
     def normalize_input_text(self, content: str) -> str:
+        """
+        Normalize text for LLM consumption.
+        Handles both HTML content and pre-cleaned PDF text from smart extraction.
+        """
+
+        # Check if this is already cleaned PDF text from smart extraction
+        # (Smart extraction adds "PAGE X" markers and separators)
+        if "PAGE" in content[:300] and "=" * 60 in content[:300]:
+            logger.info("Detected pre-cleaned PDF text from smart extraction")
+            # Just light cleanup, no need for HTML parsing or OCR
+            text = re.sub(r'\s+', ' ', content)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            return text.strip()
+
+        # Original HTML processing
         soup = BeautifulSoup(content, 'html.parser')
 
         for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'svg']):
@@ -59,7 +74,7 @@ class LLMAnalyzer:
             f"Triggering OCR fallback..."
         )
 
-        text = OCRProcessor.extract_text_from_html(content, lang='ara+eng')
+        text = OCRProcessor.extract_text_from_pdf_smart(content)
 
         if len(text) < self.min_text_length:
             raise ValueError(
@@ -190,49 +205,49 @@ Additional rules:
 - Output in English only.
 """
 
-
     def analyze_regulation(
             self,
             content: str,
             regulation_id: int,
             document_title: str = "Untitled Regulation"
     ) -> Dict[str, Any]:
-        """
-        Analyze full regulation text with OCR fallback and validation
-        """
+
         try:
-            # Critical: Extract meaningful text with OCR fallback
+            # Extract meaningful text
             text = self.normalize_input_text(content)
 
-            # Safety check: prevent hallucinations from insufficient input
-            if len(text) < self.min_text_length:
-                raise ValueError(
-                    f"Insufficient text for analysis ({len(text)} chars). "
-                    f"Minimum required: {self.min_text_length} chars."
+            # 🔍 LANGUAGE DETECTION (NEW)
+            lang = detect_language(text)
+            logger.info(
+                f"Detected language for regulation {regulation_id}: {lang}"
+            )
+
+            if lang not in ("en", "ar"):
+                logger.warning(
+                    f"Unsupported or unclear language ({lang}) for regulation {regulation_id}"
                 )
 
-            logger.info(f"Analyzing regulation {regulation_id}: {len(text)} chars of text")
-            logger.debug(f"First 200 chars of input text:\n{text[:200]}")
+            # Optional: store language in DB / metadata
+            # self.repo.update_document_language(regulation_id, lang)
 
-            # Build prompt and call LLM
+            if len(text) < self.min_text_length:
+                raise ValueError(
+                    f"Insufficient text for analysis ({len(text)} chars)."
+                )
+
+            logger.info(
+                f"Analyzing regulation {regulation_id} "
+                f"[lang={lang}] with {len(text)} chars"
+            )
+
             prompt = self._build_prompt(text, document_title)
             response_text = self._call_llm(prompt)
 
-            # Debug: log raw LLM response for troubleshooting
-            logger.debug("------ RAW LLM RESPONSE (first 500 chars) ------")
-            logger.debug(response_text[:500])
-
-            # Parse and deduplicate
             analysis_result = self.extract_json_from_llm_response(response_text)
             unique_requirements = self._deduplicate_requirements(
                 analysis_result.get("requirements", [])
             )
 
-            logger.info(
-                f"Regulation {regulation_id} analysis complete: "
-                f"{len(analysis_result.get('requirements', []))} raw → "
-                f"{len(unique_requirements)} unique requirements"
-            )
             return {"requirements": unique_requirements}
 
         except Exception as e:

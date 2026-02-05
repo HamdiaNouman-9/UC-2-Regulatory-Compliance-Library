@@ -7,6 +7,7 @@ from processor.html_fallback_engine import HTMLFallbackEngine
 from typing import List
 from utils.pdfco_utils import pdfco_pdf_to_html
 from processor.LlmAnalyzer import LLMAnalyzer
+from processor.Text_Extractor import OCRProcessor
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -176,18 +177,20 @@ class Orchestrator:
         if regulator_name.upper() == "SAMA":
             try:
                 org_pdf_link = doc.extra_meta.get("org_pdf_link")
-                html_content = None
+                text_content = None
 
                 # CASE 1: org_pdf_link missing BUT document_html already exists
                 if not org_pdf_link and getattr(doc, "document_html", None):
-                    html_content = doc.document_html
+                    text_content = doc.document_html
                     logger.info(
                         f"Using existing document_html for SAMA doc → {doc.title} "
-                        f"({len(html_content)} chars)"
+                        f"({len(text_content)} chars)"
                     )
 
-                if org_pdf_link:
+                # CASE 2: org_pdf_link exists - SMART EXTRACTION
+                elif org_pdf_link:
                     try:
+                        # Download PDF
                         original_url = doc.document_url
                         doc.document_url = org_pdf_link
                         doc.file_type = "PDF"
@@ -195,31 +198,63 @@ class Orchestrator:
                         file_path, _ = self.downloader.download(doc)
                         logger.info(f"Downloaded SAMA PDF → {file_path}")
 
+                        # Restore original URL
                         doc.document_url = original_url
-                        html_content = pdfco_pdf_to_html(
-                            pdf_path=file_path,
-                            lang="eng+ara"
+
+                        # SMART EXTRACTION: Filter bad pages + OCR fallback
+                        self.log(None, "smart_extraction", "STARTED", "Starting smart PDF extraction")
+
+                        text_content, metadata = OCRProcessor.extract_text_from_pdf_smart(
+                            pdf_path=file_path
                         )
 
-                        if not html_content or len(html_content) < 50:  # sanity check
-                            raise ValueError("PDF.co did not return valid HTML")
+                        # Store results
+                        doc.extra_meta["org_pdf_text"] = text_content
+                        doc.extra_meta["extraction_metadata"] = metadata
 
-                        doc.extra_meta["org_pdf_html"] = html_content
+                        self.log(
+                            None,
+                            "smart_extraction",
+                            "SUCCESS",
+                            f"Extracted {metadata['good_pages']}/{metadata['total_pages']} pages "
+                            f"({metadata['ocr_pages']} used OCR)"
+                        )
+
                         logger.info(
-                            f"SAMA PDF converted to HTML ({len(html_content)} chars)"
+                            f"Smart extraction complete:\n"
+                            f"   Total pages: {metadata['total_pages']}\n"
+                            f"   Good pages: {metadata['good_pages']}\n"
+                            f"   Bad pages filtered: {metadata['bad_pages']}\n"
+                            f"   OCR pages: {metadata['ocr_pages']}\n"
+                            f"   Final text: {len(text_content)} chars"
                         )
 
-                        # Cleanup
+                        # Cleanup PDF file
                         if os.path.exists(file_path):
                             os.remove(file_path)
 
                     except Exception as e:
-                        logger.error(f"PDF.co conversion failed: {e}")
-                        self.log(None, "pdf_conversion", "ERROR", str(e))
+                        logger.error(f"Smart extraction failed: {e}")
+                        self.log(None, "smart_extraction", "ERROR", str(e))
+                        text_content = None
 
                 else:
-                    logger.warning("No org_pdf_link found in extra_meta for SAMA document")
+                    logger.warning("No org_pdf_link or document_html for SAMA document")
 
+                # Validate extracted content
+                if not text_content or len(text_content) < 500:
+                    logger.error(
+                        f"Insufficient text extracted ({len(text_content) if text_content else 0} chars)"
+                    )
+                    self.log(
+                        None,
+                        "validation",
+                        "ERROR",
+                        "Insufficient text content after extraction"
+                    )
+                    return
+
+                # Insert regulation into database
                 regulation_id = self.repo._insert_regulation(doc)
                 doc.id = regulation_id
 
@@ -231,52 +266,46 @@ class Orchestrator:
                 )
                 logger.info(f"SAMA document inserted → ID {regulation_id}")
 
-                if html_content:
-                    try:
-                        self.log(
-                            regulation_id,
-                            "llm_analysis",
-                            "STARTED",
-                            "Starting LLM analysis with OCR fallback"
-                        )
+                # LLM Analysis
+                try:
+                    self.log(
+                        regulation_id,
+                        "llm_analysis",
+                        "STARTED",
+                        "Starting LLM analysis with smart-extracted text"
+                    )
 
-                        analysis_result = self.llm_analyzer.analyze_regulation(
-                            content=html_content,
-                            regulation_id=regulation_id,
-                            document_title=doc.title
-                        )
+                    analysis_result = self.llm_analyzer.analyze_regulation(
+                        content=text_content,
+                        regulation_id=regulation_id,
+                        document_title=doc.title
+                    )
 
-                        self.repo.store_compliance_analysis(
-                            regulation_id=regulation_id,
-                            analysis_data=analysis_result
-                        )
+                    self.repo.store_compliance_analysis(
+                        regulation_id=regulation_id,
+                        analysis_data=analysis_result
+                    )
 
-                        self.log(
-                            regulation_id,
-                            "llm_analysis",
-                            "SUCCESS",
-                            f"Analysis complete: "
-                            f"{len(analysis_result.get('requirements', []))} requirements"
-                        )
+                    self.log(
+                        regulation_id,
+                        "llm_analysis",
+                        "SUCCESS",
+                        f"Analysis complete: {len(analysis_result.get('requirements', []))} requirements"
+                    )
 
-                        logger.info(
-                            f"LLM analysis completed for regulation {regulation_id}"
-                        )
+                    logger.info(
+                        f"LLM analysis completed for regulation {regulation_id}"
+                    )
 
-                    except Exception as e:
-                        logger.error(
-                            f"LLM analysis failed for regulation {regulation_id}: {e}"
-                        )
-                        self.log(
-                            regulation_id,
-                            "llm_analysis",
-                            "ERROR",
-                            str(e)
-                        )
-
-                else:
-                    logger.warning(
-                        f"No HTML content available for SAMA regulation {doc.title}"
+                except Exception as e:
+                    logger.error(
+                        f"LLM analysis failed for regulation {regulation_id}: {e}"
+                    )
+                    self.log(
+                        regulation_id,
+                        "llm_analysis",
+                        "ERROR",
+                        str(e)
                     )
 
                 return
@@ -286,9 +315,9 @@ class Orchestrator:
                 self.log(None, "insert", "ERROR", str(e))
                 return
 
-        # NORMAL FLOW (ALL OTHER CATEGORIES)
-
+        # NORMAL FLOW (ALL OTHER REGULATORS)
         try:
+            # Download PDF
             file_path, _ = self.downloader.download(doc)
             logger.info(f"Downloaded file → {file_path}")
         except Exception as e:
@@ -297,15 +326,60 @@ class Orchestrator:
             return
 
         try:
+            # PDF.co HTML → store for UI
+            try:
+                html_content = pdfco_pdf_to_html(file_path)
+                doc.document_html = html_content
+                logger.info(f"PDF.co HTML generated for UI → {len(html_content)} chars")
+            except Exception as e:
+                logger.error(f"PDF.co HTML conversion failed: {e}")
+                doc.document_html = None
+
+            # Extract text for LLM
+            try:
+                text_content, metadata = OCRProcessor.extract_text_from_pdf_smart(file_path)
+                logger.info(f"Extracted {len(text_content)} chars for LLM analysis")
+            except Exception as e:
+                logger.error(f"Text extraction failed: {e}")
+                text_content = None
+
+            # Insert document into DB
             regulation_id = self.repo._insert_regulation(doc)
             doc.id = regulation_id
             self.log(regulation_id, "insert", "SUCCESS", "Document inserted")
             logger.info(f"Document inserted → ID {regulation_id}")
-        except Exception as e:
-            logger.error(f"Failed to insert document: {e}")
-            self.log(None, "insert", "ERROR", str(e))
-            return
 
-        del file_path
-        gc.collect()
-        logger.info(f"Finished processing document: {doc.title}")
+            #  LLM analysis (only if text exists)
+            if text_content and len(text_content) > 500:
+                try:
+                    self.log(regulation_id, "llm_analysis", "STARTED", "Starting LLM analysis")
+                    analysis_result = self.llm_analyzer.analyze_regulation(
+                        content=text_content,
+                        regulation_id=regulation_id,
+                        document_title=doc.title
+                    )
+                    self.repo.store_compliance_analysis(
+                        regulation_id=regulation_id,
+                        analysis_data=analysis_result
+                    )
+                    self.log(
+                        regulation_id,
+                        "llm_analysis",
+                        "SUCCESS",
+                        f"Analysis complete: {len(analysis_result.get('requirements', []))} requirements"
+                    )
+                    logger.info(f"LLM analysis completed for regulation {regulation_id}")
+                except Exception as e:
+                    logger.error(f"LLM analysis failed: {e}")
+                    self.log(regulation_id, "llm_analysis", "ERROR", str(e))
+            else:
+                logger.warning("Insufficient text for LLM analysis")
+                self.log(regulation_id, "llm_analysis", "ERROR", "Insufficient text for LLM")
+
+        except Exception as e:
+            logger.error(f"Failed to process document {doc.title}: {e}")
+
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            gc.collect()
