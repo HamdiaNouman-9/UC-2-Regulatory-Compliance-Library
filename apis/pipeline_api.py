@@ -346,12 +346,12 @@ def get_categories():
     """
     try:
         query = """
-            SELECT TOP 50
-    compliancecategory_id,
-    title,
-    parentid
-FROM compliancecategory
-ORDER BY parentid, title
+            SELECT 
+                compliancecategory_id,
+                title,
+                parentid
+            FROM compliancecategory
+            ORDER BY parentid, title
         """
 
         with repo._get_conn() as conn:
