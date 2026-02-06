@@ -8,6 +8,9 @@ from typing import List
 from utils.pdfco_utils import pdfco_pdf_to_html
 from processor.LlmAnalyzer import LLMAnalyzer
 from processor.Text_Extractor import OCRProcessor
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -28,6 +31,20 @@ class Orchestrator:
         self.downloader = downloader
         self.ocr_engine = ocr_engine
         self.llm_analyzer = LLMAnalyzer()
+
+
+    def create_robust_session(self):
+        """Create session with retry logic for network issues"""
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def log(self, regulation_id, step, status, message, doc_url=None):
         try:
@@ -174,14 +191,17 @@ class Orchestrator:
                 self.log(None, "insert", "ERROR", str(e),doc_url=getattr(doc, "document_url", None))
                 return
             # SAMA: INSERT DIRECTLY (NO DOWNLOAD/CONVERSION NEEDED)
+        # SAMA: INSERT DIRECTLY (NO DOWNLOAD/CONVERSION NEEDED)
         if regulator_name.upper() == "SAMA":
             try:
                 org_pdf_link = doc.extra_meta.get("org_pdf_link")
                 text_content = None
+                content_type = None
 
-                # CASE 1: org_pdf_link missing BUT document_html already exists
+                # CASE 1: org_pdf_link missing BUT document_html exists
                 if not org_pdf_link and getattr(doc, "document_html", None):
                     text_content = doc.document_html
+                    content_type = "html"  # ✅ Mark as HTML
                     logger.info(
                         f"Using existing document_html for SAMA doc → {doc.title} "
                         f"({len(text_content)} chars)"
@@ -201,12 +221,13 @@ class Orchestrator:
                         # Restore original URL
                         doc.document_url = original_url
 
-                        # SMART EXTRACTION: Filter bad pages + OCR fallback
+                        # SMART EXTRACTION
                         self.log(None, "smart_extraction", "STARTED", "Starting smart PDF extraction")
 
                         text_content, metadata = OCRProcessor.extract_text_from_pdf_smart(
                             pdf_path=file_path
                         )
+                        content_type = "pdf_text"  # ✅ Mark as pre-cleaned PDF text
 
                         # Store results
                         doc.extra_meta["org_pdf_text"] = text_content
@@ -237,12 +258,13 @@ class Orchestrator:
                         logger.error(f"Smart extraction failed: {e}")
                         self.log(None, "smart_extraction", "ERROR", str(e))
                         text_content = None
+                        content_type = None
 
                 else:
                     logger.warning("No org_pdf_link or document_html for SAMA document")
 
                 # Validate extracted content
-                if not text_content or len(text_content) < 500:
+                if not text_content or len(text_content) < 100:  # Lowered threshold for HTML
                     logger.error(
                         f"Insufficient text extracted ({len(text_content) if text_content else 0} chars)"
                     )
@@ -266,19 +288,21 @@ class Orchestrator:
                 )
                 logger.info(f"SAMA document inserted → ID {regulation_id}")
 
-                # LLM Analysis
+                # LLM Analysis with content type
                 try:
                     self.log(
                         regulation_id,
                         "llm_analysis",
                         "STARTED",
-                        "Starting LLM analysis with smart-extracted text"
+                        f"Starting LLM analysis ({content_type})"
                     )
 
+                    # ✅ Pass content with explicit type
                     analysis_result = self.llm_analyzer.analyze_regulation(
                         content=text_content,
                         regulation_id=regulation_id,
-                        document_title=doc.title
+                        document_title=doc.title,
+                        content_type=content_type  # ✅ NEW PARAMETER
                     )
 
                     self.repo.store_compliance_analysis(

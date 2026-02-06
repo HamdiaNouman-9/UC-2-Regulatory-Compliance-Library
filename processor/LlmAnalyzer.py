@@ -41,47 +41,83 @@ class LLMAnalyzer:
                 "           Then download ara.traineddata from https://github.com/tesseract-ocr/tessdata"
             )
 
-    def normalize_input_text(self, content: str) -> str:
+    def split_text_into_chunks(self, text: str, max_chars: int = None) -> List[Dict]:
+        """Split text into chunks of <= max_chars, keeping paragraph integrity."""
+        max_chars = max_chars or self.max_chunk_size
+        paragraphs = text.split('\n\n')
+        chunks, current_chunk = [], []
+        current_length = 0
+
+        for para in paragraphs:
+            if current_length + len(para) > max_chars and current_chunk:
+                chunks.append({"text": "\n\n".join(current_chunk), "chunk_num": len(chunks) + 1, "total_chunks": 0})
+                current_chunk = []
+                current_length = 0
+            current_chunk.append(para)
+            current_length += len(para)
+
+        if current_chunk:
+            chunks.append({"text": "\n\n".join(current_chunk), "chunk_num": len(chunks) + 1, "total_chunks": 0})
+
+        total = len(chunks)
+        for c in chunks:
+            c["total_chunks"] = total
+
+        return chunks
+
+    def normalize_input_text(self, content: str, content_type: str = "html") -> str:
         """
         Normalize text for LLM consumption.
-        Handles both HTML content and pre-cleaned PDF text from smart extraction.
+
+        Args:
+            content: Either HTML string, pre-cleaned PDF text, or file path
+            content_type: "html", "pdf_text", or "pdf_file"
         """
 
-        # Check if this is already cleaned PDF text from smart extraction
-        # (Smart extraction adds "PAGE X" markers and separators)
-        if "PAGE" in content[:300] and "=" * 60 in content[:300]:
+        # CASE 1: Already cleaned PDF text from smart extraction
+        if content_type == "pdf_text" or ("PAGE" in content[:300] and "=" * 60 in content[:300]):
             logger.info("Detected pre-cleaned PDF text from smart extraction")
-            # Just light cleanup, no need for HTML parsing or OCR
             text = re.sub(r'\s+', ' ', content)
             text = re.sub(r'\n{3,}', '\n\n', text)
             return text.strip()
 
-        # Original HTML processing
-        soup = BeautifulSoup(content, 'html.parser')
+        # CASE 2: HTML content (from document_html)
+        if content_type == "html":
+            logger.info("Processing HTML content")
+            soup = BeautifulSoup(content, 'html.parser')
 
-        for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'svg']):
-            tag.decompose()
+            for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'svg']):
+                tag.decompose()
 
-        text = soup.get_text(separator='\n\n').strip()
-        text = re.sub(r'\s+', ' ', text)
+            text = soup.get_text(separator='\n\n').strip()
+            text = re.sub(r'\s+', ' ', text)
 
-        if len(text) > self.min_text_length:
-            logger.info(f"Native text extraction: {len(text)} chars")
+            if len(text) > self.min_text_length:
+                logger.info(f"Extracted {len(text)} chars from HTML")
+                return self._post_clean_text(text)
+
+            # HTML extraction failed - return what we have
+            logger.warning(
+                f"HTML text too short ({len(text)} chars). "
+                f"Cannot apply OCR to HTML content. Returning available text."
+            )
+            return self._post_clean_text(text) if text else ""
+
+        # CASE 3: PDF file path (for OCR)
+        if content_type == "pdf_file" and os.path.isfile(content):
+            logger.info("Processing PDF file with OCR")
+            text, metadata = OCRProcessor.extract_text_from_pdf_smart(content)
+
+            if len(text) < self.min_text_length:
+                raise ValueError(
+                    f"Extracted text too short after OCR ({len(text)} chars)"
+                )
+
             return self._post_clean_text(text)
 
-        logger.warning(
-            f"Native text too short ({len(text)} chars). "
-            f"Triggering OCR fallback..."
-        )
-
-        text = OCRProcessor.extract_text_from_pdf_smart(content)
-
-        if len(text) < self.min_text_length:
-            raise ValueError(
-                f"Extracted text too short after OCR ({len(text)} chars)"
-            )
-
-        return self._post_clean_text(text)
+        # Fallback: treat as raw text
+        logger.warning("Unknown content type, treating as raw text")
+        return self._post_clean_text(content)
 
     def _post_clean_text(self, text: str) -> str:
         """Final cleanup pass for LLM consumption"""
@@ -89,8 +125,11 @@ class LLMAnalyzer:
         text = re.sub(r'[ \t]{2,}', ' ', text)
         return text.strip()
 
-
     def extract_json_from_llm_response(self, text: str) -> dict:
+        """
+        Extract JSON from LLM response - prioritizes finding "requirements": [ pattern
+        """
+        original_text = text
         text = text.strip()
 
         # Strategy 1: Direct parse
@@ -99,33 +138,115 @@ class LLMAnalyzer:
         except json.JSONDecodeError:
             pass
 
-        # Strategy 2: Markdown code block
-        code_block_match = re.search(
-            r'```(?:json)?\s*({[\s\S]*?})\s*```',
-            text,
-            re.IGNORECASE
-        )
-        if code_block_match:
+        # Strategy 2: Find "requirements": [ pattern (YOUR IDEA - PRIORITIZED)
+        # This is the most reliable indicator of our expected JSON structure
+        requirements_pattern = r'"requirements"\s*:\s*\['
+        match = re.search(requirements_pattern, text)
+
+        if match:
+            logger.info("Found 'requirements': [ pattern in response")
+            start_pos = match.start()
+
+            # Search backwards for opening {
+            json_start = -1
+            for i in range(start_pos - 1, -1, -1):
+                if text[i] == '{':
+                    json_start = i
+                    break
+                # Stop if we hit something that's not whitespace or newline
+                if text[i] not in [' ', '\n', '\r', '\t'] and text[i] != '{':
+                    # Keep searching, might be part of markdown
+                    continue
+
+            if json_start != -1:
+                # Find matching closing }
+                brace_count = 0
+                json_end = -1
+
+                for i in range(json_start, len(text)):
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+
+                if json_end != -1:
+                    json_candidate = text[json_start:json_end]
+                    try:
+                        parsed = json.loads(json_candidate)
+                        logger.info("Successfully extracted JSON using 'requirements': [ pattern")
+                        return parsed
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Found 'requirements' pattern but JSON invalid: {e}")
+                        # Try cleaning it
+                        json_candidate = json_candidate.strip()
+                        # Remove any trailing commas before closing braces/brackets
+                        json_candidate = re.sub(r',(\s*[}\]])', r'\1', json_candidate)
+                        try:
+                            parsed = json.loads(json_candidate)
+                            logger.info("Successfully extracted JSON after cleaning trailing commas")
+                            return parsed
+                        except json.JSONDecodeError:
+                            pass
+
+        # Strategy 3: Strip markdown code blocks
+        cleaned_text = re.sub(r'^```(?:json)?\s*\n?', '', text, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned_text = re.sub(r'\n?```\s*$', '', cleaned_text, flags=re.MULTILINE)
+        cleaned_text = cleaned_text.strip()
+
+        if cleaned_text != text:
             try:
-                return json.loads(code_block_match.group(1).strip())
+                logger.info("Successfully parsed after removing markdown code blocks")
+                return json.loads(cleaned_text)
             except json.JSONDecodeError:
                 pass
 
-        # Strategy 3: First valid JSON object
-        brace_start = text.find('{')
-        brace_end = text.rfind('}')
-        if brace_start != -1 and brace_end > brace_start:
-            candidate = text[brace_start:brace_end + 1]
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
+        # Strategy 4: Extract from code block patterns
+        code_block_patterns = [
+            r'```json\s*\n(.*?)\n?```',
+            r'```\s*\n(\{.*?\})\s*\n?```',
+            r'```json\s*(.*?)```',
+            r'```\s*(\{.*?\})```'
+        ]
 
-        logger.warning(f"JSON extraction failed. First 300 chars:\n{text[:300]}...")
+        for pattern in code_block_patterns:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                json_candidate = match.group(1).strip()
+                try:
+                    logger.info(f"Extracted JSON using code block pattern")
+                    return json.loads(json_candidate)
+                except json.JSONDecodeError:
+                    continue
+
+        # Strategy 5: Balanced brace matching from first {
+        brace_count = 0
+        start_idx = text.find('{')
+        if start_idx != -1:
+            for i in range(start_idx, len(text)):
+                if text[i] == '{':
+                    brace_count += 1
+                elif text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        try:
+                            json_candidate = text[start_idx:i + 1]
+                            logger.info("Extracted JSON using balanced brace matching")
+                            return json.loads(json_candidate)
+                        except json.JSONDecodeError:
+                            break
+
+        # All strategies failed
+        logger.error("JSON extraction completely failed.")
+        logger.error(f"Response preview (first 500 chars):\n{original_text[:500]}")
+
+        # Check if "requirements" keyword exists at all
+        if "requirements" in text.lower():
+            logger.error("Found 'requirements' keyword but couldn't extract valid JSON")
+
         return {"requirements": []}
-
     # PROMPT ENGINEERING
 
     def _build_prompt(
@@ -193,6 +314,8 @@ Please follow the structure below:
 
 Additional rules:
 - Output in JSON format ONLY with structure: {{"requirements": [...]}}
+-Return ONLY raw JSON - NO markdown formatting
+- Do NOT wrap in ```json or ``` code blocks
 
 - Each requirement object MUST have these exact fields:
   requirement_text, department, risk_level, repercussions, controls, kpis, reference
@@ -209,44 +332,37 @@ Additional rules:
             self,
             content: str,
             regulation_id: int,
-            document_title: str = "Untitled Regulation"
+            document_title: str = "Untitled Regulation",
+            content_type: str = "html"
     ) -> Dict[str, Any]:
 
         try:
-            # Extract meaningful text
-            text = self.normalize_input_text(content)
+            # Extract meaningful text with type hint
+            text = self.normalize_input_text(content, content_type=content_type)
 
-            # 🔍 LANGUAGE DETECTION (NEW)
+
+            # LANGUAGE DETECTION
             lang = detect_language(text)
-            logger.info(
-                f"Detected language for regulation {regulation_id}: {lang}"
-            )
+            logger.info(f"Detected language for regulation {regulation_id}: {lang}")
 
             if lang not in ("en", "ar"):
-                logger.warning(
-                    f"Unsupported or unclear language ({lang}) for regulation {regulation_id}"
-                )
-
-            # Optional: store language in DB / metadata
-            # self.repo.update_document_language(regulation_id, lang)
+                logger.warning(f"Unsupported or unclear language ({lang}) for regulation {regulation_id}")
 
             if len(text) < self.min_text_length:
-                raise ValueError(
-                    f"Insufficient text for analysis ({len(text)} chars)."
-                )
+                raise ValueError(f"Insufficient text for analysis ({len(text)} chars).")
 
-            logger.info(
-                f"Analyzing regulation {regulation_id} "
-                f"[lang={lang}] with {len(text)} chars"
-            )
+            # Decide if chunking is needed
+            if len(text) > self.max_chunk_size:
+                logger.info(f"Text exceeds max_chunk_size ({len(text)} chars). Using chunked analysis.")
+                chunks = self.split_text_into_chunks(text)
+                analysis_result = self.analyze_regulation_chunked(chunks, regulation_id, document_title)
+            else:
+                prompt = self._build_prompt(text, document_title)
+                response_text = self._call_llm(prompt)
+                analysis_result = self.extract_json_from_llm_response(response_text)
 
-            prompt = self._build_prompt(text, document_title)
-            response_text = self._call_llm(prompt)
-
-            analysis_result = self.extract_json_from_llm_response(response_text)
-            unique_requirements = self._deduplicate_requirements(
-                analysis_result.get("requirements", [])
-            )
+            # Deduplicate requirements
+            unique_requirements = self._deduplicate_requirements(analysis_result.get("requirements", []))
 
             return {"requirements": unique_requirements}
 
@@ -275,7 +391,16 @@ Additional rules:
 
                 prompt = self._build_prompt(clean_text, document_title, chunk_info)
                 response = self._call_llm(prompt)
+
+                # Log raw response for debugging
+                logger.debug(f"Raw LLM response length: {len(response)} chars")
+                logger.debug(f"Response starts with: {response[:100]}")
+
                 parsed = self.extract_json_from_llm_response(response)
+
+                # Check if parsing succeeded
+                if not parsed.get("requirements"):
+                    logger.warning(f"{chunk_info}: No requirements extracted. Raw response: {response[:300]}")
 
                 # Annotate with source chunk
                 for req in parsed.get("requirements", []):
@@ -288,6 +413,7 @@ Additional rules:
 
             except Exception as e:
                 logger.error(f"Chunk {chunk.get('chunk_num', '?')} failed: {e}")
+                logger.exception("Full traceback:")
                 continue
 
         unique_requirements = self._deduplicate_requirements(all_requirements)
@@ -348,7 +474,7 @@ Additional rules:
                 }
             ],
             "temperature": 0.1,  # Lower for precision
-            "max_tokens": 4000
+            "max_tokens": 8000
         }
 
         try:

@@ -244,12 +244,16 @@ class MSSQLRepository(DocumentRepository):
             raise
 
     # -------------------- LOGGING --------------------
-    def _log_processing(self, regulation_id, step, status, message, details=None):
+    def _log_processing(self, regulation_id, step, status, message, details=None, **kwargs):
         """
         Log processing steps to processinglogs table.
+        Accepts extra kwargs like document_url, version_id etc. and ignores them.
         """
         # Convert details dict to JSON string if provided
         details_json = json.dumps(details) if details else None
+
+        # Ignore extra kwargs like document_url, version_id
+        # They might be passed by callers but aren't stored in this table
 
         query = """
             INSERT INTO processinglogs (

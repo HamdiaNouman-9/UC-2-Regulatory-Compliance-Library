@@ -4,6 +4,8 @@ import hashlib
 from pathlib import Path
 import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from urllib.parse import urlparse
 import unicodedata
 import subprocess
@@ -24,14 +26,34 @@ class Downloader:
         self.retries = retries
         self.backoff = backoff
 
-        self.session = requests.Session()
-        self.session.headers.update({
+        # CREATE ROBUST SESSION WITH RETRY LOGIC
+        self.session = self._create_robust_session()
+
+    def _create_robust_session(self):
+        """Create session with retry logic for network issues"""
+        session = requests.Session()
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             )
         })
+
+        return session
 
     # FILENAME SANITIZER
     def _sanitize_filename(self, name: str) -> str:
@@ -100,6 +122,10 @@ class Downloader:
             if "pdf" in content_type:
                 print(f"[Downloader] HEAD detected PDF → binary download: {url}")
                 return self._download_binary(url, filename_safe, "pdf")
+        except requests.exceptions.ConnectionError as e:
+            print(f"[Downloader] HEAD request failed - DNS/Network error for {url}: {e}")
+            # Try binary download anyway
+            return self._download_binary(url, filename_safe, ext or "pdf")
         except Exception as e:
             print(f"[Downloader] HEAD request failed for {url}: {e}")
 
@@ -113,10 +139,16 @@ class Downloader:
         return ""
 
     def _download_binary(self, url: str, filename: str, ext: str):
+        """
+        Download binary file with enhanced error handling and retry logic
+        """
         file_path = self.download_dir / f"{filename}.{ext}"
 
         for attempt in range(1, self.retries + 1):
             try:
+                print(f"[Downloader] Attempting download ({attempt}/{self.retries}): {url}")
+
+                # ENHANCED ERROR HANDLING
                 resp = self.session.get(url, stream=True, timeout=60)
                 resp.raise_for_status()
 
@@ -125,14 +157,57 @@ class Downloader:
                         f.write(chunk)
 
                 file_hash = self._compute_hash(file_path)
-                print(f"[Downloader] Saved binary: {file_path}")
+                print(f"[Downloader] ✓ Saved binary: {file_path}")
                 return str(file_path), file_hash
 
-            except Exception as e:
-                print(f"[Downloader] Binary download failed ({attempt}/{self.retries}): {e}")
-                time.sleep(self.backoff * attempt)
+            except requests.exceptions.ConnectionError as e:
+                print(f"[Downloader] ✗ Network/DNS error ({attempt}/{self.retries}): {e}")
+                if "Failed to resolve" in str(e) or "getaddrinfo failed" in str(e):
+                    print(f"[Downloader] DNS resolution failed for: {urlparse(url).hostname}")
+                    print(f"[Downloader] Check: Internet connection, VPN, firewall, or domain accessibility")
 
-        raise RuntimeError(f"[Downloader] FAILED to download file after retries → {url}")
+                if attempt < self.retries:
+                    wait_time = self.backoff * attempt
+                    print(f"[Downloader] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise RuntimeError(
+                        f"Network error: Cannot reach {url}. "
+                        f"DNS resolution failed for '{urlparse(url).hostname}'. "
+                        f"Check internet connection or VPN requirements."
+                    )
+
+            except requests.exceptions.Timeout as e:
+                print(f"[Downloader] ✗ Timeout error ({attempt}/{self.retries}): {e}")
+                if attempt < self.retries:
+                    wait_time = self.backoff * attempt
+                    print(f"[Downloader] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise RuntimeError(f"Timeout: Server took too long to respond for {url}")
+
+            except requests.exceptions.HTTPError as e:
+                print(f"[Downloader] ✗ HTTP error ({attempt}/{self.retries}): {e}")
+                if e.response.status_code in [429, 500, 502, 503, 504]:
+                    # Retryable errors
+                    if attempt < self.retries:
+                        wait_time = self.backoff * attempt
+                        print(f"[Downloader] Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                else:
+                    # Non-retryable HTTP errors (404, 403, etc.)
+                    raise RuntimeError(f"HTTP {e.response.status_code}: {url}")
+
+            except Exception as e:
+                print(f"[Downloader] ✗ Unexpected error ({attempt}/{self.retries}): {e}")
+                if attempt < self.retries:
+                    wait_time = self.backoff * attempt
+                    print(f"[Downloader] Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+
+        raise RuntimeError(f"[Downloader] FAILED to download file after {self.retries} retries → {url}")
 
     def _html_to_pdf_subprocess(self, url: str, filename: str):
         """
