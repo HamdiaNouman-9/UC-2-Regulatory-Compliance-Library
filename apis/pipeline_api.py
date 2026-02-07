@@ -167,13 +167,6 @@ def get_regulations_by_regulator(
 ):
     """
     Get all regulations for a specific regulator with optional filters.
-
-    **Parameters:**
-    - **regulator**: Regulator name (SBP, SECP, SAMA, etc.) [required]
-    - **category_id**: Optional filter by compliance category ID
-    - **year**: Optional filter by year
-    - **limit**: Number of records to return (default: 100, max: 1000)
-    - **offset**: Offset for pagination (default: 0)
     """
     try:
         query = """
@@ -184,6 +177,7 @@ def get_regulations_by_regulator(
                 r.category,
                 r.title,
                 r.document_url,
+                r.document_html,
                 TRY_CAST(r.published_date AS DATETIME) AS published_date,
                 r.reference_no,
                 r.department,
@@ -201,7 +195,6 @@ def get_regulations_by_regulator(
             WHERE r.regulator = ?
         """
 
-        # Build parameters list
         params = [regulator.upper()]
 
         if category_id is not None:
@@ -212,7 +205,7 @@ def get_regulations_by_regulator(
             query += " AND r.[year] = ?"
             params.append(year)
 
-        # Pagination must always be included
+        # Pagination
         query += " ORDER BY r.published_date DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
         params.extend([offset, limit])
 
@@ -224,11 +217,14 @@ def get_regulations_by_regulator(
 
             regulations = []
             for row in rows:
-                reg_dict = row_to_dict(row, columns)
-                # Parse extra_meta JSON if exists
+                reg_dict = {col: row[idx] for idx, col in enumerate(columns)}
+
+                # Keep document_html but ignore extra_meta.org_pdf_html
                 if reg_dict.get('extra_meta'):
                     try:
                         reg_dict['extra_meta'] = json.loads(reg_dict['extra_meta'])
+                        # Remove org_pdf_html if present
+                        reg_dict['extra_meta'].pop('org_pdf_html', None)
                     except:
                         pass
 
@@ -244,11 +240,9 @@ def get_regulations_by_regulator(
             # Total count for pagination
             count_query = "SELECT COUNT(*) FROM regulations WHERE regulator = ?"
             count_params = [regulator.upper()]
-
             if category_id is not None:
                 count_query += " AND compliancecategory_id = ?"
                 count_params.append(category_id)
-
             if year is not None:
                 count_query += " AND [year] = ?"
                 count_params.append(year)
