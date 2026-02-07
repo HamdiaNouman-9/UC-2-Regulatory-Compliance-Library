@@ -4,6 +4,7 @@ import re
 from typing import Dict, Tuple, List
 from PIL import Image
 import pytesseract
+import platform
 
 try:
     import fitz  # PyMuPDF
@@ -17,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 class OCRProcessor:
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if platform.system() == "Windows":
+        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    else:
+        pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_PATH", "/usr/bin/tesseract")
 
     @staticmethod
     def is_ocr_available() -> bool:
