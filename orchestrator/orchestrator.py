@@ -12,6 +12,8 @@ from processor.Text_Extractor import OCRProcessor
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from processor.staged_LLM_Analyzer import StagedLLMAnalyzer
+import json
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -32,6 +34,7 @@ class Orchestrator:
         self.downloader = downloader
         self.ocr_engine = ocr_engine
         self.llm_analyzer = LLMAnalyzer()
+        self.staged_analyzer = StagedLLMAnalyzer()
         self.requirement_matcher = RequirementMatcher()
 
     def create_robust_session(self):
@@ -334,25 +337,39 @@ class Orchestrator:
                 self.log(regulation_id, "insert", "SUCCESS", "SAMA document inserted")
 
                 try:
-                    self.log(regulation_id, "llm_analysis", "STARTED", f"Starting LLM analysis ({content_type})")
+                    self.log(regulation_id, "llm_analysis", "STARTED",
+                             f"Starting 4-stage LLM analysis ({content_type})")
 
-                    analysis_result = self.llm_analyzer.analyze_regulation(
-                        content=text_content,
+                    # Normalize text first (same as before)
+                    from processor.LlmAnalyzer import LLMAnalyzer as _LLM
+                    clean_text = _LLM().normalize_input_text(text_content, content_type=content_type)
+
+                    # Run 4-stage pipeline
+                    rows = self.staged_analyzer.analyze(
+                        text=clean_text,
                         regulation_id=regulation_id,
                         document_title=doc.title,
-                        content_type=content_type
                     )
 
-                    self.repo.store_compliance_analysis(
-                        regulation_id=regulation_id,
-                        analysis_data=analysis_result
-                    )
+                    if not rows:
+                        raise ValueError("4-stage analysis returned no requirements")
+
+                    # Store — one row per requirement
+                    self.repo.store_staged_analysis(rows)
 
                     self.log(regulation_id, "llm_analysis", "SUCCESS",
-                             f"Analysis complete: {len(analysis_result.get('requirements', []))} requirements")
+                             f"4-stage analysis: {len(rows)} requirement rows stored")
 
-                    # ✅ STEP 2: Full matching
-                    self._run_requirement_matching(regulation_id, analysis_result)
+                    # Feed into requirement matcher using same interface as before
+                    # Build a combined dict that _run_requirement_matching understands
+                    combined_for_matcher = {
+                        "requirements": [
+                            json.loads(r["analysis_json"]) if isinstance(r["analysis_json"], str)
+                            else r["analysis_json"]
+                            for r in rows
+                        ]
+                    }
+                    self._run_requirement_matching(regulation_id, combined_for_matcher)
 
                 except Exception as e:
                     logger.error(f"LLM analysis failed for regulation {regulation_id}: {e}")
@@ -393,22 +410,35 @@ class Orchestrator:
             self.log(regulation_id, "insert", "SUCCESS", "Document inserted")
 
             if text_content and len(text_content) > 500:
+                # In normal flow, replace with:
                 try:
-                    self.log(regulation_id, "llm_analysis", "STARTED", "Starting LLM analysis")
-                    analysis_result = self.llm_analyzer.analyze_regulation(
-                        content=text_content,
-                        regulation_id=regulation_id,
-                        document_title=doc.title
-                    )
-                    self.repo.store_compliance_analysis(
-                        regulation_id=regulation_id,
-                        analysis_data=analysis_result
-                    )
-                    self.log(regulation_id, "llm_analysis", "SUCCESS",
-                             f"Analysis complete: {len(analysis_result.get('requirements', []))} requirements")
+                    self.log(regulation_id, "llm_analysis", "STARTED", "Starting 4-stage LLM analysis")
 
-                    # ✅ STEP 2: Full matching
-                    self._run_requirement_matching(regulation_id, analysis_result)
+                    from processor.LlmAnalyzer import LLMAnalyzer as _LLM
+                    clean_text = _LLM().normalize_input_text(text_content, content_type="pdf_text")
+
+                    rows = self.staged_analyzer.analyze(
+                        text=clean_text,
+                        regulation_id=regulation_id,
+                        document_title=doc.title,
+                    )
+
+                    if not rows:
+                        raise ValueError("4-stage analysis returned no requirements")
+
+                    self.repo.store_staged_analysis(rows)
+
+                    self.log(regulation_id, "llm_analysis", "SUCCESS",
+                             f"4-stage analysis: {len(rows)} requirement rows stored")
+
+                    combined_for_matcher = {
+                        "requirements": [
+                            json.loads(r["analysis_json"]) if isinstance(r["analysis_json"], str)
+                            else r["analysis_json"]
+                            for r in rows
+                        ]
+                    }
+                    self._run_requirement_matching(regulation_id, combined_for_matcher)
 
                 except Exception as e:
                     logger.error(f"LLM analysis failed: {e}")

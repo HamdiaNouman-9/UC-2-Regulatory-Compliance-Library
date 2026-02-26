@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict,List
 
 import pyodbc
 import json
@@ -1249,3 +1249,129 @@ class MSSQLRepository(DocumentRepository):
             except Exception as e:
                 logger.error(f"Failed to get KPI links for regulation {regulation_id}: {e}")
                 return []
+
+    def store_staged_analysis(self, rows: List[dict]) -> None:
+        """
+        Insert per-requirement rows from the 4-stage pipeline.
+        Each dict in rows maps directly to a compliance_analysis row.
+        Called instead of store_compliance_analysis() for v2 documents.
+        """
+        query = """
+            INSERT INTO compliance_analysis (
+                regulation_id, analysis_json,
+                requirement_id, requirement_title,
+                execution_category, criticality, obligation_type,
+                stage1_json, stage2_json, stage3_json, stage4_md,
+                schema_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                for row in rows:
+                    cursor.execute(query,
+                                   row["regulation_id"],
+                                   row["analysis_json"],
+                                   row.get("requirement_id"),
+                                   row.get("requirement_title"),
+                                   row.get("execution_category"),
+                                   row.get("criticality"),
+                                   row.get("obligation_type"),
+                                   row.get("stage1_json"),
+                                   row.get("stage2_json"),
+                                   row.get("stage3_json"),
+                                   row.get("stage4_md"),
+                                   )
+                conn.commit()
+                logger.info(f"Stored {len(rows)} staged analysis rows for regulation {rows[0]['regulation_id']}")
+        except Exception as e:
+            logger.error(f"Failed to store staged analysis: {e}")
+            raise
+
+    def get_compliance_analysis_v2(self, regulation_id: int) -> List[dict]:
+        """
+        Fetch all per-requirement rows for a regulation (v2 schema only).
+        Returns list ordered by requirement_id.
+        Used by the new /compliance-analysis-v2/{id} API endpoint.
+        """
+        query = """
+            SELECT
+                id, regulation_id,
+                requirement_id, requirement_title,
+                execution_category, criticality, obligation_type,
+                analysis_json, stage1_json, stage2_json, stage3_json, stage4_md,
+                schema_version, status,
+                CAST(created_at AS DATETIME2) as created_at,
+                CAST(updated_at AS DATETIME2) as updated_at
+            FROM compliance_analysis
+            WHERE regulation_id = ? AND schema_version = 'v2'
+            ORDER BY requirement_id
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, regulation_id)
+                cols = [c[0] for c in cursor.description]
+                rows = []
+                for row in cursor.fetchall():
+                    d = dict(zip(cols, row))
+                    # Parse JSON columns into dicts so API can return them directly
+                    for field in ("analysis_json", "stage1_json", "stage2_json", "stage3_json"):
+                        if d.get(field):
+                            try:
+                                d[field] = json.loads(d[field])
+                            except Exception:
+                                pass
+                    rows.append(d)
+                return rows
+        except Exception as e:
+            logger.error(f"Failed to get v2 analysis for regulation {regulation_id}: {e}")
+            return []
+
+    def get_stage4_executive_summary(self, regulation_id: int) -> str | None:
+        """
+        Returns the Stage 4 markdown string for a regulation.
+        Stored only on the first requirement row (stage4_md is NULL on all others).
+        Used by the /compliance-analysis-v2/{id}/executive-summary endpoint.
+        """
+        query = """
+            SELECT TOP 1 stage4_md
+            FROM compliance_analysis
+            WHERE regulation_id = ?
+              AND schema_version = 'v2'
+              AND stage4_md IS NOT NULL
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, regulation_id)
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Failed to get stage4 summary for regulation {regulation_id}: {e}")
+            return None
+
+    def get_control_links_by_requirement_ids(self, requirement_ids: list) -> list:
+        if not requirement_ids:
+            return []
+        placeholders = ",".join("?" * len(requirement_ids))
+        query = f"""
+            SELECT
+                crl.COMPLIANCEREQUIREMENT_ID,
+                crl.CONTROL_ID,
+                crl.MATCH_STATUS,
+                crl.MATCH_EXPLANATION,
+                crl.is_suggested,
+                c.title        AS control_title,
+                c.description  AS control_description,
+                c.control_key  AS control_key
+            FROM DEMO_REQUIREMENT_CONTROL_LINK crl
+            LEFT JOIN controls c ON crl.CONTROL_ID = c.id
+            WHERE crl.COMPLIANCEREQUIREMENT_ID IN ({placeholders})
+        """
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, requirement_ids)
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+

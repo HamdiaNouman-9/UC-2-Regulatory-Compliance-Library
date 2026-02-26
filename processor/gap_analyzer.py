@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class GapAnalyzer:
     """
-    Compares an uploaded internal policy document against extracted SAMA requirements
-    and returns a coverage verdict per requirement.
+    Compares an uploaded document against extracted regulatory obligations
+    and returns a coverage verdict per obligation.
     """
 
     def __init__(
@@ -36,26 +36,27 @@ class GapAnalyzer:
         requirements: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Compare uploaded document text against a list of requirements.
+        Compare uploaded document text against a list of obligations.
 
         Args:
-            uploaded_text:  Full text extracted from the user's uploaded PDF.
-            requirements:   List of requirement dicts from compliance_analysis.analysis_json.
-                            Each dict must have at least 'requirement_text'.
+            uploaded_text:  Full text extracted from the user's uploaded document.
+            requirements:   List of obligation dicts. Each dict must have at least
+                            'requirement_text' (used as the obligation text for analysis).
 
         Returns:
             List of result dicts with keys:
-                requirement_text, coverage_status, evidence_text, gap_description
+                obligation_text, requirement_text (alias), coverage_status,
+                evidence_text, gap_description
         """
         if not requirements:
-            logger.warning("No requirements provided for gap analysis")
+            logger.warning("No obligations provided for gap analysis")
             return []
 
         if not uploaded_text or len(uploaded_text) < 50:
             logger.error("Uploaded document text is too short for gap analysis")
             raise ValueError("Uploaded document text is insufficient for analysis")
 
-        # If uploaded doc is large, chunk it — but keep requirements intact
+        # If uploaded doc is large, chunk it — but keep obligations intact
         if len(uploaded_text) > self.max_chunk_size:
             logger.info(
                 f"Uploaded doc is large ({len(uploaded_text)} chars). "
@@ -91,17 +92,14 @@ class GapAnalyzer:
     ) -> List[Dict[str, Any]]:
         """
         Split uploaded doc into chunks, run gap analysis on each chunk,
-        then merge: if a requirement is 'covered' in ANY chunk, mark covered.
+        then merge: if an obligation is 'covered' in ANY chunk, mark covered.
         Partial beats missing. Covered beats partial.
         """
-        # Split uploaded text into chunks
         chunks = self._split_text(uploaded_text)
         logger.info(f"Split uploaded doc into {len(chunks)} chunks")
 
-        # Track best verdict per requirement index
-        # verdict priority: covered > partial > missing
         priority = {"covered": 2, "partial": 1, "missing": 0}
-        best_results: Dict[int, Dict] = {}  # req_index → best result so far
+        best_results: Dict[int, Dict] = {}
 
         for chunk_num, chunk_text in enumerate(chunks, start=1):
             logger.info(f"Analyzing chunk {chunk_num}/{len(chunks)}")
@@ -125,17 +123,18 @@ class GapAnalyzer:
                 logger.error(f"Chunk {chunk_num} failed: {e}")
                 continue
 
-        # Fill in any missing indexes with default missing verdict
         final_results = []
         for idx, req in enumerate(requirements):
             if idx in best_results:
                 final_results.append(best_results[idx])
             else:
+                ob_text = req.get("requirement_text", "")
                 final_results.append({
-                    "requirement_text": req.get("requirement_text", ""),
-                    "coverage_status": "missing",
-                    "evidence_text": None,
-                    "gap_description": "Requirement not found in uploaded document."
+                    "obligation_text":   ob_text,
+                    "requirement_text":  ob_text,   # backward-compat alias
+                    "coverage_status":   "missing",
+                    "evidence_text":     None,
+                    "gap_description":   "Obligation not found in uploaded document."
                 })
 
         return final_results
@@ -150,34 +149,34 @@ class GapAnalyzer:
         requirements: List[Dict[str, Any]]
     ) -> str:
 
-        # Format requirements as numbered list for the LLM
-        requirements_block = ""
+        obligations_block = ""
         for idx, req in enumerate(requirements, start=1):
-            req_text = req.get("requirement_text", "")
-            requirements_block += f"{idx}. {req_text}\n"
+            ob_text = req.get("requirement_text", "")
+            obligations_block += f"{idx}. {ob_text}\n"
 
         return f"""
-You are a senior banking compliance auditor specializing in Saudi Arabian regulations (SAMA).
+You are a senior compliance auditor specializing in regulatory analysis.
 
 You have been given:
-1. An INTERNAL POLICY DOCUMENT uploaded by the bank.
-2. A list of REGULATORY REQUIREMENTS extracted from a SAMA regulation.
+1. An UPLOADED DOCUMENT (this may be any type of document — a policy, procedure,
+   framework, guidelines, manual, contract, report, or any other document).
+2. A list of REGULATORY OBLIGATIONS extracted from a regulation.
 
-Your task is to assess how well the internal policy document covers each regulatory requirement.
+Your task is to assess how well the uploaded document covers each regulatory obligation.
 
 ================================================================================
-INTERNAL POLICY DOCUMENT:
+UPLOADED DOCUMENT:
 {uploaded_text}
 ================================================================================
 
-REGULATORY REQUIREMENTS TO CHECK:
-{requirements_block}
+REGULATORY OBLIGATIONS TO CHECK:
+{obligations_block}
 ================================================================================
 
-For EACH requirement, return one of three verdicts:
-- "covered"  → The document clearly and fully addresses this requirement.
-- "partial"  → The document touches on this requirement but does not fully address it.
-- "missing"  → The document does not address this requirement at all.
+For EACH obligation, return one of three verdicts:
+- "covered"  → The document clearly and fully addresses this obligation.
+- "partial"  → The document touches on this obligation but does not fully address it.
+- "missing"  → The document does not address this obligation at all.
 
 For each verdict also provide:
 - evidence_text: The exact excerpt from the uploaded document that supports your verdict.
@@ -188,14 +187,15 @@ For each verdict also provide:
 IMPORTANT RULES:
 - Base your verdict ONLY on the uploaded document text provided. Do not assume anything.
 - evidence_text must be a direct quote from the uploaded document, not paraphrased.
-- Be strict: "covered" means the document explicitly addresses the requirement.
+- Be strict: "covered" means the document explicitly addresses the obligation.
+- Do NOT assume the document is an internal policy — it could be any type of document.
 - Output ONLY raw JSON, no markdown, no code blocks.
 
 Output format:
 {{
   "results": [
     {{
-      "requirement_text": "<exact requirement text>",
+      "obligation_text": "<exact obligation text>",
       "coverage_status": "covered | partial | missing",
       "evidence_text": "<direct quote from uploaded doc or null>",
       "gap_description": "<what is lacking or null>"
@@ -216,9 +216,9 @@ Output format:
         """
         Parse LLM response into list of gap result dicts.
         Falls back to marking all as missing if parsing fails.
+        Returns both obligation_text and requirement_text (alias) for compatibility.
         """
         try:
-            # Strip markdown fences if present
             cleaned = re.sub(r'^```(?:json)?\s*', '', response_text.strip(), flags=re.IGNORECASE)
             cleaned = re.sub(r'\s*```$', '', cleaned)
 
@@ -228,14 +228,15 @@ Output format:
             if not results:
                 raise ValueError("Empty results array in LLM response")
 
-            # Validate each result has required fields
             validated = []
             for item in results:
+                ob_text = item.get("obligation_text") or item.get("requirement_text", "")
                 validated.append({
-                    "requirement_text": item.get("requirement_text", ""),
-                    "coverage_status": item.get("coverage_status", "missing"),
-                    "evidence_text": item.get("evidence_text") or None,
-                    "gap_description": item.get("gap_description") or None
+                    "obligation_text":  ob_text,
+                    "requirement_text": ob_text,   # backward-compat alias for GapResult model
+                    "coverage_status":  item.get("coverage_status", "missing"),
+                    "evidence_text":    item.get("evidence_text") or None,
+                    "gap_description":  item.get("gap_description") or None
                 })
 
             logger.info(f"Parsed {len(validated)} gap results from LLM response")
@@ -245,13 +246,13 @@ Output format:
             logger.error(f"Failed to parse gap analysis response: {e}")
             logger.error(f"Raw response preview: {response_text[:300]}")
 
-            # Fallback: mark all requirements as missing
             return [
                 {
+                    "obligation_text":  req.get("requirement_text", ""),
                     "requirement_text": req.get("requirement_text", ""),
-                    "coverage_status": "missing",
-                    "evidence_text": None,
-                    "gap_description": "Analysis failed — could not parse LLM response."
+                    "coverage_status":  "missing",
+                    "evidence_text":    None,
+                    "gap_description":  "Analysis failed — could not parse LLM response."
                 }
                 for req in requirements
             ]
@@ -285,7 +286,7 @@ Output format:
             "Authorization": f"Bearer {self.openrouter_api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "http://localhost:3000",
-            "X-Title": "Saudi Banking Compliance Copilot"
+            "X-Title": "Regulatory Compliance Copilot"
         }
 
         payload = {
@@ -294,9 +295,9 @@ Output format:
                 {
                     "role": "system",
                     "content": (
-                        "You are a senior banking compliance auditor with deep expertise in "
-                        "Saudi Arabian regulations (SAMA). You assess policy documents against "
-                        "regulatory requirements with precision and without hallucination."
+                        "You are a senior compliance auditor with deep expertise in "
+                        "regulatory analysis. You assess documents against regulatory "
+                        "obligations with precision and without hallucination."
                     )
                 },
                 {

@@ -17,12 +17,16 @@ from processor.gap_analyzer import GapAnalyzer
 from processor.Text_Extractor import OCRProcessor
 import docx as python_docx
 from fastapi.responses import JSONResponse, Response
+from processor.staged_LLM_Analyzer import StagedLLMAnalyzer
+from processor.requirement_matcher import RequirementMatcher
+from orchestrator.orchestrator import Orchestrator
 
 from utils.lang_translator import (
     translate_regulation,
     translate_gap_result,
     translate_compliance_requirement,
     translate_texts_batch,
+    translate_v2_gap_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,7 +126,27 @@ def _invalidate_ar_cache(regulation_id: int):
         logger.warning(f"AR cache invalidation failed for regulation {regulation_id}: {e}")
 
 # ====================================================
+# ================= CONTROL COMPARISON HELPER =================
 
+def _build_stage3_control_entry(control_detail: dict, comparison_result: str = "ai_designed") -> dict:
+    return {
+        "control_id":              None,
+        "control_title":           control_detail.get("control_title"),
+        "control_description":     control_detail.get("control_description"),
+        "control_objective":       control_detail.get("control_objective"),
+        "control_owner":           control_detail.get("control_owner"),
+        "control_type":            control_detail.get("control_type"),
+        "execution_type":          control_detail.get("execution_type"),
+        "frequency":               control_detail.get("frequency"),
+        "control_level":           control_detail.get("control_level"),
+        "evidence_generated":      control_detail.get("evidence_generated"),
+        "key_steps":               control_detail.get("key_steps", []),
+        "residual_risk_if_failed": control_detail.get("residual_risk_if_failed"),
+        "match_status":            "ai_designed",
+        "is_suggested":            True,
+        "source":                  "stage3_llm",
+        "comparison_result":       comparison_result,
+    }
 
 def update_heartbeat(regulator: str):
     with repo._get_conn() as conn:
@@ -286,20 +310,32 @@ class SingleRegulationResponse(BaseModel):
     success: bool
     data: RegulationModel
 
-
 class StatusUpdate(BaseModel):
     record_id: int
+    status: str
+
+class ComplianceStatusUpdate(BaseModel):
+    regulation_id: int
+    requirement_id: str
     status: str
 
 
 # ================= GAP ANALYSIS MODELS =================
 class GapResult(BaseModel):
-    requirement_text: str
+    # Primary field — obligation text (the atomic regulatory unit)
+    obligation_text: Optional[str] = None
     coverage_status: str
     evidence_text: Optional[str]
     gap_description: Optional[str]
     controls: Optional[str] = None
     kpis: Optional[str] = None
+    # V2 enrichment fields — only populated for v2 gap analysis endpoints
+    obligation_id: Optional[str] = None
+    requirement_id: Optional[str] = None
+    requirement_title: Optional[str] = None
+    criticality: Optional[str] = None
+    obligation_type: Optional[str] = None
+    execution_category: Optional[str] = None
 
 
 class RegulationGapSummary(BaseModel):
@@ -314,16 +350,7 @@ class GapAnalysisResponse(BaseModel):
     regulations: List[RegulationGapSummary]
 
 
-# ================= GAP ANALYSIS HELPERS =================
-def _extract_requirements_from_analysis(analysis_data) -> list:
-    try:
-        data = json.loads(analysis_data) if isinstance(analysis_data, str) else analysis_data
-        return data.get("requirements", [])
-    except Exception as e:
-        logger.error(f"Failed to parse analysis_json: {e}")
-        return []
-
-
+# ================= FILE HELPERS =================
 async def _save_and_extract_file(upload_file: UploadFile) -> str:
     filename = upload_file.filename.lower()
     suffix = os.path.splitext(filename)[-1] or ".pdf"
@@ -349,60 +376,226 @@ async def _save_and_extract_file(upload_file: UploadFile) -> str:
             os.remove(tmp_path)
 
 
-def _run_gap_for_regulation(session_id: int, regulation_id: int, uploaded_text: str) -> RegulationGapSummary:
-    analysis = repo.get_compliance_analysis(regulation_id)
-    if not analysis:
-        raise HTTPException(status_code=404, detail=f"No compliance analysis found for regulation {regulation_id}")
+# ================= V2 GAP HELPERS =================
 
-    requirements = _extract_requirements_from_analysis(analysis["analysis_data"])
-    if not requirements:
-        raise HTTPException(status_code=404, detail=f"No requirements found for regulation {regulation_id}")
+# Only these fields contain human-readable text safe to translate.
+# Intentionally excludes: obligation_id, requirement_id, criticality,
+# obligation_type, execution_category, coverage_status (all are IDs/enums).
+_V2_GAP_TRANSLATABLE_FIELDS = [
+    "obligation_text",
+    "evidence_text",
+    "gap_description",
+    "controls",
+    "kpis",
+    "requirement_title",
+]
 
-    logger.info(f"Running gap analysis: regulation {regulation_id}, {len(requirements)} requirements")
 
-    results = gap_analyzer.analyze_gaps(uploaded_text=uploaded_text, requirements=requirements)
+def _run_gap_for_regulation_v2(session_id: int, regulation_id: int, uploaded_text: str) -> RegulationGapSummary:
+    """
+    V2 gap analysis helper.
+
+    1. Flattens all obligations from staged_analysis (stage2_json) into
+       individual gap-check units, each keyed by obligation_text.
+    2. Passes only requirement_text to GapAnalyzer (the LLM only needs text).
+    3. Post-merges all v2 metadata back onto each result using
+       obligation_text as the join key.
+    4. Builds an enriched summary with breakdowns by criticality and
+       execution_category in addition to the standard covered/partial/missing.
+    """
+    rows = repo.get_compliance_analysis_v2(regulation_id)
+    if not rows:
+        raise HTTPException(404, f"No v2 analysis for regulation {regulation_id}. "
+                                 f"Run POST /trigger/staged-analysis/{regulation_id} first.")
+
+    requirements_for_gap = []
+    # Metadata lookup: obligation_text → all v2 fields for that obligation
+    ob_metadata: Dict[str, Dict] = {}
+
+    for row in rows:
+        s2 = row.get("stage2_json") or {}
+        if isinstance(s2, str):
+            try:
+                s2 = json.loads(s2)
+            except Exception:
+                s2 = {}
+        for ob in s2.get("normalized_obligations", []):
+            ob_text = ob["obligation_text"]
+            meta = {
+                "obligation_id":      ob["obligation_id"],
+                "requirement_id":     row["requirement_id"],
+                "requirement_title":  row["requirement_title"],
+                "criticality":        ob.get("criticality"),
+                "obligation_type":    ob.get("obligation_type"),
+                "execution_category": ob.get("execution_category"),
+            }
+            requirements_for_gap.append({"requirement_text": ob_text})
+            ob_metadata[ob_text] = meta
+
+    if not requirements_for_gap:
+        raise HTTPException(404, f"No obligations found in v2 analysis for regulation {regulation_id}")
+
+    logger.info(f"[v2] Running gap analysis: regulation {regulation_id}, {len(requirements_for_gap)} obligations")
+
+    results = gap_analyzer.analyze_gaps(uploaded_text=uploaded_text, requirements=requirements_for_gap)
     repo.store_gap_results(session_id, regulation_id, results)
 
+    # Post-merge: join v2 metadata back onto each result via obligation_text
+    enriched_results: List[GapResult] = []
+    for r in results:
+        ob_text = r.get("obligation_text") or r.get("requirement_text", "")
+        meta = ob_metadata.get(ob_text, {})
+        enriched_results.append(GapResult(
+            obligation_text=ob_text,
+            coverage_status=r.get("coverage_status", "missing"),
+            evidence_text=r.get("evidence_text"),
+            gap_description=r.get("gap_description"),
+            obligation_id=meta.get("obligation_id"),
+            requirement_id=meta.get("requirement_id"),
+            requirement_title=meta.get("requirement_title"),
+            criticality=meta.get("criticality"),
+            obligation_type=meta.get("obligation_type"),
+            execution_category=meta.get("execution_category"),
+        ))
+
+    # Build enriched summary
+    exec_values = sorted({r.execution_category for r in enriched_results if r.execution_category})
     summary = {
-        "total":   len(results),
-        "covered": sum(1 for r in results if r["coverage_status"] == "covered"),
-        "partial": sum(1 for r in results if r["coverage_status"] == "partial"),
-        "missing": sum(1 for r in results if r["coverage_status"] == "missing")
+        "total":   len(enriched_results),
+        "covered": sum(1 for r in enriched_results if r.coverage_status == "covered"),
+        "partial": sum(1 for r in enriched_results if r.coverage_status == "partial"),
+        "missing": sum(1 for r in enriched_results if r.coverage_status == "missing"),
+        "by_criticality": {
+            "High":   sum(1 for r in enriched_results if r.criticality == "High"),
+            "Medium": sum(1 for r in enriched_results if r.criticality == "Medium"),
+            "Low":    sum(1 for r in enriched_results if r.criticality == "Low"),
+        },
+        "by_execution_category": {
+            ec: sum(1 for r in enriched_results if r.execution_category == ec)
+            for ec in exec_values
+        },
     }
 
     return RegulationGapSummary(
         regulation_id=regulation_id,
-        results=[GapResult(**r) for r in results],
+        results=enriched_results,
         summary=summary
     )
 
 
-def _enrich_results_with_controls_kpis(
-        results: List[GapResult],
-        regulation_id: int
-) -> List[GapResult]:
-    analysis = repo.get_compliance_analysis(regulation_id)
-    if not analysis:
+def _enrich_results_with_controls_v2(results: List[GapResult], regulation_id: int) -> List[GapResult]:
+    """
+    V2 control enrichment. Pulls control titles from stage3_json.
+    Matches on obligation_text (primary key) or requirement_text (alias).
+    Does NOT overwrite any v2 metadata already on the result object.
+    """
+    rows = repo.get_compliance_analysis_v2(regulation_id)
+    if not rows:
         return results
 
-    requirements = _extract_requirements_from_analysis(analysis["analysis_data"])
-    req_lookup = {r["requirement_text"]: r for r in requirements}
+    ob_text_to_control: Dict[str, str] = {}
+    for row in rows:
+        s2 = row.get("stage2_json") or {}
+        s3 = row.get("stage3_json") or {}
+        if isinstance(s2, str):
+            try:
+                s2 = json.loads(s2)
+            except Exception:
+                s2 = {}
+        if isinstance(s3, str):
+            try:
+                s3 = json.loads(s3)
+            except Exception:
+                s3 = {}
+
+        control_map = {
+            ob["obligation_id"]: ob.get("control")
+            for ob in s3.get("obligations", [])
+            if ob.get("control")
+        }
+        for ob in s2.get("normalized_obligations", []):
+            ctrl = control_map.get(ob["obligation_id"])
+            if ctrl:
+                ob_text_to_control[ob["obligation_text"]] = ctrl.get("control_title", "")
 
     for result in results:
-        match = req_lookup.get(result.requirement_text)
-        if match:
-            controls = match.get("controls")
-            kpis = match.get("kpis")
-            # controls/kpis may be a list (from analysis JSON) or already a string
-            if isinstance(controls, list):
-                controls = ", ".join(str(c) for c in controls if c)
-            if isinstance(kpis, list):
-                kpis = ", ".join(str(k) for k in kpis if k)
-            result.controls = controls
-            result.kpis = kpis
+        lookup_key = result.obligation_text or result.requirement_text
+        ctrl_title = ob_text_to_control.get(lookup_key)
+        if ctrl_title:
+            result.controls = ctrl_title
 
     return results
 
+
+def _translate_v2_gap_results(results: List[GapResult], lang: str) -> List[GapResult]:
+    """
+    Translate human-readable text fields AND enum/status fields on v2 GapResult objects.
+    """
+    # Enum/Status Value Translations - EXPANDED
+    ENUM_TRANSLATIONS = {
+        "coverage_status": {
+            "covered": "مغطى",
+            "partial": "جزئي",
+            "missing": "مفقود"
+        },
+        "criticality": {
+            "High": "عالي",
+            "Medium": "متوسط",
+            "Low": "منخفض"
+        },
+        "obligation_type": {
+            "Reporting": "إبلاغ",
+            "Governance": "حوكمة",
+            "Preventive": "وقائي",
+            "Detective": "كشف",
+            "Corrective": "تصحيحي"
+        },
+        "execution_category": {
+            "Ongoing_Control": "رقابة مستمرة",
+            "One_Time_Implementation": "تنفيذ لمرة واحدة",
+            "Periodic_Review": "مراجعة دورية",
+            "Governance_Approval": "موافقة الحوكمة",
+            "One_Off_Reporting": "إبلاغ لمرة واحدة",
+            "Event_Driven": "حسب الحدث",
+            "Continuous_Monitoring": "مراقبة مستمرة",
+            "Annual_Review": "مراجعة سنوية"
+        }
+    }
+
+    # Text fields to translate via batch API
+    TEXT_FIELDS = [
+        "obligation_text",
+        "evidence_text",
+        "gap_description",
+        "controls",
+        "kpis",
+        "requirement_title",
+    ]
+
+    results_dicts = [r.dict() for r in results]
+
+    # 1. Translate enum/status fields
+    for r in results_dicts:
+        for field, translations in ENUM_TRANSLATIONS.items():
+            val = r.get(field)
+            if val and field in ENUM_TRANSLATIONS:
+                r[field] = ENUM_TRANSLATIONS[field].get(val, val)
+
+    # 2. Collect and translate text fields via batch API
+    all_texts, positions = [], []
+    for i, r in enumerate(results_dicts):
+        for f in TEXT_FIELDS:
+            val = r.get(f)
+            if val and isinstance(val, str):
+                all_texts.append(val)
+                positions.append((i, f))
+
+    if all_texts:
+        translated = translate_texts_batch(all_texts, lang)
+        for (i, f), tr in zip(positions, translated):
+            results_dicts[i][f] = tr
+
+    return [GapResult(**r) for r in results_dicts]
 
 # ================= STARTUP =================
 @app.on_event("startup")
@@ -529,7 +722,6 @@ def get_regulations_by_regulator(
 ):
     lang = _validate_lang(lang)
     try:
-        # include all params in key so different pages/filters cache separately
         if lang == "ar":
             cache_key = f"GET /regulations/{regulator}?category_id={category_id}&year={year}&limit={limit}&offset={offset}"
             cached = _get_ar_cache(cache_key)
@@ -698,282 +890,567 @@ def get_regulation_detail(
 
 # ================= COMPLIANCE ANALYSIS ENDPOINTS =================
 
-@app.get("/compliance-analysis/{regulation_id}", response_model=ComplianceAnalysisResponse)
-def get_compliance_analysis(
-    regulation_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
-    lang = _validate_lang(lang)
-    try:
-        if lang == "ar":
-            cache_key = f"GET /compliance-analysis/{regulation_id}"
-            cached = _get_ar_cache(cache_key)
-            if cached:
-                return cached
-
-        query = """
-            SELECT id, regulation_id, analysis_json,
-                   CAST(created_at AS DATETIME2) as created_at,
-                   CAST(updated_at AS DATETIME2) as updated_at
-            FROM compliance_analysis
-            WHERE regulation_id = ?
-        """
-        with repo._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, (regulation_id,))
-            row = cursor.fetchone()
-            if not row:
-                raise HTTPException(status_code=200, detail=f"Compliance analysis not found for regulation ID {regulation_id}")
-            columns = [col[0] for col in cursor.description]
-            analysis_dict = row_to_dict(row, columns)
-            if analysis_dict.get("analysis_json"):
-                try:
-                    analysis_dict["analysis_json"] = json.loads(analysis_dict["analysis_json"])
-                except:
-                    pass
-
-        if lang == "ar" and isinstance(analysis_dict.get("analysis_json"), dict):
-            reqs = analysis_dict["analysis_json"].get("requirements", [])
-            if reqs:
-                analysis_dict["analysis_json"]["requirements"] = [
-                    translate_compliance_requirement(r, lang) for r in reqs
-                ]
-
-        response = {"success": True, "lang": lang, "data": analysis_dict}
-
-        if lang == "ar":
-            _set_ar_cache(cache_key, response)
-
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error fetching compliance analysis for regulation {regulation_id}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch compliance analysis: {str(e)}")
-
 
 def build_full_mapping_response(regulation_id: int, lang: str):
     req_mappings = repo.get_requirement_mappings_by_regulation(regulation_id)
-    ctrl_links   = repo.get_control_links_by_regulation(regulation_id)
-    kpi_links    = repo.get_kpi_links_by_regulation(regulation_id)
+    v2_rows      = repo.get_compliance_analysis_v2(regulation_id)
 
-    controls_by_req = {}
-    for ctrl in ctrl_links:
+    # ── Build v2 lookup: obligation_id → full obligation + control from stage2/3 ──
+    ob_id_to_detail: Dict[str, dict] = {}   # obligation_id → stage2 obligation dict
+    ob_id_to_control: Dict[str, dict] = {}  # obligation_id → stage3 control dict
+    req_id_to_v2_meta: Dict[str, dict] = {} # requirement_id (e.g. REQ-001) → row meta
+
+    for row in v2_rows:
+        s2 = row.get("stage2_json") or {}
+        s3 = row.get("stage3_json") or {}
+        if isinstance(s2, str):
+            try: s2 = json.loads(s2)
+            except: s2 = {}
+        if isinstance(s3, str):
+            try: s3 = json.loads(s3)
+            except: s3 = {}
+
+        req_id_to_v2_meta[row["requirement_id"]] = {
+            "requirement_id":     row["requirement_id"],
+            "requirement_title":  row["requirement_title"],
+            "execution_category": row.get("execution_category"),
+            "criticality":        row.get("criticality"),
+            "obligation_type":    row.get("obligation_type"),
+        }
+
+        # stage3 control map: obligation_id → control dict
+        s3_control_map = {
+            ob["obligation_id"]: ob.get("control")
+            for ob in s3.get("obligations", [])
+            if ob.get("obligation_id") and ob.get("control")
+        }
+
+        for ob in s2.get("normalized_obligations", []):
+            ob_id = ob["obligation_id"]
+            ob_id_to_detail[ob_id] = ob
+            ctrl = s3_control_map.get(ob_id)
+            if ctrl:
+                ob_id_to_control[ob_id] = ctrl
+
+    # ── Fetch existing DB controls/KPIs linked to matched requirement IDs ──
+    matched_req_ids = list({
+        m["matched_requirement_id"]
+        for m in req_mappings
+        if m.get("matched_requirement_id")
+    })
+
+    # Controls linked to this regulation (newly stored links)
+    ctrl_links_reg = repo.get_control_links_by_regulation(regulation_id)
+
+    # Controls linked to matched requirement IDs (pre-existing links from other regulations)
+    ctrl_links_req = repo.get_control_links_by_requirement_ids(matched_req_ids) if matched_req_ids else []
+
+    # Merge both sets, dedup by (req_id, control_id)
+    seen_ctrl = set()
+    all_ctrl_links = []
+    for c in ctrl_links_reg + ctrl_links_req:
+        key = (c["COMPLIANCEREQUIREMENT_ID"], c["CONTROL_ID"])
+        if key not in seen_ctrl:
+            seen_ctrl.add(key)
+            all_ctrl_links.append(c)
+
+
+    # Index by matched_requirement_id
+    existing_controls_by_req: Dict[int, list] = {}
+    for ctrl in all_ctrl_links:
         req_id = ctrl["COMPLIANCEREQUIREMENT_ID"]
-        controls_by_req.setdefault(req_id, []).append({
-            "control_id": ctrl["CONTROL_ID"],
-            "control_title": ctrl.get("control_title"),
-            "control_description": ctrl.get("control_description"),
-            "control_key": ctrl.get("control_key"),
-            "match_status": ctrl["MATCH_STATUS"],
-            "match_explanation": ctrl.get("MATCH_EXPLANATION"),
-            "is_suggested": ctrl.get("is_suggested") == 1
-        })
+        existing_controls_by_req.setdefault(req_id, []).append(ctrl)
 
-    kpis_by_req = {}
-    for kpi in kpi_links:
-        req_id = kpi["COMPLIANCEREQUIREMENT_ID"]
-        kpis_by_req.setdefault(req_id, []).append({
-            "kisetup_id": kpi["KISETUP_ID"],
-            "kpi_title": kpi.get("kpi_title"),
-            "kpi_description": kpi.get("kpi_description"),
-            "kisetup_key": kpi.get("kisetup_key"),
-            "formula": kpi.get("formula"),
-            "match_status": kpi["MATCH_STATUS"],
-            "match_explanation": kpi.get("MATCH_EXPLANATION"),
-            "is_suggested": kpi.get("is_suggested") == 1
-        })
 
-    # ── Build grouped entries (English first) ────────────────────────────
+    # ── Build grouped response ──
     grouped = []
     for mapping in req_mappings:
-        matched_req_id = mapping.get("matched_requirement_id")
+        matched_req_id   = mapping.get("matched_requirement_id")
+        obligation_id    = mapping.get("obligation_id")
+        v2_req_id        = mapping.get("requirement_id")  # e.g. "REQ-001"
+
+        # Pull v2 meta for this obligation's parent requirement
+        v2_meta = req_id_to_v2_meta.get(v2_req_id, {})
+
+        # Stage2 obligation detail
+        ob_detail = ob_id_to_detail.get(obligation_id, {}) if obligation_id else {}
+
+        # Stage3 AI-designed control for this obligation
+        stage3_control = ob_id_to_control.get(obligation_id) if obligation_id else None
+        db_controls = existing_controls_by_req.get(matched_req_id, [])
+
+        # ── Control matching logic ──
+        controls_output = []
+        if db_controls:
+            # Compare each existing DB control against the stage3 AI control
+            for db_ctrl in db_controls:
+                ctrl_entry = {
+                    "control_id":          db_ctrl["CONTROL_ID"],
+                    "control_title":       db_ctrl.get("control_title"),
+                    "control_description": db_ctrl.get("control_description"),
+                    "control_key":         db_ctrl.get("control_key"),
+                    "match_status":        db_ctrl["MATCH_STATUS"],
+                    "match_explanation":   db_ctrl.get("MATCH_EXPLANATION"),
+                    "is_suggested":        db_ctrl.get("is_suggested") == 1,
+                    "source":              "existing_db",
+                    "comparison_result":   "existing_matched",
+                }
+                # Attach stage3 detail if titles are similar
+                if stage3_control:
+                    db_title = (db_ctrl.get("control_title") or "").lower().strip()
+                    s3_title = (stage3_control.get("control_title") or "").lower().strip()
+                    if db_title == s3_title or db_title in s3_title or s3_title in db_title:
+                        ctrl_entry["comparison_result"] = "matched_with_ai"
+                        ctrl_entry["control_objective"]       = stage3_control.get("control_objective")
+                        ctrl_entry["control_owner"]           = stage3_control.get("control_owner")
+                        ctrl_entry["control_type"]            = stage3_control.get("control_type")
+                        ctrl_entry["execution_type"]          = stage3_control.get("execution_type")
+                        ctrl_entry["frequency"]               = stage3_control.get("frequency")
+                        ctrl_entry["control_level"]           = stage3_control.get("control_level")
+                        ctrl_entry["evidence_generated"]      = stage3_control.get("evidence_generated")
+                        ctrl_entry["key_steps"]               = stage3_control.get("key_steps", [])
+                        ctrl_entry["residual_risk_if_failed"] = stage3_control.get("residual_risk_if_failed")
+                controls_output.append(ctrl_entry)
+
+        # If stage3 has an AI-designed control but NO existing DB control matched → add as new
+        if stage3_control:
+            matched_titles = {
+                (c.get("control_title") or "").lower().strip()
+                for c in db_controls
+            }
+            s3_title = (stage3_control.get("control_title") or "").lower().strip()
+            already_represented = any(
+                s3_title == t or s3_title in t or t in s3_title
+                for t in matched_titles
+            ) if matched_titles else False
+
+            if not already_represented:
+                controls_output.append({
+                    "control_id":              None,
+                    "control_title":           stage3_control.get("control_title"),
+                    "control_description":     stage3_control.get("control_description"),
+                    "control_objective":       stage3_control.get("control_objective"),
+                    "control_owner":           stage3_control.get("control_owner"),
+                    "control_type":            stage3_control.get("control_type"),
+                    "execution_type":          stage3_control.get("execution_type"),
+                    "frequency":               stage3_control.get("frequency"),
+                    "control_level":           stage3_control.get("control_level"),
+                    "evidence_generated":      stage3_control.get("evidence_generated"),
+                    "key_steps":               stage3_control.get("key_steps", []),
+                    "residual_risk_if_failed": stage3_control.get("residual_risk_if_failed"),
+                    "match_status":            "new",
+                    "match_explanation":       "AI-designed control from staged analysis; no existing control matched.",
+                    "is_suggested":            True,
+                    "source":                  "stage3_llm",
+                    "comparison_result":       "ai_designed",
+                })
+
+
+
         entry = {
-            "extracted_requirement_text": mapping["extracted_requirement_text"],
-            "match_status": mapping["match_status"],
-            "match_explanation": mapping.get("match_explanation"),
-            "matched_requirement_id": matched_req_id,
-            "matched_requirement_title": mapping.get("matched_requirement_title"),
+            # Obligation-level fields
+            "obligation_id":              obligation_id,
+            "obligation_requirement_id":  v2_req_id,
+            "obligation_text":            ob_detail.get("obligation_text") or mapping["extracted_requirement_text"],
+            "obligation_type":            ob_detail.get("obligation_type") or v2_meta.get("obligation_type"),
+            "criticality":                ob_detail.get("criticality") or v2_meta.get("criticality"),
+            "execution_category":         ob_detail.get("execution_category") or v2_meta.get("execution_category"),
+            "evidence_expected":          ob_detail.get("evidence_expected", []),
+            "test_method":                ob_detail.get("test_method"),
+            "clarity_score":              ob_detail.get("clarity_score"),
+            "needs_manual_review":        ob_detail.get("needs_manual_review"),
+            "source_reference":           ob_detail.get("source_reference"),
+            # Requirement-level matching fields
+            "matched_requirement_id":          matched_req_id,
+            "matched_requirement_title":       mapping.get("matched_requirement_title"),
             "matched_requirement_description": mapping.get("matched_requirement_description"),
-            "controls": controls_by_req.get(matched_req_id, []),
-            "kpis": kpis_by_req.get(matched_req_id, []),
+            "match_status":                    mapping["match_status"],
+            "match_explanation":               mapping.get("match_explanation"),
+            # Parent requirement group info
+            "requirement_group": {
+                "requirement_id":     v2_meta.get("requirement_id"),
+                "requirement_title":  v2_meta.get("requirement_title"),
+                "execution_category": v2_meta.get("execution_category"),
+                "criticality":        v2_meta.get("criticality"),
+            },
+            "controls": controls_output,
         }
         grouped.append(entry)
 
-    # ── Translate everything in ONE batch call ───────────────────────────
+    # ── Arabic translation ──
     if lang == "ar":
-        # Collect every translatable string with its location
-        REQ_TEXT_FIELDS = [
-            "extracted_requirement_text", "match_explanation",
-            "matched_requirement_title", "matched_requirement_description",
-        ]
-        CTRL_TEXT_FIELDS = ["control_title", "control_description", "match_explanation"]
-        KPI_TEXT_FIELDS  = ["kpi_title", "kpi_description", "match_explanation"]
+        OB_TEXT_FIELDS   = ["obligation_text", "test_method", "match_explanation",
+                             "matched_requirement_title", "matched_requirement_description"]
+        CTRL_TEXT_FIELDS = ["control_title", "control_description", "control_objective",
+                             "control_owner", "match_explanation", "evidence_generated"]
 
         all_texts: list[str] = []
-        positions: list[tuple] = []  # (entry_idx, field_or_path, sub_idx?)
+        positions: list[tuple] = []
 
         for i, entry in enumerate(grouped):
-            # requirement-level fields
-            for f in REQ_TEXT_FIELDS:
+            for f in OB_TEXT_FIELDS:
                 val = entry.get(f)
                 if val and isinstance(val, str):
                     all_texts.append(val)
-                    positions.append(("req", i, f, None))
-
-            # controls
+                    positions.append(("ob", i, f, None, None))
             for j, ctrl in enumerate(entry["controls"]):
                 for f in CTRL_TEXT_FIELDS:
                     val = ctrl.get(f)
                     if val and isinstance(val, str):
                         all_texts.append(val)
-                        positions.append(("ctrl", i, f, j))
+                        positions.append(("ctrl", i, f, j, None))
+                # Translate key_steps list
+                for k_idx, step in enumerate(ctrl.get("key_steps") or []):
+                    if step and isinstance(step, str):
+                        all_texts.append(step)
+                        positions.append(("step", i, "key_steps", j, k_idx))
 
-            # kpis
-            for j, kpi in enumerate(entry["kpis"]):
-                for f in KPI_TEXT_FIELDS:
-                    val = kpi.get(f)
+
+        if all_texts:
+            import copy
+            grouped = copy.deepcopy(grouped)
+            translated = translate_texts_batch(all_texts, lang)
+            for (kind, i, f, j, k_idx), tr in zip(positions, translated):
+                if kind == "ob":
+                    grouped[i][f] = tr
+                elif kind == "ctrl":
+                    grouped[i]["controls"][j][f] = tr
+                elif kind == "step":
+                    grouped[i]["controls"][j]["key_steps"][k_idx] = tr
+
+
+    # ── Summary ──
+    fully   = sum(1 for r in req_mappings if r["match_status"] == "fully_matched")
+    partial = sum(1 for r in req_mappings if r["match_status"] == "partially_matched")
+    new     = sum(1 for r in req_mappings if r["match_status"] == "new")
+
+    total_controls    = sum(len(e["controls"]) for e in grouped)
+    ai_ctrl_count     = sum(
+        1 for e in grouped for c in e["controls"] if c.get("source") == "stage3_llm"
+    )
+    matched_ctrl_count = sum(
+        1 for e in grouped for c in e["controls"] if c.get("comparison_result") == "matched_with_ai"
+    )
+
+    return {
+        "requirements": grouped,
+        "summary": {
+            "requirements": {
+                "total":             len(req_mappings),
+                "fully_matched":     fully,
+                "partially_matched": partial,
+                "new":               new,
+            },
+            "controls": {
+                "total":             total_controls,
+                "existing_matched":  matched_ctrl_count,
+                "ai_designed_new":   ai_ctrl_count,
+            }
+        }
+    }
+
+
+# ================= COMPLIANCE ANALYSIS ENDPOINTS =================
+
+# ================= HELPER FUNCTIONS =================
+# ... (keep existing helpers like serialize_datetime, row_to_dict, etc.)
+
+def build_v2_full_analysis_response(regulation_id: int, lang: str):
+    """
+    Builds the V2 Full Analysis Response with Nested Structure:
+    Requirements -> Obligations -> Control
+    Includes detailed mapping info (match_explanation, matched_requirement_id).
+    """
+    # 1. Fetch V2 Analysis (Requirements & Obligations from stage2, Controls from stage3)
+    v2_rows = repo.get_compliance_analysis_v2(regulation_id)
+    if not v2_rows:
+        return {"requirements": [], "summary": {}}
+
+    # 2. Fetch Requirement Mappings (For match_status, explanation, matched_id)
+    req_mappings = repo.get_requirement_mappings_by_regulation(regulation_id)
+
+    # Create lookup for mapping details by obligation_id or obligation_text
+    mapping_lookup = {}
+    for m in req_mappings:
+        key = m.get("obligation_id") or m.get("extracted_requirement_text")
+        if key:
+            mapping_lookup[key] = m
+
+    # 3. Construct Nested Structure
+    requirements_list = []
+    total_obligations = 0
+    status_counts = {"fully_matched": 0, "partially_matched": 0, "new": 0}
+
+    for row in v2_rows:
+        # Parse JSON fields
+        s2 = row.get("stage2_json") or {}
+        s3 = row.get("stage3_json") or {}
+        if isinstance(s2, str):
+            try:
+                s2 = json.loads(s2)
+            except:
+                s2 = {}
+        if isinstance(s3, str):
+            try:
+                s3 = json.loads(s3)
+            except:
+                s3 = {}
+
+        # Build Control Lookup for this Requirement (from stage3)
+        control_lookup = {}
+        for ob in s3.get("obligations", []):
+            ob_id = ob.get("obligation_id")
+            if ob_id and ob.get("control"):
+                control_lookup[ob_id] = ob.get("control")
+
+        # Process Obligations (from stage2)
+        obligations = []
+        req_status_counts = {"fully_matched": 0, "partially_matched": 0, "new": 0}
+
+        for ob in s2.get("normalized_obligations", []):
+            ob_id = ob.get("obligation_id")
+            ob_text = ob.get("obligation_text")
+
+            # Get Match Details from Mapping Table
+            mapping = mapping_lookup.get(ob_id) or mapping_lookup.get(ob_text) or {}
+            match_status = mapping.get("match_status", "new")
+            matched_req_id = mapping.get("matched_requirement_id")
+            match_explanation = mapping.get("match_explanation")
+
+            # Get Control
+            control_obj = control_lookup.get(ob_id)
+
+            obligation_entry = {
+                "obligation_id": ob_id,
+                "obligation_text": ob_text,
+                "obligation_type": ob.get("obligation_type"),
+                "criticality": ob.get("criticality"),
+                "execution_category": ob.get("execution_category"),
+                "evidence_expected": ob.get("evidence_expected"),
+                "test_method": ob.get("test_method"),
+                "clarity_score": ob.get("clarity_score"),
+                "needs_manual_review": ob.get("needs_manual_review"),
+                "source_reference": ob.get("source_reference"),
+                "match_status": match_status,
+                "matched_requirement_id": matched_req_id,  # Added
+                "match_explanation": match_explanation,  # Added
+                "control": control_obj
+            }
+            obligations.append(obligation_entry)
+
+            # Count Status
+            if match_status in req_status_counts:
+                req_status_counts[match_status] += 1
+            total_obligations += 1
+
+        # Determine Requirement Level Status (Aggregated)
+        agg_status = "fully_matched"
+        agg_status = "fully_matched"
+        if req_status_counts["new"] > 0:
+            agg_status = "new"
+        elif req_status_counts["partially_matched"] > 0:
+            agg_status = "partially_matched"
+
+        # Update Global Counts
+        if agg_status == "fully_matched":
+            status_counts["fully_matched"] += 1
+        elif agg_status == "partially_matched":
+            status_counts["partially_matched"] += 1
+        else:
+            status_counts["new"] += 1
+
+        requirements_list.append({
+            "requirement_id": row.get("requirement_id"),
+            "requirement_title": row.get("requirement_title"),
+            "execution_category": row.get("execution_category"),
+            "criticality": row.get("criticality"),
+            "obligation_type": row.get("obligation_type"),
+            "match_status": agg_status,
+            "obligations": obligations,
+            "obligations_total": len(obligations),
+            "controls_designed": sum(1 for ob in obligations if ob.get("control")),
+            "status": row.get("status"),
+            "created_at": serialize_datetime(row.get("created_at"))
+        })
+
+    # 4. Translation Handling (Arabic)
+    # 4. Translation Handling (Arabic)
+    if lang == "ar":
+        # Enum/Status Value Translations
+        ENUM_TRANSLATIONS = {
+            "match_status": {
+                "fully_matched": "مطابق بالكامل",
+                "partially_matched": "مطابق جزئيًا",
+                "new": "جديد"
+            },
+            "execution_category": {
+                "Ongoing_Control": "رقابة مستمرة",
+                "One_Time_Implementation": "تنفيذ لمرة واحدة",
+                "Periodic_Review": "مراجعة دورية"
+            },
+            "criticality": {
+                "High": "عالي",
+                "Medium": "متوسط",
+                "Low": "منخفض"
+            },
+            "obligation_type": {
+                "Reporting": "إبلاغ",
+                "Governance": "حوكمة",
+                "Preventive": "وقائي",
+                "Detective": "كشف",
+                "Corrective": "تصحيحي"
+            },
+            "control_type": {
+                "Preventive": "وقائي",
+                "Detective": "كشف",
+                "Corrective": "تصحيحي"
+            },
+            "execution_type": {
+                "Manual": "يدوي",
+                "Automated": "آلي",
+                "Hybrid": "هجين"
+            },
+            "frequency": {
+                "Daily": "يومي",
+                "Weekly": "أسبوعي",
+                "Monthly": "شهري",
+                "Quarterly": "ربع سنوي",
+                "Annually": "سنوي",
+                "Event-Driven": "حسب الحدث",
+                "Event-Driven (Pre-season)": "حسب الحدث (قبل الموسم)"
+            },
+            "control_level": {
+                "System": "نظام",
+                "Process": "عملية",
+                "Entity": "كيان",
+                "Transaction": "معاملة"
+            },
+            "residual_risk_if_failed": {
+                "High": "عالي",
+                "Medium": "متوسط",
+                "Low": "منخفض"
+            }
+        }
+
+        all_texts = []
+        positions = []  # (type, req_idx, ob_idx, field, sub_idx)
+
+        for r_idx, req in enumerate(requirements_list):
+            # Requirement Level - Text Fields
+            if req.get("requirement_title"):
+                all_texts.append(req["requirement_title"])
+                positions.append(("req_title", r_idx, None, "requirement_title", None))
+
+            # Requirement Level - Enum Fields
+            for field in ["execution_category", "criticality", "obligation_type", "match_status"]:
+                val = req.get(field)
+                if val and field in ENUM_TRANSLATIONS:
+                    req[field] = ENUM_TRANSLATIONS[field].get(val, val)
+
+            # Obligation Level
+            for o_idx, ob in enumerate(req["obligations"]):
+                # Text Fields
+                if ob.get("obligation_text"):
+                    all_texts.append(ob["obligation_text"])
+                    positions.append(("ob_text", r_idx, o_idx, "obligation_text", None))
+
+                # Match Explanation
+                if ob.get("match_explanation"):
+                    all_texts.append(ob["match_explanation"])
+                    positions.append(("ob_exp", r_idx, o_idx, "match_explanation", None))
+
+                # Obligation Enum Fields
+                for field in ["obligation_type", "criticality", "execution_category", "match_status"]:
+                    val = ob.get(field)
+                    if val and field in ENUM_TRANSLATIONS:
+                        ob[field] = ENUM_TRANSLATIONS[field].get(val, val)
+
+                # Obligation Text Fields
+                for field in ["test_method", "source_reference"]:
+                    val = ob.get(field)
                     if val and isinstance(val, str):
                         all_texts.append(val)
-                        positions.append(("kpi", i, f, j))
+                        positions.append(("ob_field", r_idx, o_idx, field, None))
 
-        # Single batch translate — translate_texts_batch already handles chunking
-        translated = translate_texts_batch(all_texts, lang)
+                # evidence_expected (list of strings)
+                evidence_list = ob.get("evidence_expected") or []
+                for e_idx, evidence in enumerate(evidence_list):
+                    if evidence and isinstance(evidence, str):
+                        all_texts.append(evidence)
+                        positions.append(("evidence", r_idx, o_idx, "evidence_expected", e_idx))
 
-        # Deep-copy grouped so we don't mutate the source dicts
-        import copy
-        grouped = copy.deepcopy(grouped)
+                # Control Level
+                ctrl = ob.get("control")
+                if ctrl:
+                    # Control Text Fields
+                    for field in ["control_title", "control_description", "control_objective",
+                                  "control_owner", "evidence_generated"]:
+                        val = ctrl.get(field)
+                        if val and isinstance(val, str):
+                            all_texts.append(val)
+                            positions.append(("ctrl", r_idx, o_idx, field, None))
 
-        # Write translated values back
-        for (kind, i, f, j), tr in zip(positions, translated):
-            if kind == "req":
-                grouped[i][f] = tr
-            elif kind == "ctrl":
-                grouped[i]["controls"][j][f] = tr
-            elif kind == "kpi":
-                grouped[i]["kpis"][j][f] = tr
+                    # Control Enum Fields
+                    for field in ["control_type", "execution_type", "frequency", "control_level",
+                                  "residual_risk_if_failed"]:
+                        val = ctrl.get(field)
+                        if val:
+                            if field in ENUM_TRANSLATIONS:
+                                ctrl[field] = ENUM_TRANSLATIONS[field].get(val, val)
+                            elif field == "residual_risk_if_failed":
+                                ctrl[field] = ENUM_TRANSLATIONS["criticality"].get(val, val)
 
-    fully   = sum(1 for r in req_mappings if r["match_status"] == "fully_matched")
-    partial = sum(1 for r in req_mappings if r["match_status"] == "partially_matched")
-    new     = sum(1 for r in req_mappings if r["match_status"] == "new")
+                    # key_steps (list of strings)
+                    key_steps = ctrl.get("key_steps") or []
+                    for k_idx, step in enumerate(key_steps):
+                        if step and isinstance(step, str):
+                            all_texts.append(step)
+                            positions.append(("step", r_idx, o_idx, "key_steps", k_idx))
 
+        # Batch translate all collected texts
+        if all_texts:
+            translated = translate_texts_batch(all_texts, lang)
+            for (kind, r_idx, o_idx, field, sub_idx), tr in zip(positions, translated):
+                if kind == "req_title":
+                    requirements_list[r_idx][field] = tr
+                elif kind == "ob_text":
+                    requirements_list[r_idx]["obligations"][o_idx][field] = tr
+                elif kind == "ob_exp":
+                    requirements_list[r_idx]["obligations"][o_idx][field] = tr
+                elif kind == "ob_field":
+                    requirements_list[r_idx]["obligations"][o_idx][field] = tr
+                elif kind == "evidence":
+                    requirements_list[r_idx]["obligations"][o_idx][field][sub_idx] = tr
+                elif kind == "ctrl":
+                    requirements_list[r_idx]["obligations"][o_idx]["control"][field] = tr
+                elif kind == "step":
+                    requirements_list[r_idx]["obligations"][o_idx]["control"][field][sub_idx] = tr
     return {
-        "requirements": grouped,
+        "requirements": requirements_list,
         "summary": {
-            "requirements": {
-                "total": len(req_mappings),
-                "fully_matched": fully,
-                "partially_matched": partial,
-                "new": new
-            },
-            "controls": {
-                "total": len(ctrl_links),
-                "ai_suggested": sum(1 for c in ctrl_links if c.get("is_suggested") == 1)
-            },
-            "kpis": {
-                "total": len(kpi_links),
-                "ai_suggested": sum(1 for k in kpi_links if k.get("is_suggested") == 1)
-            }
+            "total_requirements": len(requirements_list),
+            "total_obligations": total_obligations,
+            "by_match_status": status_counts
         }
     }
 
-    def _translate_control_list(controls: list, translator) -> list:
-        """Translate human-readable fields in a list of control dicts."""
-        translated = []
-        for ctrl in controls:
-            ctrl = dict(ctrl)
-            for f in ["control_title", "control_description", "match_explanation"]:
-                val = ctrl.get(f)
-                if val and isinstance(val, str):
-                    try:
-                        ctrl[f] = translator.translate(val)
-                    except Exception as e:
-                        logger.error(f"control field '{f}' translation failed: {e}")
-            translated.append(ctrl)
-        return translated
 
-    def _translate_kpi_list(kpis: list, translator) -> list:
-        """Translate human-readable fields in a list of KPI dicts."""
-        translated = []
-        for kpi in kpis:
-            kpi = dict(kpi)
-            for f in ["kpi_title", "kpi_description", "match_explanation"]:
-                val = kpi.get(f)
-                if val and isinstance(val, str):
-                    try:
-                        kpi[f] = translator.translate(val)
-                    except Exception as e:
-                        logger.error(f"kpi field '{f}' translation failed: {e}")
-            translated.append(kpi)
-        return translated
+# ================= COMPLIANCE ANALYSIS ENDPOINTS =================
 
-    # Build a single translator instance to reuse across all entries (avoids
-    # constructing a new GoogleTranslator object for every requirement).
-    ar_translator = None
-    if lang == "ar":
-        from deep_translator import GoogleTranslator
-        ar_translator = GoogleTranslator(source="en", target="ar")
-
-    grouped = []
-    for mapping in req_mappings:
-        matched_req_id = mapping.get("matched_requirement_id")
-        controls = controls_by_req.get(matched_req_id, [])
-        kpis     = kpis_by_req.get(matched_req_id, [])
-
-        entry = {
-            "extracted_requirement_text": mapping["extracted_requirement_text"],
-            "match_status": mapping["match_status"],
-            "match_explanation": mapping.get("match_explanation"),
-            "matched_requirement_id": matched_req_id,
-            "matched_requirement_title": mapping.get("matched_requirement_title"),
-            "matched_requirement_description": mapping.get("matched_requirement_description"),
-            "controls": controls,
-            "kpis": kpis,
-        }
-
-        if lang == "ar":
-            # Translate the top-level requirement text fields
-            entry = translate_compliance_requirement(entry, lang)
-
-            # translate_compliance_requirement treats controls/kpis as lists of
-            # strings (legacy shape) — but here they are lists of dicts, so we
-            # translate them separately after the call above.
-            entry["controls"] = _translate_control_list(controls, ar_translator)
-            entry["kpis"]     = _translate_kpi_list(kpis, ar_translator)
-
-        grouped.append(entry)
-
-    fully   = sum(1 for r in req_mappings if r["match_status"] == "fully_matched")
-    partial = sum(1 for r in req_mappings if r["match_status"] == "partially_matched")
-    new     = sum(1 for r in req_mappings if r["match_status"] == "new")
-
-    return {
-        "requirements": grouped,
-        "summary": {
-            "requirements": {
-                "total": len(req_mappings),
-                "fully_matched": fully,
-                "partially_matched": partial,
-                "new": new
-            },
-            "controls": {
-                "total": len(ctrl_links),
-                "ai_suggested": sum(1 for c in ctrl_links if c.get("is_suggested") == 1)
-            },
-            "kpis": {
-                "total": len(kpi_links),
-                "ai_suggested": sum(1 for k in kpi_links if k.get("is_suggested") == 1)
-            }
-        }
-    }
-
-@app.get("/compliance-analysis-full/{regulation_id}")
+@app.get("/compliance-analysis/{regulation_id}")
 def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
 
-    analysis = repo.get_compliance_analysis(regulation_id)
-    if not analysis:
-        raise HTTPException(404, "No analysis found")
+    # Check v2 analysis exists
+    v2_rows = repo.get_compliance_analysis_v2(regulation_id)
+    if not v2_rows:
+        raise HTTPException(404, f"No v2 analysis for regulation {regulation_id}. "
+                                 f"Run POST /trigger/staged-analysis/{regulation_id} first.")
+
+    # Check requirement mappings exist (for match details)
+    req_mappings = repo.get_requirement_mappings_by_regulation(regulation_id)
+    # Note: We allow the call even if mappings are missing (status will default to 'new'),
+    # but ideally, matching should be run first.
 
     if lang == "ar":
         cache_key = f"GET /compliance-analysis-full/{regulation_id}"
@@ -981,17 +1458,14 @@ def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
         if cached:
             return cached
 
-    mapping_data = build_full_mapping_response(regulation_id, lang)
+    # Use the new builder function
+    mapping_data = build_v2_full_analysis_response(regulation_id, lang)
 
     result = {
         "success": True,
         "lang": lang,
         "regulation_id": regulation_id,
-        "analysis_meta": {
-            "id": analysis["id"],
-            "created_at": serialize_datetime(analysis["created_at"]),
-            "updated_at": serialize_datetime(analysis["updated_at"])
-        },
+        "schema_version": "v2",
         **mapping_data
     }
 
@@ -1000,32 +1474,35 @@ def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
 
     return result
 
-
-# ================= GAP ANALYSIS ENDPOINTS =================
-
 # ================= GAP CACHE KEY HELPER =================
 def _gap_cache_key(endpoint: str, regulation_id: int, filename: str) -> str:
     return f"POST {endpoint}|reg={regulation_id}|file={filename}"
 
 
-# ================= GAP ANALYSIS ENDPOINTS =================
+# ============================================================ #
+#  GAP ANALYSIS — V2 ONLY                                      #
+# ============================================================ #
 
 @app.post("/gap-analysis/single", response_model=GapAnalysisResponse, tags=["Gap Analysis"])
 async def gap_analysis_single(
-    regulation_id: int = Form(..., description="ID of the regulation to check against"),
-    file: UploadFile = File(..., description="PDF document to check"),
-    lang: str = Form("en", description="Language: 'en' or 'ar'"),
+    regulation_id: int = Form(...),
+    file: UploadFile = File(...),
+    lang: str = Form("en"),
 ):
+    """
+    V2 gap analysis — single regulation. Each result includes obligation_text,
+    obligation metadata (id, requirement_id, requirement_title, criticality,
+    obligation_type, execution_category), and the matched control title.
+    Summary includes breakdowns by criticality and execution_category.
+    """
     lang = _validate_lang(lang)
     if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
 
-    # Check cache before extracting/processing
     if lang == "ar":
         gap_cache_key = _gap_cache_key("/gap-analysis/single", regulation_id, file.filename)
         cached = _get_ar_cache(gap_cache_key)
         if cached:
-            logger.info(f"AR cache hit for gap-analysis/single: {gap_cache_key}")
             return cached
 
     uploaded_text = await _save_and_extract_file(file)
@@ -1033,33 +1510,21 @@ async def gap_analysis_single(
         raise HTTPException(status_code=422, detail="Could not extract sufficient text from uploaded file")
 
     session_id = repo.create_gap_session(file.filename, uploaded_text)
-    regulation_summary = _run_gap_for_regulation(session_id, regulation_id, uploaded_text)
-    regulation_summary.results = _enrich_results_with_controls_kpis(regulation_summary.results, regulation_id)
+    summary    = _run_gap_for_regulation_v2(session_id, regulation_id, uploaded_text)
+    summary.results = _enrich_results_with_controls_v2(summary.results, regulation_id)
 
     if lang == "ar":
-        GAP_TEXT_FIELDS = ["requirement_text", "evidence_text", "gap_description", "controls", "kpis"]
-        all_texts, positions = [], []
-        results_dicts = [r.dict() for r in regulation_summary.results]
-        for i, r in enumerate(results_dicts):
-            for f in GAP_TEXT_FIELDS:
-                val = r.get(f)
-                if val and isinstance(val, str):
-                    all_texts.append(val)
-                    positions.append((i, f))
-        if all_texts:
-            translated = translate_texts_batch(all_texts, lang)
-            for (i, f), tr in zip(positions, translated):
-                results_dicts[i][f] = tr
-        regulation_summary = RegulationGapSummary(
-            regulation_id=regulation_summary.regulation_id,
-            results=[GapResult(**r) for r in results_dicts],
-            summary=regulation_summary.summary
+        summary.results = _translate_v2_gap_results(summary.results, lang)
+        summary = RegulationGapSummary(
+            regulation_id=summary.regulation_id,
+            results=summary.results,
+            summary=summary.summary
         )
 
     final_response = GapAnalysisResponse(
         session_id=session_id,
         uploaded_document_name=file.filename,
-        regulations=[regulation_summary]
+        regulations=[summary]
     )
 
     if lang == "ar":
@@ -1068,80 +1533,17 @@ async def gap_analysis_single(
     return final_response
 
 
-@app.post("/gap-analysis/multi-docs", tags=["Gap Analysis"])
-async def gap_analysis_multi_docs(
-    regulation_id: int = Form(...),
-    files: List[UploadFile] = File(...),
-    lang: str = Form("en", description="Language: 'en' or 'ar'"),
-):
-    lang = _validate_lang(lang)
-    if not files:
-        raise HTTPException(400, "No files uploaded")
-
-    session_results = []
-    errors = []
-
-    for file in files:
-        if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
-            errors.append({"file": file.filename, "error": "Unsupported file type"})
-            continue
-        try:
-            # Check cache before processing this file
-            if lang == "ar":
-                gap_cache_key = _gap_cache_key("/gap-analysis/multi-docs", regulation_id, file.filename)
-                cached = _get_ar_cache(gap_cache_key)
-                if cached:
-                    logger.info(f"AR cache hit for gap-analysis/multi-docs: {gap_cache_key}")
-                    session_results.append(cached)
-                    continue
-
-            uploaded_text = await _save_and_extract_file(file)
-            if len(uploaded_text) < 50:
-                raise Exception("Too little text extracted")
-            session_id = repo.create_gap_session(file.filename, uploaded_text)
-            summary = _run_gap_for_regulation(session_id, regulation_id, uploaded_text)
-            summary.results = _enrich_results_with_controls_kpis(summary.results, regulation_id)
-
-            if lang == "ar":
-                GAP_TEXT_FIELDS = ["requirement_text", "evidence_text", "gap_description", "controls", "kpis"]
-                all_texts, positions = [], []
-                results_dicts = [r.dict() for r in summary.results]
-                for i, r in enumerate(results_dicts):
-                    for f in GAP_TEXT_FIELDS:
-                        val = r.get(f)
-                        if val and isinstance(val, str):
-                            all_texts.append(val)
-                            positions.append((i, f))
-                if all_texts:
-                    translated = translate_texts_batch(all_texts, lang)
-                    for (i, f), tr in zip(positions, translated):
-                        results_dicts[i][f] = tr
-                summary = RegulationGapSummary(
-                    regulation_id=summary.regulation_id,
-                    results=[GapResult(**r) for r in results_dicts],
-                    summary=summary.summary
-                )
-
-            result_entry = {"file_name": file.filename, "session_id": session_id, "summary": summary.dict()}
-            if lang == "ar":
-                _set_ar_cache(gap_cache_key, result_entry)
-            session_results.append(result_entry)
-
-        except Exception as e:
-            errors.append({"file": file.filename, "error": str(e)})
-
-    if not session_results:
-        raise HTTPException(500, f"All documents failed: {errors}")
-
-    return {"success": True, "lang": lang, "regulation_id": regulation_id, "documents_analyzed": session_results, "errors": errors}
-
-
 @app.post("/gap-analysis/multi", response_model=GapAnalysisResponse, tags=["Gap Analysis"])
 async def gap_analysis_multi(
-    regulation_ids: str = Form(..., description="Comma-separated regulation IDs e.g. 1,2,3"),
-    file: UploadFile = File(..., description="PDF document to check"),
-    lang: str = Form("en", description="Language: 'en' or 'ar'"),
+    regulation_ids: str = Form(..., description="Comma-separated regulation IDs"),
+    file: UploadFile = File(...),
+    lang: str = Form("en"),
 ):
+    """
+    V2 gap analysis — one document against multiple regulations.
+    All regulations must have v2 staged analysis.
+    Each result includes obligation_text and full obligation metadata + controls.
+    """
     lang = _validate_lang(lang)
     if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
@@ -1162,35 +1564,21 @@ async def gap_analysis_multi(
 
     for reg_id in reg_ids:
         try:
-            # Check cache before processing this regulation
             if lang == "ar":
                 gap_cache_key = _gap_cache_key("/gap-analysis/multi", reg_id, file.filename)
                 cached = _get_ar_cache(gap_cache_key)
                 if cached:
-                    logger.info(f"AR cache hit for gap-analysis/multi: {gap_cache_key}")
                     regulation_summaries.append(RegulationGapSummary(**cached))
                     continue
 
-            summary = _run_gap_for_regulation(session_id, reg_id, uploaded_text)
-            summary.results = _enrich_results_with_controls_kpis(summary.results, reg_id)
+            summary = _run_gap_for_regulation_v2(session_id, reg_id, uploaded_text)
+            summary.results = _enrich_results_with_controls_v2(summary.results, reg_id)
 
             if lang == "ar":
-                GAP_TEXT_FIELDS = ["requirement_text", "evidence_text", "gap_description", "controls", "kpis"]
-                all_texts, positions = [], []
-                results_dicts = [r.dict() for r in summary.results]
-                for i, r in enumerate(results_dicts):
-                    for f in GAP_TEXT_FIELDS:
-                        val = r.get(f)
-                        if val and isinstance(val, str):
-                            all_texts.append(val)
-                            positions.append((i, f))
-                if all_texts:
-                    translated = translate_texts_batch(all_texts, lang)
-                    for (i, f), tr in zip(positions, translated):
-                        results_dicts[i][f] = tr
+                summary.results = _translate_v2_gap_results(summary.results, lang)
                 summary = RegulationGapSummary(
                     regulation_id=summary.regulation_id,
-                    results=[GapResult(**r) for r in results_dicts],
+                    results=summary.results,
                     summary=summary.summary
                 )
                 _set_ar_cache(gap_cache_key, summary.dict())
@@ -1198,16 +1586,16 @@ async def gap_analysis_multi(
             regulation_summaries.append(summary)
 
         except HTTPException as e:
-            logger.error(f"Gap analysis failed for regulation {reg_id}: {e.detail}")
+            logger.error(f"[v2] Gap analysis failed for regulation {reg_id}: {e.detail}")
             errors.append({"regulation_id": reg_id, "error": e.detail})
         except Exception as e:
-            logger.error(f"Unexpected error for regulation {reg_id}: {e}")
+            logger.error(f"[v2] Unexpected error for regulation {reg_id}: {e}")
             errors.append({"regulation_id": reg_id, "error": str(e)})
 
     if not regulation_summaries:
         raise HTTPException(status_code=500, detail=f"Gap analysis failed for all regulations. Errors: {errors}")
     if errors:
-        logger.warning(f"Partial failures in multi gap analysis: {errors}")
+        logger.warning(f"[v2] Partial failures in multi gap analysis: {errors}")
 
     return GapAnalysisResponse(
         session_id=session_id,
@@ -1216,10 +1604,79 @@ async def gap_analysis_multi(
     )
 
 
+@app.post("/gap-analysis/multi-docs", tags=["Gap Analysis"])
+async def gap_analysis_multi_docs(
+    regulation_id: int = Form(...),
+    files: List[UploadFile] = File(...),
+    lang: str = Form("en"),
+):
+    """
+    V2 gap analysis — multiple documents against one regulation.
+    Each document is analyzed independently with full obligation-level metadata
+    and matched control titles.
+    """
+    lang = _validate_lang(lang)
+    if not files:
+        raise HTTPException(400, "No files uploaded")
+
+    session_results = []
+    errors = []
+
+    for file in files:
+        if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
+            errors.append({"file": file.filename, "error": "Unsupported file type"})
+            continue
+        try:
+            if lang == "ar":
+                gap_cache_key = _gap_cache_key("/gap-analysis/multi-docs", regulation_id, file.filename)
+                cached = _get_ar_cache(gap_cache_key)
+                if cached:
+                    session_results.append(cached)
+                    continue
+
+            uploaded_text = await _save_and_extract_file(file)
+            if len(uploaded_text) < 50:
+                raise Exception("Too little text extracted")
+
+            session_id = repo.create_gap_session(file.filename, uploaded_text)
+            summary    = _run_gap_for_regulation_v2(session_id, regulation_id, uploaded_text)
+            summary.results = _enrich_results_with_controls_v2(summary.results, regulation_id)
+
+            if lang == "ar":
+                summary.results = _translate_v2_gap_results(summary.results, lang)
+                summary = RegulationGapSummary(
+                    regulation_id=summary.regulation_id,
+                    results=summary.results,
+                    summary=summary.summary
+                )
+
+            result_entry = {"file_name": file.filename, "session_id": session_id, "summary": summary.dict()}
+
+            if lang == "ar":
+                _set_ar_cache(gap_cache_key, result_entry)
+
+            session_results.append(result_entry)
+
+        except Exception as e:
+            errors.append({"file": file.filename, "error": str(e)})
+
+    if not session_results:
+        raise HTTPException(500, f"All documents failed: {errors}")
+
+    return {
+        "success":            True,
+        "lang":               lang,
+        "schema_version":     "v2",
+        "regulation_id":      regulation_id,
+        "documents_analyzed": session_results,
+        "errors":             errors
+    }
+
+
 @app.get("/gap-analysis/session/{session_id}", response_model=GapAnalysisResponse, tags=["Gap Analysis"])
 def get_gap_session(
     session_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
+    lang: str = Query("en"),
 ):
     lang = _validate_lang(lang)
 
@@ -1231,7 +1688,7 @@ def get_gap_session(
 
     result = repo.get_gap_results_by_session(session_id)
     if not result:
-        raise HTTPException(status_code=404, detail=f"No gap analysis session found for ID {session_id}")
+        raise HTTPException(status_code=200, detail=f"No gap analysis session found for ID {session_id}")
 
     regulations = []
     for reg in result["regulations"]:
@@ -1259,9 +1716,7 @@ def get_gap_session(
 # ================= CATEGORIES ENDPOINTS =================
 
 @app.get("/categories")
-def get_categories(
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_categories(lang: str = Query("en")):
     lang = _validate_lang(lang)
     try:
         if lang == "ar":
@@ -1306,9 +1761,7 @@ def get_categories(
 
 
 @app.get("/categories/roots")
-def get_root_categories_only(
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_root_categories_only(lang: str = Query("en")):
     lang = _validate_lang(lang)
     try:
         if lang == "ar":
@@ -1342,9 +1795,7 @@ def get_root_categories_only(
 
 
 @app.get("/categories/root")
-def get_root_categories_with_children(
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_root_categories_with_children(lang: str = Query("en")):
     lang = _validate_lang(lang)
     try:
         if lang == "ar":
@@ -1384,10 +1835,7 @@ def get_root_categories_with_children(
 
 
 @app.get("/categories/children/{parent_id}")
-def get_children(
-    parent_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_children(parent_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
     try:
         if lang == "ar":
@@ -1442,23 +1890,48 @@ def get_regulator_status(regulator: str):
     if not row:
         return {"regulator": regulator, "status": "NOT_STARTED"}
     return {
-        "regulator": regulator, "status": row[0],
-        "started_at": serialize_datetime(row[1]),
+        "regulator":   regulator,
+        "status":      row[0],
+        "started_at":  serialize_datetime(row[1]),
         "finished_at": serialize_datetime(row[2]),
-        "error": row[3]
+        "error":       row[3]
     }
 
 
 @app.post("/update-status/compliance-analysis")
-def update_compliance_analysis_status(payload: StatusUpdate):
+def update_compliance_analysis_status(payload: ComplianceStatusUpdate):
     try:
         with repo._get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE compliance_analysis SET status = ? WHERE id = ?", payload.status, payload.record_id)
+
+            cursor.execute("""
+                UPDATE compliance_analysis
+                SET status = ?
+                WHERE regulation_id = ?
+                AND requirement_id = ?
+            """,
+                payload.status,
+                payload.regulation_id,
+                payload.requirement_id
+            )
+
             conn.commit()
+
             if cursor.rowcount == 0:
-                raise HTTPException(status_code=200, detail=f"Record not found in compliance_analysis with id {payload.record_id}")
-        return {"success": True, "table": "compliance_analysis", "record_id": payload.record_id, "status": payload.status, "message": "Status updated successfully"}
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No record found for regulation_id={payload.regulation_id} "
+                           f"and requirement_id={payload.requirement_id}"
+                )
+
+        return {
+            "success": True,
+            "regulation_id": payload.regulation_id,
+            "requirement_id": payload.requirement_id,
+            "status": payload.status,
+            "message": "Status updated successfully"
+        }
+
     except Exception as e:
         logger.exception("Error updating compliance_analysis status")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1494,16 +1967,50 @@ def update_regulations_status(payload: StatusUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ================= STEP 2 ENDPOINTS =================
+# ================= STEP 2 — V2 =================
 
 @app.post("/trigger/requirement-matching/{regulation_id}", tags=["Step 2"])
-def trigger_requirement_matching(regulation_id: int):
-    analysis = repo.get_compliance_analysis(regulation_id)
-    if not analysis:
-        raise HTTPException(status_code=404, detail=f"No compliance analysis found for regulation {regulation_id}")
-    extracted_requirements = analysis["analysis_data"].get("requirements", [])
+def trigger_requirement_matching_v2(regulation_id: int):
+    """
+    V2 requirement matching. Flattens obligations from staged_analysis and feeds
+    individual obligation texts to the matcher (atomic unit = obligation, not
+    requirement group). obligation_id and requirement_id are carried through
+    onto each mapping for full traceability.
+    """
+    rows = repo.get_compliance_analysis_v2(regulation_id)
+    if not rows:
+        raise HTTPException(404, f"No v2 analysis for regulation {regulation_id}. "
+                                 f"Run POST /trigger/staged-analysis/{regulation_id} first.")
+
+    extracted_requirements = []
+    for row in rows:
+        s2 = row.get("stage2_json") or {}
+        if isinstance(s2, str):
+            try:
+                s2 = json.loads(s2)
+            except Exception:
+                s2 = {}
+        for ob in s2.get("normalized_obligations", []):
+            extracted_requirements.append({
+                "requirement_text": ob["obligation_text"],
+                "department":       "",
+                "risk_level":       ob.get("criticality", "Medium"),
+                "controls":         [],
+                "kpis":             [],
+                "_obligation_id":   ob["obligation_id"],
+                "_requirement_id":  row["requirement_id"],
+            })
+
     if not extracted_requirements:
-        raise HTTPException(status_code=404, detail=f"No requirements in analysis for regulation {regulation_id}")
+        raise HTTPException(404, f"No obligations found in v2 analysis for regulation {regulation_id}")
+
+    req_text_to_v2_meta = {
+        r["requirement_text"]: {
+            "obligation_id":  r["_obligation_id"],
+            "requirement_id": r["_requirement_id"],
+        }
+        for r in extracted_requirements
+    }
 
     existing_requirements  = repo.get_all_compliance_requirements()
     existing_controls      = repo.get_all_demo_controls()
@@ -1511,7 +2018,6 @@ def trigger_requirement_matching(regulation_id: int):
     linked_controls_by_req = repo.get_linked_controls_by_requirement()
     linked_kpis_by_req     = repo.get_linked_kpis_by_requirement()
 
-    from processor.requirement_matcher import RequirementMatcher
     matcher = RequirementMatcher()
     match_results = matcher.match_requirements(
         regulation_id=regulation_id,
@@ -1528,6 +2034,11 @@ def trigger_requirement_matching(regulation_id: int):
     kpi_links              = match_results["kpi_links"]
     new_controls_to_insert = match_results["new_controls_to_insert"]
     new_kpis_to_insert     = match_results["new_kpis_to_insert"]
+
+    for mapping in requirement_mappings:
+        meta = req_text_to_v2_meta.get(mapping["extracted_requirement_text"], {})
+        mapping["obligation_id"]  = meta.get("obligation_id")
+        mapping["requirement_id"] = meta.get("requirement_id")
 
     if requirement_mappings:
         repo.store_requirement_mappings(requirement_mappings)
@@ -1546,7 +2057,7 @@ def trigger_requirement_matching(regulation_id: int):
             title = req_text[:100].strip() + ("..." if len(req_text) > 100 else "")
             new_req_id = repo.insert_new_suggested_requirement({
                 "title": title, "description": req_text,
-                "ref_key": f"SAMA-AUTO-{regulation_id}-{i}", "ref_no": f"REG-{regulation_id}"
+                "ref_key": f"V2-AUTO-{regulation_id}-{i}", "ref_no": f"REG-{regulation_id}"
             })
             for ctrl in new_controls_to_insert:
                 if ctrl.get("_req_id") is None:
@@ -1555,7 +2066,7 @@ def trigger_requirement_matching(regulation_id: int):
                 if kpi.get("_req_id") is None:
                     kpi["_req_id"] = new_req_id
         except Exception as e:
-            logger.error(f"Failed to insert new suggested requirement: {e}")
+            logger.error(f"[v2] Failed to insert new suggested requirement: {e}")
 
     if control_links:
         repo.store_control_links(control_links)
@@ -1575,7 +2086,7 @@ def trigger_requirement_matching(regulation_id: int):
                     "regulation_id": regulation_id
                 }])
         except Exception as e:
-            logger.error(f"Failed to insert new suggested control: {e}")
+            logger.error(f"[v2] Failed to insert new suggested control: {e}")
 
     for kpi in new_kpis_to_insert:
         try:
@@ -1591,16 +2102,29 @@ def trigger_requirement_matching(regulation_id: int):
                     "regulation_id": regulation_id
                 }])
         except Exception as e:
-            logger.error(f"Failed to insert new suggested KPI: {e}")
+            logger.error(f"[v2] Failed to insert new suggested KPI: {e}")
 
-    # Bust Arabic cache since underlying data changed
     _invalidate_ar_cache(regulation_id)
 
     return {
-        "success": True, "regulation_id": regulation_id,
+        "success":               True,
+        "regulation_id":         regulation_id,
+        "schema_version":        "v2",
+        "obligations_processed": len(extracted_requirements),
+        "mappings": [
+            {
+                "extracted_requirement_text": m["extracted_requirement_text"],
+                "obligation_id":              m.get("obligation_id"),
+                "requirement_id":             m.get("requirement_id"),
+                "match_status":               m["match_status"],
+                "matched_requirement_id":     m.get("matched_requirement_id"),
+                "match_explanation":          m.get("match_explanation"),
+            }
+            for m in requirement_mappings
+        ],
         "summary": {
             "requirements": {
-                "total": len(requirement_mappings),
+                "total":             len(requirement_mappings),
                 "fully_matched":     sum(1 for m in requirement_mappings if m["match_status"] == "fully_matched"),
                 "partially_matched": sum(1 for m in requirement_mappings if m["match_status"] == "partially_matched"),
                 "new":               sum(1 for m in requirement_mappings if m["match_status"] == "new")
@@ -1612,10 +2136,7 @@ def trigger_requirement_matching(regulation_id: int):
 
 
 @app.get("/requirement-mapping/{regulation_id}", tags=["Step 2"])
-def get_requirement_mapping(
-    regulation_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_requirement_mapping(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
 
     if lang == "ar":
@@ -1626,7 +2147,7 @@ def get_requirement_mapping(
 
     results = repo.get_requirement_mappings_by_regulation(regulation_id)
     if not results:
-        raise HTTPException(status_code=200, detail=f"No requirement mappings found for regulation {regulation_id}. Run POST /trigger/requirement-matching/{regulation_id} first.")
+        raise HTTPException(status_code=200, detail=f"No requirement mappings found for regulation {regulation_id}.")
 
     if lang == "ar":
         results = [translate_compliance_requirement(r, lang) for r in results]
@@ -1647,10 +2168,7 @@ def get_requirement_mapping(
 
 
 @app.get("/control-mapping/{regulation_id}", tags=["Step 2"])
-def get_control_mapping(
-    regulation_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_control_mapping(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
 
     if lang == "ar":
@@ -1661,7 +2179,7 @@ def get_control_mapping(
 
     results = repo.get_control_links_by_regulation(regulation_id)
     if not results:
-        raise HTTPException(status_code=200, detail=f"No control links found for regulation {regulation_id}. Run POST /trigger/requirement-matching/{regulation_id} first.")
+        raise HTTPException(status_code=200, detail=f"No control links found for regulation {regulation_id}.")
 
     if lang == "ar":
         text_fields = ["control_title", "control_description", "MATCH_EXPLANATION"]
@@ -1693,10 +2211,7 @@ def get_control_mapping(
 
 
 @app.get("/kpi-mapping/{regulation_id}", tags=["Step 2"])
-def get_kpi_mapping(
-    regulation_id: int,
-    lang: str = Query("en", description="Language: 'en' or 'ar'"),
-):
+def get_kpi_mapping(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
 
     if lang == "ar":
@@ -1707,7 +2222,7 @@ def get_kpi_mapping(
 
     results = repo.get_kpi_links_by_regulation(regulation_id)
     if not results:
-        raise HTTPException(status_code=200, detail=f"No KPI links found for regulation {regulation_id}. Run POST /trigger/requirement-matching/{regulation_id} first.")
+        raise HTTPException(status_code=200, detail=f"No KPI links found for regulation {regulation_id}.")
 
     if lang == "ar":
         text_fields = ["kpi_title", "kpi_description", "MATCH_EXPLANATION"]
@@ -1742,14 +2257,12 @@ def get_kpi_mapping(
 
 @app.delete("/admin/ar-cache/{regulation_id}", tags=["Admin"])
 def clear_ar_cache_for_regulation(regulation_id: int):
-    """Manually clear Arabic cache for a regulation (e.g. after re-analysis)."""
     _invalidate_ar_cache(regulation_id)
     return {"success": True, "message": f"Arabic cache cleared for regulation {regulation_id}"}
 
 
 @app.delete("/admin/ar-cache", tags=["Admin"])
 def clear_all_ar_cache():
-    """Wipe the entire Arabic cache table."""
     try:
         with repo._get_conn() as conn:
             cursor = conn.cursor()
@@ -1779,32 +2292,271 @@ def health_check():
 @app.get("/")
 def root():
     return {
-        "message": "Regulatory Pipeline API",
-        "version": "2.0.0",
+        "message":             "Regulatory Pipeline API",
+        "version":             "2.0.0",
         "supported_languages": ["en", "ar"],
-        "language_usage": "Add ?lang=ar to any GET endpoint. For POST form endpoints, include lang=ar as a form field.",
+        "schema":              "v2 (obligation-level, all gap analysis endpoints use v2 pipeline)",
         "endpoints": {
-            "pipelines": {
-                "trigger_specific": "POST /trigger/{regulator}",
-                "trigger_all":      "POST /trigger/full",
-                "update_schedule":  "POST /update-schedule"
-            },
-            "data": {
-                "regulations_by_regulator": "GET /regulations/{regulator}?lang=ar",
-                "regulation_detail":        "GET /regulation/{id}?lang=ar",
-                "compliance_analysis":      "GET /compliance-analysis/{regulation_id}?lang=ar",
-                "categories":               "GET /categories?lang=ar"
-            },
             "gap_analysis": {
-                "single_regulation":    "POST /gap-analysis/single  (form field: lang=ar)",
-                "multiple_regulations": "POST /gap-analysis/multi   (form field: lang=ar)",
-                "retrieve_session":     "GET /gap-analysis/session/{session_id}?lang=ar"
+                "single":     "POST /gap-analysis/single   — one doc vs one regulation",
+                "multi":      "POST /gap-analysis/multi    — one doc vs multiple regulations",
+                "multi_docs": "POST /gap-analysis/multi-docs — multiple docs vs one regulation",
+                "session":    "GET  /gap-analysis/session/{session_id}"
+            },
+            "step2": {
+                "trigger":  "POST /trigger/requirement-matching/{regulation_id}",
+                "mappings": "GET  /requirement-mapping/{regulation_id}",
+                "controls": "GET  /control-mapping/{regulation_id}",
+                "kpis":     "GET  /kpi-mapping/{regulation_id}"
+            },
+            "v2_staged_analysis": {
+                "trigger":      "POST /trigger/staged-analysis/{regulation_id}",
+                "list":         "GET  /compliance-analysis-v2/{regulation_id}",
+                "detail":       "GET  /compliance-analysis-v2/{regulation_id}/requirement/{requirement_id}",
+                "exec_summary": "GET  /compliance-analysis-v2/{regulation_id}/executive-summary"
             },
             "admin": {
-                "clear_regulation_cache": "DELETE /admin/ar-cache/{regulation_id}",
-                "clear_all_cache":        "DELETE /admin/ar-cache"
-            },
-            "health": "GET /health"
+                "clear_reg_cache": "DELETE /admin/ar-cache/{regulation_id}",
+                "clear_all_cache": "DELETE /admin/ar-cache"
+            }
         },
         "available_regulators": list(REGULATOR_PIPELINES.keys())
     }
+
+
+# ============================================================ #
+#  V2 STAGED ANALYSIS ENDPOINTS                                #
+# ============================================================ #
+
+staged_analyzer = StagedLLMAnalyzer()
+
+
+@app.post("/trigger/staged-analysis/{regulation_id}", tags=["V2 Staged Analysis"])
+def trigger_staged_analysis(regulation_id: int, force: bool = Query(False)):
+    # ── Guard: skip if already analyzed ─────────────────────────────
+    if not force:
+        existing_rows = repo.get_compliance_analysis_v2(regulation_id)
+        if existing_rows:
+            return {
+                "success": True,
+                "regulation_id": regulation_id,
+                "skipped": True,
+                "reason": "Staged analysis already exists. Use ?force=true to re-run.",
+                "existing_count": len(existing_rows),
+                "next_step": f"POST /trigger/requirement-matching/{regulation_id}"
+            }
+
+    regulation = repo.get_regulation_by_id(regulation_id)
+    if not regulation:
+        raise HTTPException(status_code=404, detail=f"Regulation {regulation_id} not found")
+
+    text_content   = None
+    content_type   = None
+    document_title = regulation.get("title", "Untitled")
+
+    extra_meta = regulation.get("extra_meta") or {}
+    if isinstance(extra_meta, str):
+        try:
+            extra_meta = json.loads(extra_meta)
+        except Exception:
+            extra_meta = {}
+
+    org_pdf_text = extra_meta.get("org_pdf_text")
+    if org_pdf_text and len(org_pdf_text) > 200:
+        text_content = org_pdf_text
+        content_type = "pdf_text"
+
+    if not text_content:
+        doc_html = regulation.get("document_html")
+        if doc_html and len(doc_html) > 200:
+            text_content = doc_html
+            content_type = "html"
+
+    if not text_content:
+        raise HTTPException(status_code=422, detail=f"No extractable text found for regulation {regulation_id}.")
+
+    from processor.LlmAnalyzer import LLMAnalyzer as _LLMAnalyzer
+    normalizer = _LLMAnalyzer()
+    try:
+        clean_text = normalizer.normalize_input_text(text_content, content_type=content_type)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Text normalization failed: {str(e)}")
+
+    if len(clean_text) < 200:
+        raise HTTPException(status_code=422, detail=f"Extracted text too short ({len(clean_text)} chars).")
+
+    logger.info(f"[staged-analysis] Starting for regulation {regulation_id}")
+
+    raw_date       = regulation.get("published_date")
+    published_date = str(raw_date)[:10] if raw_date else ""
+
+    rows = staged_analyzer.analyze(
+        text=clean_text,
+        regulation_id=regulation_id,
+        document_title=document_title,
+        regulator=regulation.get("regulator") or "",
+        reference=regulation.get("reference_no") or "",
+        publication_date=published_date,
+    )
+
+    if not rows:
+        raise HTTPException(status_code=422, detail=f"Pipeline extracted 0 requirements for regulation {regulation_id}.")
+
+    repo.store_staged_analysis(rows)
+    _invalidate_ar_cache(regulation_id)
+    logger.info(f"[staged-analysis] Stored {len(rows)} rows for regulation {regulation_id}")
+
+    exec_counts: dict[str, int] = {}
+    crit_counts: dict[str, int] = {}
+    for r in rows:
+        ec = r.get("execution_category") or "Unknown"
+        cr = r.get("criticality") or "Unknown"
+        exec_counts[ec] = exec_counts.get(ec, 0) + 1
+        crit_counts[cr] = crit_counts.get(cr, 0) + 1
+
+    return {
+        "success":        True,
+        "regulation_id":  regulation_id,
+        "document_title": document_title,
+        "text_length":    len(clean_text),
+        "content_type":   content_type,
+        "analysis": {
+            "requirements_extracted": len(rows),
+            "by_execution_category":  exec_counts,
+            "by_criticality":         crit_counts,
+        },
+        "next_step": f"POST /trigger/requirement-matching/{regulation_id}"
+    }
+
+
+@app.get("/compliance-analysis-v2/{regulation_id}", tags=["V2 Staged Analysis"])
+def get_compliance_analysis_v2(
+    regulation_id: int,
+    execution_category: Optional[str] = Query(None),
+    criticality: Optional[str] = Query(None),
+    lang: str = Query("en"),
+):
+    lang = _validate_lang(lang)
+    rows = repo.get_compliance_analysis_v2(regulation_id)
+
+    if not rows:
+        reg = repo.get_regulation_by_id(regulation_id)
+        if not reg:
+            raise HTTPException(status_code=404, detail=f"Regulation {regulation_id} not found")
+        return {
+            "success": True, "regulation_id": regulation_id, "schema_version": "v2",
+            "has_analysis": False,
+            "message": f"No v2 analysis. Run POST /trigger/staged-analysis/{regulation_id}.",
+            "requirements": [], "summary": {}
+        }
+
+    if execution_category:
+        rows = [r for r in rows if r.get("execution_category") == execution_category]
+    if criticality:
+        rows = [r for r in rows if r.get("criticality") == criticality]
+
+    table_rows = []
+    for row in rows:
+        s2 = row.get("stage2_json") or {}
+        if isinstance(s2, str):
+            try:
+                s2 = json.loads(s2)
+            except Exception:
+                s2 = {}
+        table_rows.append({
+            "id":                 row["id"],
+            "requirement_id":     row.get("requirement_id"),
+            "requirement_title":  row.get("requirement_title"),
+            "execution_category": row.get("execution_category"),
+            "criticality":        row.get("criticality"),
+            "obligation_type":    row.get("obligation_type"),
+            "obligation_count":   len(s2.get("normalized_obligations", [])),
+            "status":             row.get("status"),
+            "created_at":         serialize_datetime(row.get("created_at")),
+        })
+
+    all_rows = repo.get_compliance_analysis_v2(regulation_id)
+    exec_counts, crit_counts = {}, {}
+    for r in all_rows:
+        ec = r.get("execution_category") or "Unknown"
+        cr = r.get("criticality") or "Unknown"
+        exec_counts[ec] = exec_counts.get(ec, 0) + 1
+        crit_counts[cr] = crit_counts.get(cr, 0) + 1
+
+    return {
+        "success":        True,
+        "lang":           lang,
+        "regulation_id":  regulation_id,
+        "schema_version": "v2",
+        "has_analysis":   True,
+        "total":          len(all_rows),
+        "filtered_total": len(table_rows),
+        "requirements":   table_rows,
+        "summary": {
+            "by_execution_category": exec_counts,
+            "by_criticality":        crit_counts,
+        }
+    }
+
+
+@app.get("/compliance-analysis-v2/{regulation_id}/requirement/{requirement_id}", tags=["V2 Staged Analysis"])
+def get_requirement_detail_v2(regulation_id: int, requirement_id: str, lang: str = Query("en")):
+    lang = _validate_lang(lang)
+
+    rows = repo.get_compliance_analysis_v2(regulation_id)
+    row  = next((r for r in rows if r.get("requirement_id") == requirement_id), None)
+
+    if not row:
+        raise HTTPException(status_code=404,
+            detail=f"Requirement '{requirement_id}' not found for regulation {regulation_id}. "
+                   f"Available: {[r.get('requirement_id') for r in rows]}")
+
+    def _parse(val):
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return {}
+        return val or {}
+
+    s2 = _parse(row.get("stage2_json"))
+    s3 = _parse(row.get("stage3_json"))
+
+    obligations = s2.get("normalized_obligations", [])
+    control_map = {
+        ob["obligation_id"]: ob.get("control")
+        for ob in s3.get("obligations", [])
+        if ob.get("obligation_id")
+    }
+
+    enriched_obligations = [
+        {**ob, "control": control_map.get(ob.get("obligation_id"))}
+        for ob in obligations
+    ]
+
+    return {
+        "success":            True,
+        "lang":               lang,
+        "regulation_id":      regulation_id,
+        "requirement_id":     row.get("requirement_id"),
+        "requirement_title":  row.get("requirement_title"),
+        "execution_category": row.get("execution_category"),
+        "criticality":        row.get("criticality"),
+        "obligation_type":    row.get("obligation_type"),
+        "obligations":        enriched_obligations,
+        "obligations_total":  len(enriched_obligations),
+        "controls_designed":  sum(1 for ob in enriched_obligations if ob.get("control")),
+        "status":             row.get("status"),
+        "created_at":         serialize_datetime(row.get("created_at")),
+    }
+
+
+@app.get("/compliance-analysis-v2/{regulation_id}/executive-summary", tags=["V2 Staged Analysis"])
+def get_executive_summary_v2(regulation_id: int):
+    md = repo.get_stage4_executive_summary(regulation_id)
+    if not md:
+        rows = repo.get_compliance_analysis_v2(regulation_id)
+        if not rows:
+            raise HTTPException(404, f"No v2 analysis for regulation {regulation_id}.")
+        raise HTTPException(404, "v2 rows exist but executive summary is empty.")
+    return {"success": True, "regulation_id": regulation_id, "executive_summary_md": md, "length_chars": len(md)}
