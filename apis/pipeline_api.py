@@ -33,8 +33,8 @@ from utils.lang_translator import (
     translate_v2_gap_result,
 )
 print("=" * 100)
-print("PIPELINE_API.PY MODULE LOADED!")
-print("Python is executing this file")
+print("🚀 PIPELINE_API.PY MODULE LOADED!")
+print("🔧 Python is executing this file")
 print("=" * 100)
 
 logger = logging.getLogger(__name__)
@@ -570,7 +570,66 @@ _V2_GAP_TRANSLATABLE_FIELDS = [
     "obligation_text", "evidence_text", "gap_description",
     "controls", "kpis", "requirement_title",
 ]
-
+@app.post("/trigger/full-analysis/{regulation_id}", tags=["V2 Staged Analysis"])
+def trigger_full_analysis(regulation_id: int, force: bool = Query(False)):
+    """
+    Run staged analysis AND requirement matching in a single call.
+ 
+    Equivalent to calling:
+      POST /trigger/staged-analysis/{id}
+      POST /trigger/requirement-matching/{id}
+ 
+    Works for all regulators (CBB, SAMA, SBP, SECP).
+    For CBB: analysis is linked to the active regulation_versions snapshot.
+    Use ?force=true to re-run even if analysis already exists.
+    """
+    # Step 1: Staged analysis
+    analysis_result = {}
+    try:
+        analysis_result = trigger_staged_analysis(regulation_id, force=force)
+    except HTTPException as e:
+        raise HTTPException(
+            e.status_code,
+            f"Staged analysis failed: {e.detail if isinstance(e.detail, str) else json.dumps(e.detail)}"
+        )
+ 
+    # Step 2: Requirement matching (always run — even if analysis was skipped)
+    matching_result = {}
+    matching_error  = None
+    try:
+        matching_result = trigger_requirement_matching_v2(regulation_id)
+    except HTTPException as e:
+        matching_error = e.detail if isinstance(e.detail, str) else json.dumps(e.detail)
+        logger.warning(f"[full-analysis] matching failed for {regulation_id}: {matching_error}")
+    except Exception as e:
+        matching_error = str(e)
+        logger.error(f"[full-analysis] matching unexpected error {regulation_id}: {e}")
+ 
+    return {
+        "success":       True,
+        "regulation_id": regulation_id,
+        "force":         force,
+        "analysis": {
+            "skipped":                analysis_result.get("skipped", False),
+            "requirements_extracted": analysis_result.get("analysis", {}).get("requirements_extracted", 0),
+            "version_id":             analysis_result.get("version_id"),
+            "content_type":           analysis_result.get("content_type"),
+            "text_length":            analysis_result.get("text_length"),
+            "by_execution_category":  analysis_result.get("analysis", {}).get("by_execution_category", {}),
+            "by_criticality":         analysis_result.get("analysis", {}).get("by_criticality", {}),
+        },
+        "matching": {
+            "success": matching_error is None,
+            "error":   matching_error,
+            "summary": matching_result.get("summary", {}),
+        },
+        "next_steps": {
+            "view_full_analysis": f"GET  /compliance-analysis/{regulation_id}",
+            "view_mapping":       f"GET  /requirement-mapping/{regulation_id}",
+            "gap_analysis":       f"POST /gap-analysis/single  (form: regulation_id={regulation_id})",
+            "delete_and_rerun":   f"DELETE /admin/analysis/{regulation_id}  →  POST /trigger/full-analysis/{regulation_id}?force=true",
+        },
+    }
 
 def _run_gap_for_regulation_v2(
     session_id: int, regulation_id: int, uploaded_text: str
@@ -1509,43 +1568,88 @@ def get_regulation_detail(
 #  COMPLIANCE ANALYSIS ENDPOINTS                                       #
 # ================================================================== #
 
+# REPLACE this entire function in pipeline_api.py
+# Find: @app.get("/compliance-analysis/{regulation_id}")
+
 @app.get("/compliance-analysis/{regulation_id}")
 def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
 
-    regulation = repo.get_regulation_by_id(regulation_id)
-    if not regulation:
-        raise HTTPException(404, f"Regulation {regulation_id} not found.")
+    # ── Always return 200 — frontend must never get 404 on this endpoint ──
+    # Even if regulation doesn't exist or has no analysis, return structured
+    # response so the UI can show the regulation detail without crashing.
 
-    # Unified read — works for all regulators
+    regulation = repo.get_regulation_by_id(regulation_id)
+
+    # Regulation not found — return 200 with empty shell
+    if not regulation:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success":        False,
+                "lang":           lang,
+                "regulation_id":  regulation_id,
+                "schema_version": "v2",
+                "has_analysis":   False,
+                "message":        f"Regulation {regulation_id} not found.",
+                "regulation":     None,
+                "requirements":   [],
+                "summary": {
+                    "total_requirements": 0,
+                    "total_obligations":  0,
+                    "by_match_status": {
+                        "fully_matched": 0,
+                        "partially_matched": 0,
+                        "new": 0,
+                    },
+                },
+            }
+        )
+
+    # Regulation exists but no analysis yet
     v2_rows = repo.get_compliance_analysis(regulation_id)
     if not v2_rows:
-        return {
-            "success": True,
-            "lang": lang,
-            "regulation_id": regulation_id,
-            "schema_version": "v2",
-            "has_analysis": False,
-            "message": (
-                f"No compliance analysis found. "
-                f"Run POST /trigger/staged-analysis/{regulation_id} to generate it."
-            ),
-            "regulation": {
-                "id":             regulation.get("id"),
-                "title":          regulation.get("title"),
-                "regulator":      regulation.get("regulator"),
-                "published_date": str(regulation.get("published_date") or ""),
-                "reference_no":   regulation.get("reference_no"),
-                "category":       regulation.get("category"),
-            },
-            "requirements": [],
-            "summary": {
-                "total_requirements": 0,
-                "total_obligations":  0,
-                "by_match_status":    {"fully_matched": 0, "partially_matched": 0, "new": 0},
-            },
-        }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success":        True,
+                "lang":           lang,
+                "regulation_id":  regulation_id,
+                "schema_version": "v2",
+                "has_analysis":   False,
+                "message": (
+                    f"No compliance analysis found for regulation {regulation_id}. "
+                    f"Run POST /trigger/full-analysis/{regulation_id} to generate it."
+                ),
+                "regulation": {
+                    "id":             regulation.get("id"),
+                    "title":          regulation.get("title"),
+                    "regulator":      regulation.get("regulator"),
+                    "source_system":  regulation.get("source_system"),
+                    "category":       regulation.get("category"),
+                    "published_date": str(regulation.get("published_date") or ""),
+                    "reference_no":   regulation.get("reference_no"),
+                    "document_url":   regulation.get("document_url"),
+                    "source_page_url":regulation.get("source_page_url"),
+                    "document_html":  regulation.get("document_html"),
+                    "doc_path":       regulation.get("doc_path"),
+                    "extra_meta":     regulation.get("extra_meta"),
+                    "content_hash":   regulation.get("content_hash"),
+                },
+                "requirements":   [],
+                "summary": {
+                    "total_requirements": 0,
+                    "total_obligations":  0,
+                    "by_match_status": {
+                        "fully_matched": 0,
+                        "partially_matched": 0,
+                        "new": 0,
+                    },
+                },
+            }
+        )
 
+    # Has analysis — return full response
     if lang == "ar":
         cache_key = f"GET /compliance-analysis-full/{regulation_id}"
         cached    = _get_ar_cache(cache_key)
@@ -1554,11 +1658,26 @@ def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
 
     mapping_data = build_v2_full_analysis_response(regulation_id, lang)
     result = {
-        "success": True,
-        "lang": lang,
-        "regulation_id": regulation_id,
+        "success":        True,
+        "lang":           lang,
+        "regulation_id":  regulation_id,
         "schema_version": "v2",
-        "has_analysis": True,
+        "has_analysis":   True,
+        "regulation": {
+            "id":             regulation.get("id"),
+            "title":          regulation.get("title"),
+            "regulator":      regulation.get("regulator"),
+            "source_system":  regulation.get("source_system"),
+            "category":       regulation.get("category"),
+            "published_date": str(regulation.get("published_date") or ""),
+            "reference_no":   regulation.get("reference_no"),
+            "document_url":   regulation.get("document_url"),
+            "source_page_url":regulation.get("source_page_url"),
+            "document_html":  regulation.get("document_html"),
+            "doc_path":       regulation.get("doc_path"),
+            "extra_meta":     regulation.get("extra_meta"),
+            "content_hash":   regulation.get("content_hash"),
+        },
         **mapping_data,
     }
 
@@ -1566,7 +1685,6 @@ def get_compliance_analysis_full(regulation_id: int, lang: str = Query("en")):
         _set_ar_cache(cache_key, result)
 
     return result
-
 
 # ================================================================== #
 #  GAP ANALYSIS ENDPOINTS                                              #
@@ -1616,7 +1734,7 @@ async def gap_analysis_single(
     return final_response
 
 
-@app.post("/gap-analysis/multi", response_model=GapAnalysisResponse, tags=["Gap Analysis"])
+@app.post("/gap-analysis/multi", tags=["Gap Analysis"])
 async def gap_analysis_multi(
     regulation_ids: str = Form(..., description="Comma-separated regulation IDs"),
     file: UploadFile = File(...),
@@ -1625,20 +1743,22 @@ async def gap_analysis_multi(
     lang = _validate_lang(lang)
     if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
         raise HTTPException(400, "Only PDF and DOCX files are supported")
+ 
     try:
-        reg_ids: List[int] = [int(rid.strip()) for rid in regulation_ids.split(",")]
+        reg_ids: List[int] = [int(rid.strip()) for rid in regulation_ids.split(",") if rid.strip()]
     except ValueError:
         raise HTTPException(400, "regulation_ids must be comma-separated integers")
     if not reg_ids:
         raise HTTPException(400, "At least one regulation_id is required")
-
+ 
     uploaded_text = await _save_and_extract_file(file)
     if not uploaded_text or len(uploaded_text) < 50:
-        raise HTTPException(422, "Could not extract sufficient text")
-
+        raise HTTPException(422, "Could not extract sufficient text from uploaded file")
+ 
     session_id = repo.create_gap_session(file.filename, uploaded_text)
-    regulation_summaries, errors = [], []
-
+    regulation_summaries: List[RegulationGapSummary] = []
+    errors = []
+ 
     for reg_id in reg_ids:
         try:
             if lang == "ar":
@@ -1647,10 +1767,10 @@ async def gap_analysis_multi(
                 if cached:
                     regulation_summaries.append(RegulationGapSummary(**cached))
                     continue
-
+ 
             summary = _run_gap_for_regulation_v2(session_id, reg_id, uploaded_text)
             summary.results = _enrich_results_with_controls_v2(summary.results, reg_id)
-
+ 
             if lang == "ar":
                 summary.results = _translate_v2_gap_results(summary.results, lang)
                 summary = RegulationGapSummary(
@@ -1659,21 +1779,54 @@ async def gap_analysis_multi(
                     summary=summary.summary,
                 )
                 _set_ar_cache(gap_cache_key, summary.dict())
-
+ 
             regulation_summaries.append(summary)
+ 
         except HTTPException as e:
-            errors.append({"regulation_id": reg_id, "error": e.detail})
+            # Always stringify — dict detail causes frontend null.toString() crash
+            detail = e.detail
+            error_msg = detail if isinstance(detail, str) else json.dumps(detail)
+            errors.append({
+                "regulation_id": reg_id,
+                "error": error_msg,
+                "status_code": e.status_code,
+            })
+            logger.warning(f"[gap-multi] reg_id={reg_id} HTTP {e.status_code}: {error_msg}")
+ 
         except Exception as e:
-            errors.append({"regulation_id": reg_id, "error": str(e)})
-
+            errors.append({"regulation_id": reg_id, "error": str(e), "status_code": 500})
+            logger.error(f"[gap-multi] reg_id={reg_id} unexpected: {e}", exc_info=True)
+ 
+    # Return 200 with errors array instead of raising 500
+    # Raising 500 causes frontend RxJS to call .toString() on null → crash
     if not regulation_summaries:
-        raise HTTPException(500, f"Gap analysis failed for all regulations. Errors: {errors}")
-
-    return GapAnalysisResponse(
-        session_id=session_id,
-        uploaded_document_name=file.filename,
-        regulations=regulation_summaries,
+        return JSONResponse(
+            status_code=200,
+            content={
+                "session_id":             session_id,
+                "uploaded_document_name": file.filename,
+                "regulations":            [],
+                "errors":                 errors,
+                "success":                False,
+                "message": (
+                    f"Gap analysis failed for all {len(errors)} regulation(s). "
+                    "Run POST /trigger/staged-analysis/{id} first to generate analysis."
+                ),
+            }
+        )
+ 
+    return JSONResponse(
+        status_code=200,
+        content={
+            "session_id":             session_id,
+            "uploaded_document_name": file.filename,
+            "regulations":            [s.dict() for s in regulation_summaries],
+            "errors":                 errors,
+            "success":                True,
+            "partial":                len(errors) > 0,
+        }
     )
+ 
 
 
 @app.post("/gap-analysis/multi-docs", tags=["Gap Analysis"])
@@ -2406,11 +2559,11 @@ def trigger_staged_analysis(regulation_id: int, force: bool = Query(False)):
             if len(content_text) >= 200:
                 text_content = content_text
                 content_type = "html"
-                logger.info(f"Using content_text from regulation_versions ({len(text_content)} chars)")
+                logger.info(f"✓ Using content_text from regulation_versions ({len(text_content)} chars)")
             elif len(content_html) >= 200:
                 text_content = content_html
                 content_type = "html"
-                logger.info(f"Using content_html from regulation_versions ({len(text_content)} chars)")
+                logger.info(f"✓ Using content_html from regulation_versions ({len(text_content)} chars)")
 
     # ── FOR SAMA/SBP/SECP: Check extra_meta and document_html ──
     if not text_content:
@@ -3820,3 +3973,80 @@ def get_active_version(regulation_id: int):
             "content_html": version_data.get("content_html")
         }
     }
+
+@app.delete("/admin/analysis/{regulation_id}", tags=["Admin"])
+def delete_full_analysis(
+    regulation_id: int,
+    include_versions: bool = Query(False, description="Also delete archived compliance_analysis_versions"),
+):
+    """
+    Delete all compliance analysis + requirement mapping data for a regulation.
+ 
+    Deletes:
+      - compliance_analysis (current active rows)
+      - sama_requirement_mapping (requirement mappings)
+      - DEMO_REQUIREMENT_CONTROL_LINK (control links)
+      - DEMO_REQUIREMENT_KPI_LINK (KPI links)
+ 
+    If include_versions=true also deletes:
+      - compliance_analysis_versions (CBB archived history only)
+ 
+    Does NOT delete: regulation record, regulation_versions content snapshots.
+    Use this before re-running /trigger/full-analysis/{id}?force=true.
+    """
+    deleted = {}
+    try:
+        with repo._get_conn() as conn:
+            cursor = conn.cursor()
+ 
+            cursor.execute(
+                "DELETE FROM compliance_analysis WHERE regulation_id = ?",
+                [regulation_id]
+            )
+            deleted["compliance_analysis"] = cursor.rowcount
+ 
+            cursor.execute(
+                "DELETE FROM sama_requirement_mapping WHERE regulation_id = ?",
+                [regulation_id]
+            )
+            deleted["requirement_mappings"] = cursor.rowcount
+ 
+            cursor.execute(
+                "DELETE FROM DEMO_REQUIREMENT_CONTROL_LINK WHERE REGULATION_ID = ?",
+                [regulation_id]
+            )
+            deleted["control_links"] = cursor.rowcount
+ 
+            cursor.execute(
+                "DELETE FROM DEMO_REQUIREMENT_KPI_LINK WHERE REGULATION_ID = ?",
+                [regulation_id]
+            )
+            deleted["kpi_links"] = cursor.rowcount
+ 
+            if include_versions:
+                cursor.execute(
+                    "DELETE FROM compliance_analysis_versions WHERE regulation_id = ?",
+                    [regulation_id]
+                )
+                deleted["compliance_analysis_versions"] = cursor.rowcount
+ 
+            conn.commit()
+ 
+        _invalidate_ar_cache(regulation_id)
+ 
+        return {
+            "success":       True,
+            "regulation_id": regulation_id,
+            "deleted":       deleted,
+            "total_deleted": sum(deleted.values()),
+            "note": (
+                "Regulation record and regulation_versions snapshots were NOT deleted. "
+                "Use include_versions=true to also clear archived analysis history."
+            ),
+            "next_step": f"POST /trigger/full-analysis/{regulation_id}?force=true",
+        }
+ 
+    except Exception as e:
+        logger.exception(f"Error deleting analysis for regulation {regulation_id}")
+        raise HTTPException(500, str(e))
+ 
