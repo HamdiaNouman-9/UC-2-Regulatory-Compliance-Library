@@ -50,40 +50,38 @@ class MSSQLRepository(DocumentRepository):
     #  FOLDER MANAGEMENT                                                   #
     # ================================================================== #
 
-    def get_folder_id(self, title: str, parent_id: int = None) -> int:
+    def get_folder_id(self, title: str, parent_id: Optional[int]) -> Optional[int]:
+        """
+        Look up a folder by title + parent_id in compliancecategory.
+        Returns the folder's ID, or None if not found.
+        """
         query = """
-            SELECT compliancecategory_id
+            SELECT TOP 1 compliancecategory_id
             FROM compliancecategory
-            WHERE title = ? AND (parentid = ? OR (parentid IS NULL AND ? IS NULL))
+            WHERE title = ?
+              AND (
+                (parentid IS NULL AND ? IS NULL)
+                OR parentid = ?
+              )
         """
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (title, parent_id, parent_id))
-                row = cursor.fetchone()
-                return row[0] if row else None
-        except Exception as e:
-            logger.error(f"Failed to get folder ID: {e}")
-            return None
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [title, parent_id, parent_id])
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
 
-    def insert_folder(self, title: str, parent_id: int = None) -> int:
-        query = """
-            INSERT INTO compliancecategory (title, parentid)
-            OUTPUT INSERTED.compliancecategory_id
-            VALUES (?, ?)
-        """
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (title, parent_id))
-                folder_id = cursor.fetchone()[0]
-                conn.commit()
-                logger.info(f"Created folder: {title} (ID: {folder_id}, Parent: {parent_id})")
-                return folder_id
-        except Exception as e:
-            logger.error(f"Failed to insert folder: {e}")
-            raise
-
+    def insert_folder(self, title: str, parent_id, cat_type: str = "F") -> int:
+     query = """
+        INSERT INTO compliancecategory (title, parentid, type)
+        OUTPUT INSERTED.compliancecategory_id
+        VALUES (?, ?, ?)
+    """
+     with self._get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, [title, parent_id, cat_type])
+        row = cursor.fetchone()
+        conn.commit()
+        return int(row[0])
     # ================================================================== #
     #  REGULATION INSERT / UPDATE                                          #
     # ================================================================== #
@@ -99,6 +97,10 @@ class MSSQLRepository(DocumentRepository):
 
         document_html = getattr(document, "document_html", None)
 
+        # type defaults to "R" for regulations; callers can override via document.type
+        doc_type   = getattr(document, "type",   "R") or "R"
+        doc_status = getattr(document, "status", "active") or "active"
+
         sql = """
             INSERT INTO regulations (
                 regulator, source_system, category,
@@ -106,10 +108,11 @@ class MSSQLRepository(DocumentRepository):
                 published_date, reference_no,
                 department, year,
                 source_page_url, extra_meta,
-                compliancecategory_id, document_html
+                compliancecategory_id, document_html,
+                type, status
             )
             OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         try:
             with self._get_conn() as conn:
@@ -134,13 +137,15 @@ class MSSQLRepository(DocumentRepository):
                     document.source_page_url,
                     extra_meta_json,
                     getattr(document, "compliancecategory_id", None),
-                    document_html
+                    document_html,
+                    doc_type,
+                    doc_status,
                 ))
                 reg_id = cursor.fetchone()[0]
                 conn.commit()
 
             document.id = reg_id
-            logger.info(f"Inserted regulation ID: {reg_id}")
+            logger.info(f"Inserted regulation ID: {reg_id} (type={doc_type})")
             return reg_id
         except Exception as e:
             logger.error(f"Failed to insert regulation: {e}")
@@ -167,10 +172,6 @@ class MSSQLRepository(DocumentRepository):
             raise
 
     def save_metadata(self, document: RegulatoryDocument) -> None:
-        """
-        Save/update metadata for a regulatory document.
-        This is an abstract method required by DocumentRepository.
-        """
         try:
             regulation_id = document.id
             if not regulation_id:
@@ -248,33 +249,29 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to check source_page_url existence: {e}")
             return None
 
-    def get_regulation_id_by_doc_path(self, doc_path: list) -> Optional[int]:
-        """
-        Find regulation ID by doc_path (used for CBB.gov.bh pages).
-        doc_path is stored as JSON array in the database.
-        """
-        if not doc_path:
-            return None
 
-        doc_path_json = json.dumps(doc_path)
-        query = """
-            SELECT id
-            FROM regulations
-            WHERE doc_path = ?
-              AND regulator = 'Central Bank of Bahrain'
-        """
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (doc_path_json,))
-                row = cursor.fetchone()
-                return row[0] if row else None
-        except Exception as e:
-            logger.error(f"Failed to check doc_path existence: {e}")
-            return None
     # ================================================================== #
     #  REGULATION RETRIEVAL                                                #
     # ================================================================== #
+
+    def get_regulation_id_by_doc_path(self, doc_path: list) -> Optional[int]:
+     if not doc_path:
+        return None
+     doc_path_json = json.dumps(doc_path, ensure_ascii=False)
+     query = """
+        SELECT TOP 1 id
+        FROM regulations
+        WHERE doc_path = ?
+    """
+     try:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [doc_path_json])
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
+     except Exception as e:
+        logger.error(f"Failed to check doc_path existence: {e}")
+        return None
 
     def get_regulation_by_id(self, regulation_id: int) -> Optional[dict]:
         query = """
@@ -286,7 +283,7 @@ class MSSQLRepository(DocumentRepository):
                 compliancecategory_id,
                 CAST(created_at AS DATETIME2) as created_at,
                 CAST(updated_at AS DATETIME2) as updated_at,
-                document_html, content_hash
+                document_html, content_hash, type, status
             FROM regulations
             WHERE id = ?
         """
@@ -370,47 +367,35 @@ class MSSQLRepository(DocumentRepository):
         content_hash: str,
         updated_date,
         change_summary: str,
-        status: str = 'active',
+        status: str = "active",
     ) -> int:
         """
-        Insert a content snapshot into regulation_versions.
-        Returns version_id.
-
-        This replaces the old insert_cbb_version() — now regulator-aware,
-        though currently only CBB creates version snapshots.
+        Insert a new version snapshot into regulation_versions.
+        Returns the new version_id.
         """
         query = """
-            INSERT INTO regulation_versions (
-                regulation_id, regulator,
-                content_html, content_text,
-                content_hash, updated_date,
-                change_summary, status
-            )
+            INSERT INTO regulation_versions
+                (regulation_id, regulator, content_html, content_text,
+                 content_hash, updated_date, change_summary, status, created_at)
             OUTPUT INSERTED.version_id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
         """
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (
-                    regulation_id, regulator,
-                    content_html, content_text,
-                    content_hash, updated_date,
-                    change_summary, status
-                ))
-                row = cursor.fetchone()
-                version_id = row[0] if row else None
-                conn.commit()
-                logger.info(
-                    f"Inserted regulation_version {version_id} "
-                    f"(reg={regulation_id}, regulator={regulator})"
-                )
-                return version_id
-        except Exception as e:
-            logger.error(f"Failed to insert regulation version: {e}")
-            raise
-
-    # Keep the old name as an alias so existing call-sites don't break during migration
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [
+                regulation_id,
+                regulator,
+                content_html,
+                content_text,
+                content_hash,
+                updated_date,
+                change_summary,
+                status,
+            ])
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row[0])
+        
     def insert_cbb_version(
         self,
         regulation_id: int,
@@ -431,7 +416,6 @@ class MSSQLRepository(DocumentRepository):
         )
 
     def get_regulation_versions(self, regulation_id: int) -> list:
-        """Get all content version snapshots for a regulation."""
         query = """
             SELECT
                 version_id, regulation_id, regulator,
@@ -452,53 +436,50 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to get regulation versions for {regulation_id}: {e}")
             return []
 
-    def get_active_regulation_version(self, regulation_id: int):
+    def get_active_regulation_version(self, regulation_id: int) -> Optional[dict]:
         """
-        Fetch the ACTIVE version content for a CBB regulation.
-
-        Returns:
-            dict with keys: version_id, content_html, content_text, content_hash
-            or None if no active version found
+        Get the current active version for a regulation.
+        Returns a dict with version fields, or None.
         """
         query = """
-            SELECT 
-                version_id,
-                content_html,
-                content_text,
-                content_hash,
-                status,
-                created_at
+            SELECT TOP 1
+                version_id, content_html, content_text, content_hash,
+                status, change_summary, created_at
             FROM regulation_versions
             WHERE regulation_id = ?
-            AND status = 'active'
-            ORDER BY created_at DESC
+              AND status = 'active'
+            ORDER BY created_at DESC, version_id DESC
         """
-
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (regulation_id,))
-                row = cursor.fetchone()
-
-                if row:
-                    return {
-                        "version_id": row[0],
-                        "content_html": row[1],
-                        "content_text": row[2],
-                        "content_hash": row[3],
-                        "status": row[4],
-                        "created_at": row[5],
-                    }
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [regulation_id])
+            row = cursor.fetchone()
+            if not row:
                 return None
-        except Exception as e:
-            logger.error(f"Failed to get active regulation version: {e}")
-            return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        
+    def mark_all_versions_inactive(self, regulation_id: int) -> int:
+        """
+        Mark ALL active versions for a regulation as inactive.
+        Call this BEFORE inserting a new active version.
+        Returns the count of rows updated.
+        """
+        query = """
+            UPDATE regulation_versions
+            SET status = 'inactive'
+            WHERE regulation_id = ?
+              AND status = 'active'
+        """
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [regulation_id])
+            rows_updated = cursor.rowcount
+            conn.commit()
+            return rows_updated    
+
     # ================================================================== #
     #  COMPLIANCE ANALYSIS — UNIFIED PRIMARY STORE                         #
-    #                                                                      #
-    #  compliance_analysis holds CURRENT rows for ALL regulators.          #
-    #  For CBB: version_id and is_current are populated.                   #
-    #  For SAMA/SBP/SECP: version_id is NULL, is_current defaults to 1.   #
     # ================================================================== #
 
     def store_analysis(
@@ -506,16 +487,6 @@ class MSSQLRepository(DocumentRepository):
         rows: List[dict],
         version_id: Optional[int] = None,
     ) -> None:
-        """
-        Insert analysis rows into compliance_analysis (the unified current table).
-
-        Called for ALL regulators:
-          - SAMA/SBP/SECP: version_id=None (no content versioning)
-          - CBB new doc:    version_id=<new version>
-          - CBB modified:   version_id=<new version> (old rows already archived first)
-
-        All inserted rows get is_current=1 and schema_version='v2'.
-        """
         query = """
             INSERT INTO compliance_analysis (
                 regulation_id, version_id,
@@ -559,91 +530,38 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to store analysis: {e}")
             raise
 
-    # Keep the old SAMA-path name as an alias — callers that used
-    # store_staged_analysis() will still work without changes.
     def store_staged_analysis(self, rows: List[dict]) -> None:
         self.store_analysis(rows, version_id=None)
 
     def archive_current_analysis(self, regulation_id: int, version_id: int) -> int:
         """
-        Move current compliance_analysis rows for a CBB regulation into
-        compliance_analysis_versions (status='inactive'), then delete them
-        from compliance_analysis.
-
-        Returns the count of rows archived.
-        Called BEFORE inserting new analysis for a modified CBB document.
+        Archive current compliance_analysis rows for a regulation+version
+        into compliance_analysis_versions.
+        Returns count archived.
         """
-        # 1. Fetch current rows
-        current_rows = self.get_compliance_analysis(regulation_id)
-        if not current_rows:
-            logger.info(
-                f"No current analysis to archive for regulation {regulation_id}"
-            )
-            return 0
-
-        # 2. Write them into compliance_analysis_versions with status='inactive'
-        insert_q = """
-            INSERT INTO compliance_analysis_versions (
-                regulation_id, version_id,
-                requirement_id, requirement_title,
-                execution_category, criticality, obligation_type,
-                stage1_json, stage2_json, stage3_json, stage4_md,
-                analysis_json, schema_version, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2', 'inactive')
+        query = """
+            INSERT INTO compliance_analysis_versions
+                (regulation_id, version_id, requirement_text, obligation_type,
+                 control_category, risk_level, compliance_status, created_at)
+            SELECT
+                regulation_id, ?, requirement_text, obligation_type,
+                control_category, risk_level, compliance_status, GETDATE()
+            FROM compliance_analysis
+            WHERE regulation_id = ?
+              AND is_current = 1
         """
-
-        def _s(v):
-            if v is None:
-                return None
-            return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-
-        try:
-            with self._get_conn() as conn:
-                cursor = conn.cursor()
-                for row in current_rows:
-                    cursor.execute(insert_q, (
-                        row["regulation_id"],
-                        version_id,
-                        row.get("requirement_id"),
-                        row.get("requirement_title"),
-                        row.get("execution_category"),
-                        row.get("criticality"),
-                        row.get("obligation_type"),
-                        _s(row.get("stage1_json")),
-                        _s(row.get("stage2_json")),
-                        _s(row.get("stage3_json")),
-                        row.get("stage4_md"),
-                        _s(row.get("analysis_json")),
-                    ))
-
-                # 3. Delete from compliance_analysis
-                cursor.execute(
-                    "DELETE FROM compliance_analysis WHERE regulation_id = ?",
-                    [regulation_id]
-                )
-                conn.commit()
-
-            count = len(current_rows)
-            logger.info(
-                f"Archived {count} analysis rows to compliance_analysis_versions "
-                f"(version_id={version_id}, status=inactive) and cleared compliance_analysis"
-            )
-            return count
-        except Exception as e:
-            logger.error(f"Failed to archive analysis for regulation {regulation_id}: {e}")
-            raise
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [version_id, regulation_id])
+            archived = cursor.rowcount
+            conn.commit()
+            return archived
 
     # ================================================================== #
     #  COMPLIANCE ANALYSIS — READ                                          #
     # ================================================================== #
 
     def get_compliance_analysis(self, regulation_id: int) -> List[dict]:
-        """
-        Fetch CURRENT active analysis for any regulation.
-
-        Reads from compliance_analysis (is_current=1, schema_version='v2').
-        Works identically for CBB, SAMA, SBP, SECP.
-        """
         query = """
             SELECT
                 id, regulation_id, version_id,
@@ -667,15 +585,10 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to get compliance analysis: {e}")
             return []
 
-    # Keep old name as alias
     def get_compliance_analysis_v2(self, regulation_id: int) -> List[dict]:
         return self.get_compliance_analysis(regulation_id)
 
     def get_analysis_version_history(self, regulation_id: int) -> list:
-        """
-        Fetch all archived analysis versions for a CBB regulation.
-        Returns summary rows (one per version_id) from compliance_analysis_versions.
-        """
         query = """
             SELECT
                 cav.version_id,
@@ -714,12 +627,10 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to get analysis version history for {regulation_id}: {e}")
             return []
 
-    # Keep the old name as an alias
     def get_analysis_versions(self, regulation_id: int) -> list:
         return self.get_analysis_version_history(regulation_id)
 
     def get_analysis_version_detail(self, regulation_id: int, version_id: int) -> list:
-        """Fetch all requirement rows for a specific archived analysis version."""
         query = """
             SELECT
                 id, regulation_id, version_id,
@@ -876,14 +787,10 @@ class MSSQLRepository(DocumentRepository):
             return {}
 
     # ================================================================== #
-    #  REQUIREMENT MATCHING — STORE                                         #
+    #  REQUIREMENT MATCHING — STORE                                        #
     # ================================================================== #
 
     def store_requirement_mappings(self, mappings: list, version_id: Optional[int] = None):
-        """
-        Store requirement matching results.
-        version_id is populated for CBB, NULL for SAMA/SBP/SECP.
-        """
         query = """
             INSERT INTO sama_requirement_mapping (
                 regulation_id, extracted_requirement_text,
@@ -1002,11 +909,10 @@ class MSSQLRepository(DocumentRepository):
             raise
 
     # ================================================================== #
-    #  REQUIREMENT MATCHING — READ MAPPINGS                               #
+    #  REQUIREMENT MATCHING — READ MAPPINGS                                #
     # ================================================================== #
 
     def get_requirement_mappings_by_regulation(self, regulation_id: int) -> list:
-        """Get all requirement mappings for a regulation."""
         query = """
             SELECT
                 srm.regulation_id,
@@ -1036,7 +942,6 @@ class MSSQLRepository(DocumentRepository):
             return []
 
     def get_control_links_by_regulation(self, regulation_id: int) -> list:
-        """Get all control links for a regulation."""
         query = """
             SELECT
                 drcl.COMPLIANCEREQUIREMENT_ID,
@@ -1064,7 +969,6 @@ class MSSQLRepository(DocumentRepository):
             return []
 
     def get_kpi_links_by_regulation(self, regulation_id: int) -> list:
-        """Get all KPI links for a regulation."""
         query = """
             SELECT
                 drkl.COMPLIANCEREQUIREMENT_ID,
@@ -1092,10 +996,8 @@ class MSSQLRepository(DocumentRepository):
             return []
 
     def get_control_links_by_requirement_ids(self, requirement_ids: list) -> list:
-        """Get control links for multiple requirement IDs."""
         if not requirement_ids:
             return []
-
         placeholders = ",".join(["?" for _ in requirement_ids])
         query = f"""
             SELECT

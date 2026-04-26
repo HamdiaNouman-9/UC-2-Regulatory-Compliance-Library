@@ -39,6 +39,10 @@ class RegulatoryDocument:
 
     # ---- HTML content ----
     document_html: Optional[str] = None
+    type: Optional[str] = None 
 
     # ---- DB assigned ID ----
     id: Optional[int] = None
+    
+ # ---- Content hash (for CBB change detection) ----
+    content_hash: Optional[str] = None 

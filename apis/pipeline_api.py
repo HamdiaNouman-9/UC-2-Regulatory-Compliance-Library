@@ -570,20 +570,17 @@ _V2_GAP_TRANSLATABLE_FIELDS = [
     "obligation_text", "evidence_text", "gap_description",
     "controls", "kpis", "requirement_title",
 ]
+# ── 5. Trigger endpoints — add lang param for consistency ────────────────────
+# These return counts/IDs/status, not document text — no translation needed.
+# Just add lang: str = Query("en") to each signature.
+ 
 @app.post("/trigger/full-analysis/{regulation_id}", tags=["V2 Staged Analysis"])
-def trigger_full_analysis(regulation_id: int, force: bool = Query(False)):
-    """
-    Run staged analysis AND requirement matching in a single call.
- 
-    Equivalent to calling:
-      POST /trigger/staged-analysis/{id}
-      POST /trigger/requirement-matching/{id}
- 
-    Works for all regulators (CBB, SAMA, SBP, SECP).
-    For CBB: analysis is linked to the active regulation_versions snapshot.
-    Use ?force=true to re-run even if analysis already exists.
-    """
-    # Step 1: Staged analysis
+def trigger_full_analysis(
+    regulation_id: int,
+    force: bool = Query(False),
+    lang: str = Query("en"),
+):
+    # body unchanged — just added lang param
     analysis_result = {}
     try:
         analysis_result = trigger_staged_analysis(regulation_id, force=force)
@@ -593,7 +590,6 @@ def trigger_full_analysis(regulation_id: int, force: bool = Query(False)):
             f"Staged analysis failed: {e.detail if isinstance(e.detail, str) else json.dumps(e.detail)}"
         )
  
-    # Step 2: Requirement matching (always run — even if analysis was skipped)
     matching_result = {}
     matching_error  = None
     try:
@@ -609,6 +605,7 @@ def trigger_full_analysis(regulation_id: int, force: bool = Query(False)):
         "success":       True,
         "regulation_id": regulation_id,
         "force":         force,
+        "lang":          lang,
         "analysis": {
             "skipped":                analysis_result.get("skipped", False),
             "requirements_extracted": analysis_result.get("analysis", {}).get("requirements_extracted", 0),
@@ -2098,8 +2095,11 @@ def get_children(parent_id: int, lang: str = Query("en")):
 #  STATUS ENDPOINTS                                                    #
 # ================================================================== #
 
+# ── 4. Status endpoints — add lang param for consistency ─────────────────────
+ 
 @app.get("/status/full")
-def get_full_status():
+def get_full_status(lang: str = Query("en")):
+    # Status values are technical strings (RUNNING/DONE/FAILED) — not translated
     results = {}
     for regulator in REGULATOR_PIPELINES.keys():
         with repo._get_conn() as conn:
@@ -2110,11 +2110,13 @@ def get_full_status():
             )
             row = cursor.fetchone()
             results[regulator] = row[0] if row else "NOT_STARTED"
-    return {"pipeline_status": results, "timestamp": datetime.utcnow().isoformat()}
-
+    return {
+        "pipeline_status": results,
+        "timestamp":       datetime.utcnow().isoformat(),
+    }
 
 @app.get("/status/{regulator}")
-def get_regulator_status(regulator: str):
+def get_regulator_status(regulator: str, lang: str = Query("en")):
     with repo._get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -2132,7 +2134,7 @@ def get_regulator_status(regulator: str):
         "finished_at": serialize_datetime(row[2]),
         "error":       row[3],
     }
-
+ 
 
 @app.post("/update-status/compliance-analysis")
 def update_compliance_analysis_status(payload: ComplianceStatusUpdate):
@@ -2782,19 +2784,40 @@ def get_requirement_detail_v2(
     "/compliance-analysis-v2/{regulation_id}/executive-summary",
     tags=["V2 Staged Analysis"],
 )
-def get_executive_summary_v2(regulation_id: int):
+def get_executive_summary_v2(regulation_id: int, lang: str = Query("en")):
+    lang = _validate_lang(lang)
     md = repo.get_stage4_executive_summary(regulation_id)
     if not md:
         rows = repo.get_compliance_analysis(regulation_id)
         if not rows:
             raise HTTPException(404, f"No analysis for regulation {regulation_id}.")
         raise HTTPException(404, "Analysis exists but executive summary is empty.")
+ 
+    if lang == "ar":
+        cache_key = f"GET /compliance-analysis-v2/{regulation_id}/executive-summary"
+        cached = _get_ar_cache(cache_key)
+        if cached:
+            return cached
+        translated_list = translate_texts_batch([md], lang)
+        md_out = translated_list[0] if translated_list else md
+        result = {
+            "success":              True,
+            "lang":                 lang,
+            "regulation_id":        regulation_id,
+            "executive_summary_md": md_out,
+            "length_chars":         len(md_out),
+        }
+        _set_ar_cache(cache_key, result)
+        return result
+ 
     return {
         "success":              True,
+        "lang":                 lang,
         "regulation_id":        regulation_id,
         "executive_summary_md": md,
         "length_chars":         len(md),
     }
+ 
 
 
 # ================================================================== #
@@ -3208,15 +3231,16 @@ def get_analysis_versions(
 
     return response
 
+# ── 3. Archived Analysis Version Detail ──────────────────────────────────────
+ 
 @app.get(
     "/regulation/{regulation_id}/analysis-versions/{version_id}",
     tags=["Versions"],
 )
-def get_analysis_version_detail(regulation_id: int, version_id: int):
-    """
-    Full requirement / obligation detail for one ARCHIVED analysis version (CBB only).
-    For the current active analysis use GET /compliance-analysis/{regulation_id}.
-    """
+def get_analysis_version_detail(
+    regulation_id: int, version_id: int, lang: str = Query("en")
+):
+    lang = _validate_lang(lang)
     rows = repo.get_analysis_version_detail(regulation_id, version_id)
     if not rows:
         raise HTTPException(
@@ -3224,15 +3248,87 @@ def get_analysis_version_detail(regulation_id: int, version_id: int):
             f"No archived analysis version {version_id} for regulation {regulation_id}. "
             f"Use GET /regulation/{regulation_id}/analysis-versions to see available versions.",
         )
+ 
+    if lang == "ar":
+        cache_key = f"GET /regulation/{regulation_id}/analysis-versions/{version_id}"
+        cached = _get_ar_cache(cache_key)
+        if cached:
+            return cached
+ 
+        ENUM_TRANSLATIONS = {
+            "execution_category": {
+                "Ongoing_Control":          "رقابة مستمرة",
+                "One_Time_Implementation":  "تنفيذ لمرة واحدة",
+                "Periodic_Review":          "مراجعة دورية",
+                "Governance_Approval":      "موافقة الحوكمة",
+                "One_Off_Reporting":        "إبلاغ لمرة واحدة",
+                "Event_Driven":             "حسب الحدث",
+                "Continuous_Monitoring":    "مراقبة مستمرة",
+                "Annual_Review":            "مراجعة سنوية",
+            },
+            "criticality":     {"High": "عالي", "Medium": "متوسط", "Low": "منخفض"},
+            "obligation_type": {
+                "Reporting":  "إبلاغ",  "Governance": "حوكمة",
+                "Preventive": "وقائي", "Detective":   "كشف",   "Corrective": "تصحيحي",
+            },
+        }
+ 
+        all_texts, positions = [], []
+        for r_idx, row in enumerate(rows):
+            # Translate enum fields in-place
+            for field in ["execution_category", "criticality", "obligation_type"]:
+                val = row.get(field)
+                if val and field in ENUM_TRANSLATIONS:
+                    row[field] = ENUM_TRANSLATIONS[field].get(val, val)
+ 
+            # Collect text fields for batch translation
+            if row.get("requirement_title"):
+                all_texts.append(row["requirement_title"])
+                positions.append(("req", r_idx, "requirement_title", None, None))
+ 
+            for o_idx, ob in enumerate(row.get("obligations") or []):
+                if ob.get("obligation_text"):
+                    all_texts.append(ob["obligation_text"])
+                    positions.append(("ob", r_idx, "obligation_text", o_idx, None))
+                if ob.get("test_method"):
+                    all_texts.append(ob["test_method"])
+                    positions.append(("ob", r_idx, "test_method", o_idx, None))
+                # Enum fields on obligations
+                for field in ["obligation_type", "criticality", "execution_category"]:
+                    val = ob.get(field)
+                    if val and field in ENUM_TRANSLATIONS:
+                        ob[field] = ENUM_TRANSLATIONS[field].get(val, val)
+ 
+        if all_texts:
+            translated = translate_texts_batch(all_texts, lang)
+            for (kind, r_idx, field, o_idx, _), tr in zip(positions, translated):
+                if kind == "req":
+                    rows[r_idx][field] = tr
+                elif kind == "ob":
+                    rows[r_idx]["obligations"][o_idx][field] = tr
+ 
+        result = {
+            "success":           True,
+            "lang":              lang,
+            "regulation_id":     regulation_id,
+            "version_id":        version_id,
+            "requirement_count": len(rows),
+            "status":            "inactive",
+            "requirements":      rows,
+        }
+        _set_ar_cache(cache_key, result)
+        return result
+ 
     return {
         "success":           True,
+        "lang":              lang,
         "regulation_id":     regulation_id,
         "version_id":        version_id,
         "requirement_count": len(rows),
         "status":            "inactive",
         "requirements":      rows,
     }
-
+ 
 
 @app.patch(
     "/regulation/{regulation_id}/versions/{version_id}/status",
@@ -3916,63 +4012,64 @@ def trigger_analysis_for_specific_version(
     }
 
 
+# ── 2. Active Content Version ─────────────────────────────────────────────────
+ 
 @app.get("/regulation/{regulation_id}/versions/active", tags=["Content Versions"])
-def get_active_version(regulation_id: int):
-    """
-    Get the currently active content version for a regulation.
-
-    Returns:
-    - For CBB: The active version from regulation_versions
-    - For SAMA/SBP/SECP: Returns null (no versioning)
-    """
+def get_active_version(regulation_id: int, lang: str = Query("en")):
+    lang = _validate_lang(lang)
     regulation = repo.get_regulation_by_id(regulation_id)
     if not regulation:
         raise HTTPException(404, f"Regulation {regulation_id} not found")
-
+ 
     regulator = regulation.get("regulator")
-
     if regulator != "Central Bank of Bahrain":
         return {
-            "success": True,
-            "regulation_id": regulation_id,
-            "regulator": regulator,
+            "success":        True,
+            "lang":           lang,
+            "regulation_id":  regulation_id,
+            "regulator":      regulator,
             "has_versioning": False,
             "active_version": None,
-            "note": "Content versioning is only available for CBB regulations."
+            "note": "Content versioning is only available for CBB regulations.",
         }
-
-    # Get active version
+ 
     version_data = repo.get_active_regulation_version(regulation_id)
-
     if not version_data:
         return {
-            "success": True,
-            "regulation_id": regulation_id,
-            "regulator": regulator,
+            "success":        True,
+            "lang":           lang,
+            "regulation_id":  regulation_id,
+            "regulator":      regulator,
             "has_versioning": True,
             "active_version": None,
-            "note": "No active version found (this shouldn't happen for CBB regulations)"
+            "note": "No active version found.",
         }
-
+ 
+    change_summary = version_data.get("change_summary") or ""
+    if lang == "ar" and change_summary:
+        translated = translate_texts_batch([change_summary], lang)
+        change_summary = translated[0] if translated else change_summary
+ 
     return {
-        "success": True,
-        "regulation_id": regulation_id,
-        "regulator": regulator,
+        "success":        True,
+        "lang":           lang,
+        "regulation_id":  regulation_id,
+        "regulator":      regulator,
         "has_versioning": True,
         "active_version": {
-            "version_id": version_data.get("version_id"),
-            "content_hash": version_data.get("content_hash"),
-            "updated_date": serialize_datetime(version_data.get("updated_date")),
-            "created_at": serialize_datetime(version_data.get("created_at")),
-            "change_summary": version_data.get("change_summary"),
-            "status": version_data.get("status"),
+            "version_id":          version_data.get("version_id"),
+            "content_hash":        version_data.get("content_hash"),
+            "updated_date":        serialize_datetime(version_data.get("updated_date")),
+            "created_at":          serialize_datetime(version_data.get("created_at")),
+            "change_summary":      change_summary,
+            "status":              version_data.get("status"),
             "content_text_length": len(version_data.get("content_text") or ""),
             "content_html_length": len(version_data.get("content_html") or ""),
-            # Optionally include full content
-            "content_text": version_data.get("content_text"),
-            "content_html": version_data.get("content_html")
-        }
+            "content_text":        version_data.get("content_text"),
+            "content_html":        version_data.get("content_html"),
+        },
     }
+ 
 
 @app.delete("/admin/analysis/{regulation_id}", tags=["Admin"])
 def delete_full_analysis(
@@ -4049,4 +4146,238 @@ def delete_full_analysis(
     except Exception as e:
         logger.exception(f"Error deleting analysis for regulation {regulation_id}")
         raise HTTPException(500, str(e))
+ 
+ """
+Add this endpoint to pipeline_api.py
+
+POST /regulations/add
+─────────────────────────────────────────────────────────────────────────────
+Creates a regulation record directly from JSON — no file upload required.
+Useful for adding regulations from frontend forms or external sources.
+
+After adding, you can trigger analysis separately:
+  POST /trigger/full-analysis/{regulation_id}
+"""
+
+# ── 6. POST /regulations/add — with Arabic response ──────────────────────────
+ 
+class AddRegulationRequest(BaseModel):
+    title:                 str
+    regulator:             str
+    source_system:         Optional[str] = None
+    category:              Optional[str] = None
+    compliancecategory_id: Optional[int] = None
+    reference_no:          Optional[str] = None
+    department:            Optional[str] = None
+    published_date:        Optional[str] = None
+    year:                  Optional[int] = None
+    document_url:          Optional[str] = None
+    source_page_url:       Optional[str] = None
+    document_html:         Optional[str] = None
+    document_text:         Optional[str] = None
+    status:                Optional[str] = "active"
+    run_analysis:          bool          = False
+
+# ── Endpoint — add this to pipeline_api.py ───────────────────────────────────
+
+@app.post("/regulations/add", tags=["Regulations"])
+def add_regulation(payload: AddRegulationRequest, lang: str = Query("en")):
+    lang = _validate_lang(lang)
+ 
+    class _Doc:
+        pass
+ 
+    doc = _Doc()
+    doc.title           = payload.title.strip()
+    doc.regulator       = payload.regulator.strip().upper()
+    doc.source_system   = payload.source_system or "MANUAL"
+    doc.category        = payload.category
+    doc.reference_no    = payload.reference_no
+    doc.department      = payload.department
+    doc.published_date  = payload.published_date
+    doc.year            = payload.year
+    doc.document_url    = payload.document_url
+    doc.source_page_url = payload.source_page_url or payload.document_url
+    doc.document_html   = payload.document_html
+    doc.doc_path        = None
+    doc.status          = payload.status or "active"
+    doc.type            = "manual"
+    doc.compliancecategory_id = payload.compliancecategory_id
+    doc.extra_meta = {
+        "org_pdf_text": payload.document_text or "",
+        "added_via":    "api",
+    }
+ 
+    # Duplicate check
+    try:
+        with repo._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM regulations WHERE title = ? AND regulator = ?",
+                [doc.title, doc.regulator],
+            )
+            existing = cursor.fetchone()
+            if existing:
+                return {
+                    "success":       False,
+                    "regulation_id": existing[0],
+                    "message":       f"Regulation already exists with id={existing[0]}.",
+                    "duplicate":     True,
+                }
+    except Exception as exc:
+        raise HTTPException(500, f"Duplicate check failed: {exc}")
+ 
+    try:
+        regulation_id = repo._insert_regulation(doc)
+    except Exception as exc:
+        logger.error(f"[add-regulation] DB insert failed: {exc}")
+        raise HTTPException(500, f"Failed to save regulation: {exc}")
+ 
+    # Translate title for Arabic response
+    display_title = doc.title
+    if lang == "ar":
+        translated = translate_texts_batch([doc.title], lang)
+        display_title = translated[0] if translated else doc.title
+ 
+    response = {
+        "success":       True,
+        "lang":          lang,
+        "regulation_id": regulation_id,
+        "title":         display_title,
+        "regulator":     doc.regulator,
+        "status":        doc.status,
+        "has_content":   bool(payload.document_text or payload.document_html),
+        "next_steps": {
+            "view":         f"GET  /regulation/{regulation_id}",
+            "run_analysis": f"POST /trigger/full-analysis/{regulation_id}",
+            "gap_analysis": f"POST /gap-analysis/single (form: regulation_id={regulation_id})",
+        },
+    }
+ 
+    if payload.run_analysis:
+        if not (payload.document_text or payload.document_html):
+            response["analysis"] = {
+                "skipped": True,
+                "reason":  "run_analysis=true but no document_text or document_html provided.",
+            }
+        else:
+            try:
+                analysis_result = trigger_staged_analysis(regulation_id, force=False)
+                matching_result = {}
+                try:
+                    matching_result = trigger_requirement_matching_v2(regulation_id)
+                except Exception as me:
+                    matching_result = {"error": str(me)}
+ 
+                response["analysis"] = {
+                    "success":                True,
+                    "requirements_extracted": analysis_result.get("analysis", {}).get("requirements_extracted", 0),
+                    "by_execution_category":  analysis_result.get("analysis", {}).get("by_execution_category", {}),
+                    "by_criticality":         analysis_result.get("analysis", {}).get("by_criticality", {}),
+                }
+                response["matching"] = {
+                    "success": "error" not in matching_result,
+                    "summary": matching_result.get("summary", {}),
+                    "error":   matching_result.get("error"),
+                }
+            except Exception as exc:
+                logger.error(f"[add-regulation] Auto-analysis failed: {exc}")
+                response["analysis"] = {"success": False, "error": str(exc)}
+ 
+    return response
+
+
+# ── 7. PUT /regulations/{regulation_id} — with Arabic response ───────────────
+ 
+class UpdateRegulationRequest(BaseModel):
+    title:                 Optional[str] = None
+    category:              Optional[str] = None
+    compliancecategory_id: Optional[int] = None
+    reference_no:          Optional[str] = None
+    department:            Optional[str] = None
+    published_date:        Optional[str] = None
+    year:                  Optional[int] = None
+    document_url:          Optional[str] = None
+    source_page_url:       Optional[str] = None
+    document_html:         Optional[str] = None
+    document_text:         Optional[str] = None
+    status:                Optional[str] = None
+
+
+@app.put("/regulations/{regulation_id}", tags=["Regulations"])
+def update_regulation(
+    regulation_id: int,
+    payload: UpdateRegulationRequest,
+    lang: str = Query("en"),
+):
+    lang = _validate_lang(lang)
+    existing = repo.get_regulation_by_id(regulation_id)
+    if not existing:
+        raise HTTPException(404, f"Regulation {regulation_id} not found")
+ 
+    updates = {}
+    if payload.title           is not None: updates["title"]                 = payload.title
+    if payload.category        is not None: updates["category"]              = payload.category
+    if payload.compliancecategory_id is not None: updates["compliancecategory_id"] = payload.compliancecategory_id
+    if payload.reference_no    is not None: updates["reference_no"]          = payload.reference_no
+    if payload.department      is not None: updates["department"]            = payload.department
+    if payload.published_date  is not None: updates["published_date"]        = payload.published_date
+    if payload.year            is not None: updates["[year]"]                = payload.year
+    if payload.document_url    is not None: updates["document_url"]          = payload.document_url
+    if payload.source_page_url is not None: updates["source_page_url"]       = payload.source_page_url
+    if payload.document_html   is not None: updates["document_html"]         = payload.document_html
+    if payload.status          is not None: updates["status"]                = payload.status
+ 
+    if not updates and payload.document_text is None:
+        return {"success": True, "regulation_id": regulation_id, "message": "No fields to update"}
+ 
+    set_parts = [f"{col} = ?" for col in updates]
+    params    = list(updates.values())
+ 
+    if payload.document_text is not None:
+        try:
+            extra_meta = existing.get("extra_meta") or {}
+            if isinstance(extra_meta, str):
+                try:
+                    extra_meta = json.loads(extra_meta)
+                except Exception:
+                    extra_meta = {}
+            extra_meta["org_pdf_text"] = payload.document_text
+            set_parts.append("extra_meta = ?")
+            params.append(json.dumps(extra_meta, ensure_ascii=False))
+        except Exception as exc:
+            logger.warning(f"[update-regulation] extra_meta update failed: {exc}")
+ 
+    set_parts.append("updated_at = GETUTCDATE()")
+    params.append(regulation_id)
+ 
+    try:
+        with repo._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE regulations SET {', '.join(set_parts)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise HTTPException(404, f"Regulation {regulation_id} not found during update")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Update failed: {exc}")
+ 
+    _invalidate_ar_cache(regulation_id)
+    content_updated = payload.document_text is not None or payload.document_html is not None
+ 
+    return {
+        "success":         True,
+        "lang":            lang,
+        "regulation_id":   regulation_id,
+        "fields_updated":  list(updates.keys()) + (["document_text"] if payload.document_text else []),
+        "content_updated": content_updated,
+        "next_steps": {
+            "view":        f"GET  /regulation/{regulation_id}",
+            "re_analysis": f"POST /trigger/full-analysis/{regulation_id}?force=true" if content_updated else None,
+        },
+    }
  
