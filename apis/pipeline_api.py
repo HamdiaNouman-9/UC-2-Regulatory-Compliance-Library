@@ -33,8 +33,8 @@ from utils.lang_translator import (
     translate_v2_gap_result,
 )
 print("=" * 100)
-print("🚀 PIPELINE_API.PY MODULE LOADED!")
-print("🔧 Python is executing this file")
+print("PIPELINE_API.PY MODULE LOADED!")
+print("Python is executing this file")
 print("=" * 100)
 
 logger = logging.getLogger(__name__)
