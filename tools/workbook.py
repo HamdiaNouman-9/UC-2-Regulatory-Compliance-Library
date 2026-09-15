@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -75,6 +76,49 @@ REQUIRED = ("title", "regulator", "source_system", "doc_path")
 #  export                                                                      #
 # --------------------------------------------------------------------------- #
 
+def _resolve_sources(config_name: str, fragments) -> list:
+    """User-typed fragments -> the exact source names the config defines.
+
+    `build_regulator_crawler` matches `only_sources` on the EXACT name and
+    raises on a miss, which is right for a scheduled job reading a config but
+    unusable at a prompt: CBB's rulebook sources are named
+    "Rulebook — Volume 1 Conventional Banks", em dash included. This resolves
+    "vol 1" to that, and refuses anything that does not identify exactly one
+    source -- an ambiguous fragment must not quietly pick the first match, since
+    the wrong volume would then be crawled under a name whose baseline and gate
+    belong to another.
+    """
+    import yaml
+
+    cfg = yaml.safe_load(
+        (PROJECT_ROOT / "config" / "sources" / f"{config_name}.yml").read_text(
+            encoding="utf-8")) or {}
+    names = [str(s.get("name") or "") for s in (cfg.get("sources") or [])]
+
+    resolved = []
+    for frag in fragments:
+        want = str(frag).strip().lower()
+        exact = [n for n in names if n.strip().lower() == want]
+        # Every WORD of the fragment must appear somewhere in the name, so
+        # "vol 1" finds "Rulebook - Volume 1 Conventional Banks". A plain
+        # substring test would not: the name says "Volume", not "Vol".
+        tokens = [t for t in re.split(r"\W+", want) if t]
+        hits = exact or [n for n in names
+                         if tokens and all(t in n.lower() for t in tokens)]
+        if len(hits) != 1:
+            raise SystemExit(
+                f"--source {frag!r} matched {len(hits)} of {len(names)} "
+                f"sources in {config_name}.yml.\nIt defines:\n"
+                + "\n".join(f"  {n}" for n in names))
+        resolved.append(hits[0])
+    return resolved
+
+
+def _slug(text: str) -> str:
+    keep = [c.lower() if c.isalnum() else "-" for c in str(text)]
+    return re.sub(r"-+", "-", "".join(keep)).strip("-")[:60]
+
+
 def cmd_export(a) -> int:
     """Crawl one source into a workbook. No database connection is opened."""
     from dynamic_crawler.formfill.excel_repo import ExcelRepo
@@ -82,10 +126,27 @@ def cmd_export(a) -> int:
     from processor.downloader import Downloader
     from jobs.monitor_jobs import build_crawler
 
-    out = Path(a.out) if a.out else DEFAULT_DIR / f"{a.name}.xlsx"
+    only = None
+    if getattr(a, "source", None):
+        if a.form:
+            raise SystemExit("--source narrows a source config; --form has none.")
+        only = _resolve_sources(a.name, a.source)
+        print("narrowed to:")
+        for n in only:
+            print(f"  {n}")
+
+    # A NARROWED RUN GETS ITS OWN FILE unless one was named. Eight per-volume
+    # exports all defaulting to `cbb.xlsx` would leave one workbook holding
+    # whichever volume ran last, looking exactly like a finished CBB export.
+    if a.out:
+        out = Path(a.out)
+    elif only:
+        out = DEFAULT_DIR / f"{a.name}.{_slug(only[0] if len(only) == 1 else 'sources')}.xlsx"
+    else:
+        out = DEFAULT_DIR / f"{a.name}.xlsx"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    crawler, regulator = build_crawler(a.name, a.form)
+    crawler, regulator = build_crawler(a.name, a.form, only_sources=only)
     repo = ExcelRepo(out)
     orch = Orchestrator(crawler=crawler, repo=repo, downloader=Downloader(),
                         source_name=regulator, analyse=False, limit=a.limit)
@@ -359,6 +420,12 @@ def main() -> int:
                    help="`name` is a hints file, not a config/sources entry")
     e.add_argument("-o", "--out", help=f"default: {DEFAULT_DIR}/<name>.xlsx")
     e.add_argument("--limit", type=int, default=None)
+    e.add_argument("--source", action="append", metavar="NAME",
+                   help="run only this source from the config; repeatable. "
+                        "Matches a unique fragment of the name, so "
+                        "--source 'vol 1' is enough. A narrowed run writes "
+                        "<name>.<source>.xlsx so per-source runs do not "
+                        "overwrite each other.")
     e.set_defaults(func=cmd_export)
 
     c = sub.add_parser("check", help="validate a workbook; opens no connection")

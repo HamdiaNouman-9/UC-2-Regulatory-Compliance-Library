@@ -137,8 +137,13 @@ jobs:
   # DISABLED BY DEFAULT. Turning these on is a server decision, not a repo one.
   # ----------------------------------------------------------
 
-  # MOE, MOH, SDAIA, AML, MHRSD, ZATCA — one request per stored document,
-  # about a minute for all six. Crawls only what actually moved.
+  # MOE, MOH, SDAIA, AML, MHRSD, ZATCA, KDIPA — one request per stored
+  # document, about a minute for all of them. Crawls only what actually moved.
+  #
+  # KDIPA joined 2026-09-08 and needs no entry of its own: this job walks
+  # CHEAP_PROBE_SOURCES in jobs/monitor_jobs.py, so adding a pair there is the
+  # whole change. It contributes ONE request -- its source declares a single
+  # instrument rather than crawling for it.
   monitor_cheap_probes:
     enabled: false
     trigger: cron

@@ -73,31 +73,6 @@ MIN_PAGE_TEXT = 200
 # "Chapter 3: Monetary Policy" (10 characters, one child) looks the same.
 MIN_LEAF_TEXT = 50
 
-# A page whose visible text is its own title plus a date stamp and nothing else
-# is a wrapper around the file it links, not a document. See
-# GenericSiteCrawler._is_link_wrapper for the CBE case this was measured on.
-#
-# MEASURED over all 92 CBE HTML pages, 2026-08-20, residue after removing the
-# page's own title and its date stamp:
-#
-#       0   CBE Risk Appetite Statement   <- the wrapper, the only one under 40
-#      47   Laws
-#      94   Governance
-#      98   Payment Acceptance Channels
-#     103   Regulations Book
-#
-# So the real gap is 0 -> 47, not the comfortable one a first look at a single
-# section suggested. 20 sits in the middle of that gap and still catches the
-# target with room to spare; 40 would have left a 7-character margin against a
-# real page, which is not a margin at all.
-#
-# Do NOT raise this to catch "nearly empty" pages. The rule keys on residue
-# precisely so it cannot become a length rule — MIN_LEAF_TEXT exists because
-# SAMA's "Article 3" is 184 characters of actual law, and a generous threshold
-# here would start eating documents like it.
-WRAPPER_RESIDUE_CHARS = 20
-
-
 
 # ---- reading the listing row -------------------------------------------------
 # A listing row carries what the detail page usually does not repeat:
@@ -113,17 +88,6 @@ _DATE_PATTERNS = [
     re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"),                          # 2026-07-06
     re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"),                      # 06/07/2026
 ]
-# The date the CMS prints under the heading on every page ("13 Aug 2026",
-# "23 Mar 2023", "2026-08-13", "13/08/2026"). Removed before judging residue, so
-# a wrapper is not saved from the rule by the template's own furniture.
-_PAGE_DATE_STAMP_RE = re.compile(
-    rf"\b(?:\d{{1,2}}\s+(?:{_MONTH})\s+\d{{4}}"
-    rf"|(?:{_MONTH})\s+\d{{1,2}},?\s+\d{{4}}"
-    rf"|\d{{4}}-\d{{2}}-\d{{2}}"
-    rf"|\d{{1,2}}/\d{{1,2}}/\d{{4}})\b",
-    re.I,
-)
-
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun",
      "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
@@ -238,6 +202,124 @@ def _clean_trail(parts: List[str]) -> List[str]:
         seen.add(k)
         out.append(p.strip())
     return out
+
+
+#: A trailing language label the SITE added to the folder trail, not part of the
+#: instrument's place in the library.
+#:
+#: MEASURED on cbb.gov.bh mode 1: "Resolution No. (34) for the year 2010 ..." is
+#: published twice, and the only difference between the two trails is a final
+#: crumb of "(Arabic)" or "(English)". Left in place the two copies land in two
+#: folders and can never merge; the pair is one instrument in two languages, the
+#: same as every other pair in that source.
+_LANG_SUFFIX = re.compile(
+    r"\s*[\(\[]\s*(arabic|english|عربي|عربى|ar|en)\s*[\)\]]\s*$", re.I)
+
+
+def _strip_lang(text: str) -> str:
+    """Drop a trailing "(Arabic)" / "(English)" label.
+
+    MEASURED on cbb.gov.bh mode 1: the label trails BOTH the title and the last
+    doc_path crumb --
+
+        Resolution No. (34) ... Unrestricted Investment Accounts (Arabic)
+        Resolution No. (34) ... Unrestricted Investment Accounts (English)
+
+    -- so it is a suffix, not a crumb of its own, and stripping it is what lets
+    the two copies group together. Never returns empty: a crumb that is ONLY the
+    label keeps its original text rather than vanishing from the trail.
+    """
+    t = str(text or "")
+    out = _LANG_SUFFIX.sub("", t).strip()
+    return out or t.strip()
+
+
+def _trail_for_merge(doc_path):
+    """The folder trail with the language label off its last crumb."""
+    trail = [str(x) for x in (doc_path or [])]
+    if trail:
+        trail[-1] = _strip_lang(trail[-1])
+    return tuple(trail)
+
+
+def merge_files_at_same_path(docs: List[RegulatoryDocument]) -> List[RegulatoryDocument]:
+    """Rows sharing (doc_path, title) become one C19 multi-attachment row.
+
+    THE FILE ORDER IS SORTED, NOT THE SITE'S. C19 exists because naming a row by
+    whichever file the site listed first makes identity depend on the site's
+    ordering; identity here is the SET of files, so the set is written in a
+    stable order and a re-ordered page cannot move it.
+
+    A group of one is left exactly as it was -- a single-file source keeps
+    `document_url`, which is the whole point of the rule being per-group.
+
+    A trailing "(Arabic)" / "(English)" crumb is ignored when grouping and
+    dropped from the surviving row's trail: see `_LANG_CRUMB`.
+
+    MODULE-LEVEL, not a method, because `build_source` returns early for
+    `mode: custom` and so a custom source can reach no wrapper key at all.
+    CompositeCrawler calls this for those; GenericSiteCrawler still calls it
+    itself, so a source built standalone by `build_source`
+    (benchmarks/run_source_standalone.py) behaves exactly as before.
+    """
+    groups: dict = {}
+    for d in docs:
+        groups.setdefault(
+            (_trail_for_merge(d.doc_path), _strip_lang(d.title)), []).append(d)
+
+    merged: List[RegulatoryDocument] = []
+    for (_path, _title), members in groups.items():
+        if len(members) == 1:
+            merged.append(members[0])
+            continue
+        base = members[0]
+        # EVERY FILE OF EVERY MEMBER, not just their document_urls. A member may
+        # ALREADY be a multi-file row -- 6 of CBB mode 1's 71 rows arrive from
+        # the crawler with attachment_links and no document_url -- and an earlier
+        # version of this replaced that field, silently dropping those files.
+        urls = set()
+        for m in members:
+            if m.document_url:
+                urls.add(m.document_url)
+            prev = (m.extra_meta or {}).get("attachment_links")
+            if isinstance(prev, str):
+                urls.update(x.strip() for x in prev.split("|") if x.strip())
+            elif isinstance(prev, (list, tuple)):
+                urls.update(str(x).strip() for x in prev if str(x).strip())
+        urls = sorted(urls)
+        links = " | ".join(urls)
+        meta = dict(base.extra_meta or {})
+        meta["attachment_links"] = links
+        # Declared, not defaulted: document_url is a third of the default
+        # identity and is about to be empty, which would collapse every row in
+        # one folder onto the same key.
+        meta["identity_fields"] = ["doc_path", "extra_meta.attachment_links",
+                                   "title"]
+        meta["record_kind"] = "multi-attachment"
+        # What was fused, so a reader can tell a merged row from a single-file
+        # one without inferring it from the empty url.
+        meta["merged_from"] = len(members)
+        base.extra_meta = meta
+        base.document_url = ""
+        # The surviving row must not claim to be the Arabic one.
+        base.title = _title
+        # The trail without the language crumb, so the surviving row does not
+        # claim to be the Arabic one.
+        base.doc_path = list(_path)
+        # The row's hash has to describe the row, and the row is now a SET of
+        # files. Inheriting one member's hash would leave it unchanged when a
+        # different member was replaced.
+        base.content_hash = hashlib.md5(
+            ("|".join(_path) + "|" + links).encode("utf-8")).hexdigest()
+        types = {m.file_type for m in members if m.file_type}
+        base.file_type = types.pop() if len(types) == 1 else None
+        logger.info("  merged %d files into one row: %s",
+                    len(urls), " > ".join(_path))
+        merged.append(base)
+    if len(merged) != len(docs):
+        logger.info("  merge_files_at_same_path: %d rows -> %d",
+                    len(docs), len(merged))
+    return merged
 
 
 class GenericSiteCrawler:
@@ -520,50 +602,8 @@ class GenericSiteCrawler:
     # ------------------------------------------------------------------ #
 
     def _merge_same_path(self, docs: List[RegulatoryDocument]) -> List[RegulatoryDocument]:
-        """Rows sharing (doc_path, title) become one C19 multi-attachment row.
-
-        THE FILE ORDER IS SORTED, NOT THE SITE'S. C19 exists because naming a row
-        by whichever file the site listed first makes identity depend on the
-        site's ordering; identity here is the SET of files, so the set is written
-        in a stable order and a re-ordered page cannot move it.
-
-        A group of one is left exactly as it was -- a single-file source keeps
-        `document_url`, which is the whole point of the rule being per-group.
-        """
-        groups: dict = {}
-        for d in docs:
-            groups.setdefault((tuple(d.doc_path or []), d.title), []).append(d)
-
-        merged: List[RegulatoryDocument] = []
-        for (_path, _title), members in groups.items():
-            if len(members) == 1:
-                merged.append(members[0])
-                continue
-            base = members[0]
-            urls = sorted({m.document_url for m in members if m.document_url})
-            links = " | ".join(urls)
-            meta = dict(base.extra_meta or {})
-            meta["attachment_links"] = links
-            # Declared, not defaulted: see the note in __init__.
-            meta["identity_fields"] = ["doc_path", "extra_meta.attachment_links",
-                                       "title"]
-            meta["record_kind"] = "multi-attachment"
-            base.extra_meta = meta
-            base.document_url = ""
-            # The row's hash has to describe the row, and the row is now a SET of
-            # files. Inheriting one member's hash would leave it unchanged when a
-            # different member was replaced.
-            base.content_hash = hashlib.md5(
-                ("|".join(_path) + "|" + links).encode("utf-8")).hexdigest()
-            types = {m.file_type for m in members if m.file_type}
-            base.file_type = types.pop() if len(types) == 1 else None
-            logger.info("  merged %d files into one row: %s",
-                        len(urls), " > ".join(_path))
-            merged.append(base)
-        if len(merged) != len(docs):
-            logger.info("  merge_files_at_same_path: %d rows -> %d",
-                        len(docs), len(merged))
-        return merged
+        """Delegates to the module function, which CompositeCrawler shares."""
+        return merge_files_at_same_path(docs)
 
     def _doc_path(self, section_path: str, title: str = "",
                   source_system: Optional[str] = None) -> List[str]:
@@ -922,6 +962,26 @@ class CompositeCrawler:
                     if "version_key" in opts:
                         meta["version_key"] = opts["version_key"]
                     d.extra_meta = meta
+                # THE MERGE, FOR SOURCES THAT CANNOT CONFIGURE IT THEMSELVES.
+                #
+                # `build_source` returns at `mode: custom` before any wrapper key
+                # is read, so a custom source -- all seven of CBB's -- could never
+                # set `merge_files_at_same_path`. Applied here it is configured in
+                # one place for both kinds of source.
+                #
+                # `not getattr(...)` is what stops it running TWICE: a
+                # GenericSiteCrawler with the flag on has already merged in its
+                # own fetch_documents, and a second pass would see rows whose
+                # document_url is already empty and fuse them into one row with
+                # no files at all.
+                #
+                # AFTER the identity stamping above, so a merged row keeps the
+                # identity the merge declared for it. A source that sets both
+                # `identity` and this flag would otherwise lose the declaration
+                # that stops every row in a folder sharing one key.
+                if (opts.get("merge_files_at_same_path")
+                        and not getattr(c, "merge_files_at_same_path", False)):
+                    got = merge_files_at_same_path(got)
                 docs.extend(got)
                 logger.info("  source ok: %s -> %d documents", label, len(got))
             except Exception as e:
@@ -929,16 +989,164 @@ class CompositeCrawler:
         return docs[:limit] if limit else docs
 
 
+class DeclaredDocumentsSource:
+    """A source whose documents are NAMED IN THE CONFIG, not discovered.
+
+    Some regulators publish one instrument and no index worth walking: a single
+    PDF, linked from a page that is otherwise a brochure. Pointing the generic
+    crawler at it means launching a browser to walk a site in order to find a
+    file we can already name, and every crawl is then one more chance for the
+    walk to pick up a cookie banner or miss the file behind a redirect.
+
+    The engine already has the answer, on the CLI:
+
+        --documents "<section> :: <title> :: <url>"
+
+    `generic_crawler.crawler.collect_declared` parses those, fingerprints each
+    one and returns rows in the SAME shape the document rows of a real crawl
+    have. There was no yml equivalent -- config/sources/cbe.yml says so where it
+    has to hand-wave a PDF it cannot reach -- so this is that equivalent.
+
+    WHAT IT BUYS OVER A HAND-WRITTEN WRAPPER. `stamp_declared` asks the server
+    for an ETag or Last-Modified and fingerprints on it, falling back to
+    `url|title` only when neither is offered -- and it records WHICH in
+    `hash_basis`, so a weak fingerprint is visible rather than assumed. That is
+    ONBOARDING's second-preference fingerprint (a publisher's own change stamp)
+    for free, and it is what lets a one-document source still notice a revision.
+
+    IT IS DELIBERATELY NOT BUILT ON GenericSiteCrawler. There is no crawl here,
+    so there is nothing to inherit but a `seed_url` this source does not have.
+    """
+
+    def __init__(
+        self,
+        regulator: str,
+        source_system: str,
+        documents: List[str],
+        category: Optional[str] = None,
+        name: Optional[str] = None,
+    ):
+        if not documents:
+            raise ValueError(
+                f"source '{name or source_system}': mode=declared needs a "
+                f"`documents:` list. A declared source with nothing declared "
+                f"would report zero documents and read as a working crawl.")
+        self.regulator = regulator
+        self.source_system = source_system
+        self.category = category or source_system
+        self.documents = [str(d) for d in documents]
+        self.name = name or source_system
+        self.last_result: dict = {}
+
+    @property
+    def source_systems(self) -> List[str]:
+        return [self.source_system]
+
+    def fetch_documents(self, limit: Optional[int] = None) -> List[RegulatoryDocument]:
+        # Imported here, not at module scope: `crawler.fingerprint` pulls in
+        # `generic_crawler.crawler` at import time, and merely READING a config
+        # should not pay for the crawl engine. `_run_crawl` defers its import
+        # for the same reason.
+        sys.path.insert(0, str(REPO_ROOT))
+        from crawler.fingerprint import stamp_content_hashes
+        from generic_crawler.crawler import collect_declared
+
+        # SECTION DEFAULTS TO EMPTY, not to the category. `collect_declared`
+        # stamps its default onto every 2-part entry, and that default would
+        # then become a folder crumb sitting directly under the source_system
+        # crumb that already says the same thing -- "KDIPA-Laws-and-Regulations
+        # | Laws and Regulations". Empty means a 2-part entry gets
+        # [regulator, source_system, title] and a 3-part entry gets exactly the
+        # folders its author asked for.
+        rows = collect_declared(self.documents, documents_section="") or []
+        if not rows:
+            # Every entry was dropped as a duplicate or unparseable. The config
+            # named documents and none survived, which is a config error, not an
+            # empty regulator.
+            raise RuntimeError(
+                f"{self.name}: declared {len(self.documents)} document(s) and "
+                f"none parsed. Each entry must end in an http(s) url.")
+
+        out: List[RegulatoryDocument] = []
+        weak = []
+        for r in rows:
+            title = (r.get("title") or "").strip()
+            # doc_path is [regulator, source_system, ...folders, title]. The
+            # spec's own section path supplies the folders when it names any,
+            # and `_clean_trail` drops a folder that merely repeats a crumb
+            # already in the trail.
+            #
+            # THE TITLE IS APPENDED AFTER THE DEDUPE, NOT INSIDE IT. A declared
+            # source is often ONE instrument, and such a source is frequently
+            # named after that instrument -- so the regulator crumb and the
+            # title can be the same string. Deduped together the title vanished,
+            # doc_path ended at the source_system, and the last crumb was a
+            # folder: the document had no position of its own. The folders are
+            # deduped; the leaf never is, because the leaf IS the document.
+            trail = _clean_trail(
+                [self.regulator, self.source_system]
+                + _split_section_path(r.get("section_path") or "")) + [title]
+            basis = r.get("hash_basis") or ""
+            if "WEAK" in basis.upper():
+                weak.append(f"{title} [{basis}]")
+            out.append(RegulatoryDocument(
+                regulator=self.regulator,
+                source_system=self.source_system,
+                category=self.category,
+                title=title,
+                document_url=r.get("doc_url") or "",
+                source_page_url=r.get("found_on") or r.get("doc_url") or "",
+                file_type=r.get("type") or None,
+                doc_path=trail,
+                content_hash=r.get("content_hash") or "",
+                extra_meta={"hash_basis": basis, "declared": True},
+            ))
+
+        if weak:
+            # Not fatal -- a document with a weak stamp still belongs in the
+            # library. But `url|title` cannot change, so this row will report
+            # `unchanged` forever, including after the regulator replaces the
+            # file. Say so once, loudly, rather than let it look monitored.
+            logger.warning(
+                "%s: %d document(s) have no server change-stamp, so their "
+                "fingerprint is url|title and a REVISION WILL NOT BE DETECTED: "
+                "%s", self.name, len(weak), "; ".join(weak))
+
+        self.last_result = {
+            "run": {"blocked_pages": 0, "warnings": weak},
+            "by_source": {self.source_system: len(out)},
+        }
+        logger.info("DeclaredDocumentsSource[%s] -> %d document(s)",
+                    self.source_system, len(out))
+        return stamp_content_hashes(out)
+
+
 def build_source(cfg: dict):
     """Turn ONE source entry from a regulator's YAML into a crawler object.
 
         mode: generic  -> GenericSiteCrawler (shared code, no per-site python)
+        mode: declared -> DeclaredDocumentsSource (documents named in the yml)
         mode: custom   -> import and instantiate the named class
 
-    Both come back with the same fetch_documents(), which is the whole point:
-    whether a source is generic or hand-written stops mattering above this line.
+    All come back with the same fetch_documents(), which is the whole point:
+    whether a source is generic, declared or hand-written stops mattering above
+    this line.
     """
     mode = (cfg.get("mode") or "generic").lower()
+
+    if mode == "declared":
+        missing = [k for k in ("regulator", "source_system", "documents")
+                   if not cfg.get(k)]
+        if missing:
+            raise ValueError(
+                f"source '{cfg.get('name')}': mode=declared missing {missing}")
+        return DeclaredDocumentsSource(
+            regulator=cfg["regulator"],
+            source_system=cfg["source_system"],
+            documents=cfg["documents"],
+            category=cfg.get("category"),
+            name=cfg.get("name"),
+        )
 
     if mode == "custom":
         path = cfg.get("crawler_class")
@@ -1061,6 +1269,15 @@ def _source_options(src: dict, config: dict) -> dict:
     for level in (src, config):
         if "version_key" in level:
             opts["version_key"] = level["version_key"]
+            break
+    # WHO MERGES LANGUAGE PAIRS. Read by CompositeCrawler rather than by the
+    # crawler, because `build_source` returns at `mode: custom` before any
+    # wrapper key is read -- so for a custom source this is the ONLY route the
+    # setting has. A GenericSiteCrawler that already merged is skipped there, so
+    # naming it on a generic source is harmless rather than a double merge.
+    for level in (src, config):
+        if "merge_files_at_same_path" in level:
+            opts["merge_files_at_same_path"] = bool(level["merge_files_at_same_path"])
             break
     return opts
 

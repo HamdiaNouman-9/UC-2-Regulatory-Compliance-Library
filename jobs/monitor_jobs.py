@@ -4,7 +4,7 @@ FIVE JOBS, NOT TWELVE. Regulators are grouped by what their site will actually
 answer, because that — not the regulator's importance — is what decides how often
 and how expensively it can be checked.
 
-    monitor_cheap_probes   daily    MOE, SDAIA, AML, MHRSD, ZATCA — ask each
+    monitor_cheap_probes   daily    MOE, SDAIA, AML, MHRSD, ZATCA, KDIPA — ask each
                                     stored url for its version token, crawl only
                                     what moved. MOH rides along in the same job
                                     but skips the probe: its crawl already IS a
@@ -163,6 +163,12 @@ CHEAP_PROBE_SOURCES = [
     ("Ministry of Human Resource and Social Development (MHRSD)",
      "Regulations and procedural guidelines"),
     ("Zakat, Tax and Customs Authority (ZATCA)", "Rules and Regulations"),
+    # KDIPA, added 2026-09-08. ONE url, because config/sources/kdipa.yml
+    # declares the single instrument instead of crawling for it -- so this pair
+    # costs one request per sweep. Both halves are the same string on purpose;
+    # see the entry in config/change_signals.yml for why.
+    ("REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013",
+     "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"),
 ]
 
 #: Regulator -> (crawler name, is_form) for the sources whose crawl IS the

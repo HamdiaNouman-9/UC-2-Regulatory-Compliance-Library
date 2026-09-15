@@ -534,6 +534,13 @@ def title_from_slug(url: str) -> str:
     return slug[:180]
 
 
+#: A uuid the way `title_from_slug` renders one: hex groups, separators turned
+#: to spaces, title-cased, sometimes with a "(1)" copy marker. Never a name.
+_OPAQUE_ID = re.compile(
+    r"^[0-9A-Fa-f]{8}[ \-][0-9A-Fa-f]{4}[ \-][0-9A-Fa-f]{4}"
+    r"[ \-][0-9A-Fa-f]{4}[ \-][0-9A-Fa-f]{12}\b")
+
+
 def disambiguate_titles(documents: list, prof: dict = None) -> int:
     """A title shared by several DIFFERENT documents is not a title.
 
@@ -576,6 +583,23 @@ def disambiguate_titles(documents: list, prof: dict = None) -> int:
                 alt, from_heading = crumbs[-1], True
         if not alt:
             alt, from_heading = title_from_slug(d.get("doc_url") or ""), False
+        # A REPLACEMENT HAS TO BE BETTER THAN WHAT IT REPLACES.
+        #
+        # The slug is only a good name when the site names its files. Where it
+        # serves them from an opaque id, this rewrite turns a real title into a
+        # worse one. MEASURED 2026-09-10 on cbj.gov.jo/EN/List/Laws: two rows
+        # both read "Central Bank of Jordan Law No. 23 of 1971" -- the same law
+        # as .pdf and .docx -- and were rewritten to
+        #
+        #     C3F6F427 8350 4226 9C9B 40A6Ffe17933
+        #     A6D37E65 4Ed7 41D0 8799 60962F082F77 (1)
+        #
+        # A shared title is a problem; two unreadable ones are a worse problem,
+        # and the rows were never ambiguous to the DATABASE anyway -- identity
+        # carries document_url. So keep the shared title and let a person see
+        # the duplicate, which is what `merge_files_at_same_path` is for.
+        if alt and _OPAQUE_ID.match(alt.strip()):
+            continue
         if alt and alt.strip().lower() != t.lower() and len(alt) > 3:
             d["title"] = alt
             if from_heading:
@@ -740,6 +764,32 @@ def clean_doc_title(s) -> str:
     return s.strip(" -|–—")
 
 
+#: A `title="..."` made only of digits and separators. See `best_doc_title`.
+_BARE_NUMBER = re.compile(r"^[\d\s.,\-/_]+$")
+
+
+def _ctx_title(ctx) -> str:
+    """The title a row/card context reduces to, or "" if it reduces to nothing.
+
+    ONE definition, deliberately: `best_doc_title` uses it to PICK a context and
+    `_merge_links` uses it to CHOOSE BETWEEN two sightings of the same href. Two
+    copies would let the merge keep a context the title step then rejects, which
+    is exactly the state that produced guid-named documents on cbj.gov.jo.
+    """
+    t = clean_doc_title(ctx)
+    t = re.sub(r"\b(download|pdf|view|click here|read more)\b", "", t,
+               flags=re.I).strip(" -|")
+    # A CARD LAYOUT REPEATS THE TABLE'S COLUMN HEADINGS inside every card, so
+    # the context reads "File Name <the actual name> Type Size 686KB" rather
+    # than the name alone. MEASURED on cbj.gov.jo's mobile card list, which is
+    # where 14 of its 24 documents are found. These are column labels on any
+    # site that uses them; none of them is ever part of a document's name.
+    t = re.sub(r"^\s*file\s*name\s*[:\-]?\s*", "", t, flags=re.I)
+    t = re.sub(r"\s*\btype\b\s*\bsize\b.*$", "", t, flags=re.I)
+    t = t.strip(" -|&,;:")
+    return clean_doc_title(t)      # removing "download" can expose a size
+
+
 def best_doc_title(link: dict, url: str) -> str:
     """Pick a human title for a document link, best source first:
       1. the anchor text            — unless it's a generic 'Download' button
@@ -757,13 +807,27 @@ def best_doc_title(link: dict, url: str) -> str:
         picked = t
     if not picked:
         ta = clean_doc_title(link.get("title_attr"))
-        if len(ta) > 3:
+        # A BARE NUMBER IS A CMS NODE ID, NOT A NAME.
+        #
+        # MEASURED 2026-09-09 on cbj.gov.jo: every one of the 34 document links
+        # on the MoUs listing carries title="2373" -- the same id on all of
+        # them. Four characters clears the length test, so tier 2 picked it and
+        # tier 3 never ran, even though the row context right below held
+        # "MoU between CBJ and Bank Al-Maghrib 2017/11/13 2282KB".
+        #
+        # `disambiguate_titles` then did its job on the wreckage: 34 documents
+        # sharing one title is not a title, so it re-derived each from the url
+        # slug -- and this site's slugs are guids. The workbook came out with 24
+        # rows named "E2Ad73E3 0655 4B5C Aa4A Fa97B1919341".
+        #
+        # Rejecting it here costs nothing: the ladder simply continues to the
+        # row context, then the slug, both of which are strictly better answers
+        # than an id. Digits and separators only -- anything with a letter in it
+        # is a name someone chose.
+        if len(ta) > 3 and not _BARE_NUMBER.match(ta):
             picked = ta
     if not picked:
-        ctx = clean_doc_title(link.get("ctx"))
-        ctx = re.sub(r"\b(download|pdf|view|click here|read more)\b", "", ctx,
-                     flags=re.I).strip(" -|")
-        ctx = clean_doc_title(ctx)      # removing "download" can expose a size
+        ctx = _ctx_title(link.get("ctx"))
         if len(ctx) > 3:
             picked = ctx
     return (picked or clean_doc_title(title_from_slug(url)) or t)[:200]
@@ -1935,6 +1999,44 @@ return _cands.map(({el: a, href: _href}) => {
     }
     row = row.parentElement;
   }
+  // SECOND PASS — only when the first found nothing a title could be made of.
+  //
+  // The class test above stops at the NEAREST row/card ancestor, which on a
+  // card layout can be the wrapper around the button rather than the card.
+  // MEASURED on cbj.gov.jo, whose mobile card list supplies 14 of its 24
+  // documents:
+  //
+  //   div.col-8                      ''
+  //   div.row py-2 mx-0              'View & Download'   <- pass 1 stops here
+  //   div.col-12 border py-3 ...     'File Name MoU between CBJ and Banking
+  //                                   Regulation and Supervision Agency of
+  //                                   Turkey. 2011/09/06 Type Size 1898KB'
+  //   div.row                        all 24 documents, 2663 chars
+  //
+  // The naming element carries no row/card class, so no widening of the class
+  // test reaches it -- and the ancestor above it DOES match while holding the
+  // whole list, which on other sites would hand a listing's text to a single
+  // document as its title.
+  //
+  // So this pass ignores class entirely and stops on two honest signals: text
+  // that still says something once button words are removed, and a container
+  // that has not yet grown into the list. Guarded by `_meat(ctx) <= 3` so a
+  // page where pass 1 already worked is untouched -- every regulator that has
+  // a usable ctx today keeps exactly the one it has.
+  const _meat = s => (s || '')
+      .replace(/\b(download|pdf|view|click here|read more)\b/gi, '')
+      .replace(/[^A-Za-z0-9]+/g, ' ').trim();
+  if (_meat(ctx).length <= 3) {
+    let up = a;
+    for (let i = 0; i < 6 && up; i++) {
+      // More than a couple of links means we have climbed out of the item and
+      // into the list holding it; that text names the section, not this file.
+      if (up.querySelectorAll && up.querySelectorAll('a[href]').length > 2) break;
+      const t = (up.innerText || '').replace(/\s+/g, ' ').trim();
+      if (_meat(t).length > 3 && t.length <= 250) { ctx = t; break; }
+      up = up.parentElement;
+    }
+  }
   // Group heading = nearest heading BEFORE this link in document order. Listing
   // pages split their documents under on-page headings that never appear in the
   // breadcrumb (aml.gov.sa: "Laws and Regulations" / "Rules and Instructions"),
@@ -2068,6 +2170,26 @@ def _merge_links(store: dict, links) -> dict:
             store[h]["heading_path"] = l["heading_path"]
         if not store[h].get("group") and l.get("group"):
             store[h]["group"] = l["group"]
+        # A RICHER CONTEXT WINS, the same rule as the heading trail above.
+        #
+        # MEASURED 2026-09-09 on cbj.gov.jo: 34 document link sightings, 24
+        # unique hrefs, 10 of them seen TWICE -- once from the row that names
+        # the instrument, once from a "View & Download" button beside it:
+        #
+        #     ctx: 'MOU between CBJ and TRC 2022/04/30 686KB'
+        #     ctx: 'View & Download'
+        #
+        # First-sighting-wins gave 14 of 24 the button. Its context reduces to
+        # nothing under `_ctx_title`, so `best_doc_title` fell past it to the
+        # url slug, and this site's slugs are guids.
+        #
+        # Compared through `_ctx_title` rather than raw length, so the winner is
+        # judged by what a title would actually be made of: "View & Download" is
+        # 15 characters and worth none of them.
+        if _ctx_title(l.get("ctx")) and (
+                len(_ctx_title(l.get("ctx")))
+                > len(_ctx_title(store[h].get("ctx")))):
+            store[h]["ctx"] = l.get("ctx")
     return store
 
 

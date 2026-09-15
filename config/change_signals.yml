@@ -928,5 +928,35 @@ sources:
     signal: crawl
     confirm: false
 
+  # ---- Kuwait ------------------------------------------------------------
+  # NO `signal:` KEY, because stored-inventory is the default and this is the
+  # plain case for it: the site answers an honest version token per document.
+  #
+  # KDIPA publishes one instrument and no index worth walking, so
+  # config/sources/kdipa.yml declares it (`mode: declared`) rather than crawling
+  # for it. The sweep therefore has exactly ONE url to ask about -- one request
+  # per run, which is as cheap as this gets.
+  #
+  # MEASURED 2026-09-08 on that url:
+  #     ETag            absent
+  #     Last-Modified   Sun, 29 Aug 2021 05:26:19 GMT
+  #     Content-Length  278990
+  # so `dynamic_crawler/fingerprint.py::version_token` falls to its second tier
+  # and returns basis `last-modified+length`.
+  #
+  # CONFIRM IS FALSE BECAUSE THE TOKEN DOES NOT LIE. That 2021 date matches the
+  # file's own /2021/08/ upload path and stands still between runs -- it is not
+  # CMA's case, where Last-Modified is the CURRENT TIME and reported 1,134 false
+  # changes until `confirm: true` made it hash the visible text instead. Measure
+  # before changing this: a needless confirm downloads the file every sweep.
+  #
+  # THE TWO STRINGS ARE THE SAME ON PURPOSE. `source_system` was set to the
+  # regulator name so `_clean_trail` folds it out of doc_path and the tree does
+  # not carry a "Regulations" folder holding one document. `settings_for`
+  # matches on BOTH halves, so this still resolves to exactly this source.
+  - regulator: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    source_system: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

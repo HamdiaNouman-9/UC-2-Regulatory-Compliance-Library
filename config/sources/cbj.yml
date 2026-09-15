@@ -1,0 +1,293 @@
+# CBJ — Central Bank of Jordan
+#
+# The yml form of:
+#
+#   python generic_crawler/crawler.py \
+#     --url "https://www.cbj.gov.jo/EN/List/Memorandums_of_Understanding_MoUs" \
+#     --out output/cbj_MOU --scope prefix --max-pages 1 --strategy generic
+#
+# `--out` has no key here on purpose: GenericSiteCrawler writes to a temp
+# directory when `out_dir` is unset, so two runs cannot overwrite each other's
+# artefacts. Set it only when you want the html/pages.json kept for debugging.
+#
+# ---------------------------------------------------------------------------
+# MEASURED 2026-09-08 on the command above
+# ---------------------------------------------------------------------------
+#   pages       1
+#   documents  24   all type PDF
+#   section    "Home > Legislation > Memorandums of Understanding (MoUs)"
+#   page text  6,905 characters, n_pdfs 24
+#
+# ---------------------------------------------------------------------------
+# THE GUID TITLES ARE FIXED. Kept as a record of what the site does.
+# ---------------------------------------------------------------------------
+# Every document first came back titled like "E2Ad73E3 0655 4B5C Aa4A
+# Fa97B1919341". FOUR separate causes, each hiding the next, all fixed
+# generically in generic_crawler/crawler.py on 2026-09-10:
+#
+#   1. every link carries title="2373" -- one CMS node id shared by all of
+#      them. Four characters cleared `best_doc_title`'s length test, so the
+#      row context below it never ran. `_BARE_NUMBER` now rejects a title
+#      attribute made only of digits.
+#   2. `disambiguate_titles` then correctly refused 34 identical titles and
+#      re-derived each from the url slug -- and this site's slugs are guids.
+#      That was a good repair on bad input, and is untouched.
+#   3. `_merge_links` kept the FIRST sighting. Ten documents are linked twice,
+#      from their titled row and from a "View & Download" button, and the
+#      button often came first. A richer context now wins.
+#   4. the other fourteen live only in a mobile CARD layout whose naming
+#      element carries no row/card class, while the element above it holds all
+#      24 documents. `JS_LINKS` gained a second pass that ignores class and
+#      stops on substantive text before the container becomes a list.
+#
+# Plus one cosmetic pass: a card repeats the table's column headings, so the
+# context read "File Name <name> Type Size 686KB". `_ctx_title` strips those.
+#
+# PROVEN NOT TO MOVE ANY OTHER REGULATOR: generic_crawler/regression_check.py
+# unchanged, and a title diff over all 164 document links on its 13 frozen
+# seed pages reported no title changed. Re-run both before touching that file.
+
+# ---------------------------------------------------------------------------
+# include_pages: never
+# ---------------------------------------------------------------------------
+# The seed carries 6,905 characters, comfortably over MIN_PAGE_TEXT, so `auto`
+# would promote the listing itself as a 25th document titled "Memorandums of
+# Understanding (MoUs)". It is an index of MoUs, not an instrument -- the same
+# call config/sources/pdpa.yml makes for its Executive Decisions listing.
+regulator: "Central Bank of Jordan (CBJ)"
+owner: lead
+
+sources:
+# # ---- Laws ---------------------------------------------------------------
+#   # The manual library files Laws and Memorandums of Understanding as SIBLINGS
+#   # under the bank, so this is a second source rather than a deeper crumb of
+#   # the first. Separate sources also keep separate baselines: the eight laws
+#   # standing still while the MoUs grow is a fact the completeness gate should
+#   # be able to state, and it cannot if both share one number.
+#   #
+#   # MEASURED 2026-09-10 by loading the page and running the extraction JS:
+#   #   breadcrumb   ['Home', 'Legislation', 'Laws']
+#   #   doc links    16 sightings -> 8 unique documents, all PDF
+#   #   titles       every one already human-readable, e.g.
+#   #                "Banking Law No. 28 of 2000 and its amendments"
+#   #                "Central Bank of Jordan Law No. 23 of 1971"
+#   #                "Insurance Regulatory Law No. (12) of 2021"
+#   #
+#   # TWO TITLES APPEAR TWICE across those 8 urls -- "Banking Law No. 28 of 2000
+#   # and its amendments" and "Central Bank of Jordan Law No. 23 of 1971". The
+#   # rows stay distinct because document_url is part of the identity, but with
+#   # `doc_path_title: true` each pair lands on ONE folder node. Read them in the
+#   # workbook before promoting: if they are the same instrument published twice
+#   # they want `merge_files_at_same_path: true`, and if they are different
+#   # (an amendment, a translation) they want distinguishing titles.
+  - name: "Laws"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Laws"
+    scope: prefix
+    strategy: generic
+    source_system: "Laws"
+#     # SAME DROP AS THE MoUs SOURCE, and it has to be the same. Both pages sit
+#     # under "Home > Legislation > ..." on the site, and `_doc_path` pins
+#     # source_system above the site's crumbs -- so without this the trail reads
+#     # "CBJ | Laws | Legislation | <title>" while its sibling reads
+#     # "CBJ | Memorandums of Understanding (MoUs) | <title>". Two siblings at
+#     # different depths is not what the manual library shows: it files Laws and
+#     # Memorandums of Understanding directly under the bank.
+    drop_sections: ["Legislation"]
+#     # Same call as the MoUs source above: the listing is an index of laws, not
+#     # an instrument. Its own text measures 6,905 characters -- identical to the
+#     # MoUs page, because what JS_MAIN_CONTENT finds on both is the site chrome
+#     # rather than the list, which is another reason not to promote it.
+    include_pages: never
+    doc_path_title: true
+#     # ONE LAW IN TWO FORMATS IS ONE ROW. MEASURED on the 2026-09-10 export of
+#     # this source, 8 rows -> 7 doc_paths: two instruments are published twice,
+#     # as .pdf and .docx:
+#     #
+#     #   banking_law_no._28_of_2000_and_its_amendments.pdf / .docx
+#     #   Central Bank of Jordan Law No. 23 of 1971         (both guid-named urls)
+#     #
+#     # They survived as four rows because document_url is a third of the default
+#     # identity. This folds each pair into the multi-attachment shape --
+#     # document_url empty, both files in extra_meta.attachment_links -- the same
+#     # call config/sources/cbb.yml makes for its Arabic/English resolution pairs.
+    merge_files_at_same_path: true
+    max_pages: 1
+    max_depth: 1
+
+
+
+
+
+
+
+  - name: "Memorandums of Understanding (MoUs)"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Memorandums_of_Understanding_MoUs"
+    scope: prefix
+    strategy: generic
+    source_system: "Memorandums of Understanding (MoUs)"
+    include_pages: never
+  #   # THE SITE'S BREADCRUMB SAYS "Home > Legislation > Memorandums of
+  #   # Understanding (MoUs)". "Home" is dropped as a CMS crumb and the MoUs
+  #   # crumb is deduped against source_system, which left "Legislation" as the
+  #   # only surviving folder -- a level the manual library does not have. It
+  #   # files MoUs under Laws and Memorandums of Understanding as siblings, with
+  #   # nothing between them and the regulator.
+    drop_sections: ["Legislation"]
+  #   # The MoU's own name is the leaf, matching the manual library. Off by
+  #   # default, and the default is right where a page is promoted as its own
+  #   # document -- here `include_pages: never` means nothing else can be.
+    doc_path_title: true
+  #   # One page, and it holds every file. Depth beyond it would leave the
+  #   # listing for the rest of cbj.gov.jo, which is a different source's job.
+    max_pages: 1
+    max_depth: 1
+
+  
+  # ---- Instructions -------------------------------------------------------
+  # The third sibling, and by far the largest.
+  #
+  # MEASURED 2026-09-10 by loading the page and running the extraction JS:
+  #   breadcrumb   ['Home', 'Legislation', 'Regulations']
+  #   doc links    116 sightings -> 106 unique documents
+  #   extensions   84 pdf, 17 docx, 4 doc, 1 xlsx
+  #   guid titles  0 -- every one already human-readable
+  #
+  # THE BREADCRUMB DISAGREES WITH THE URL. The page is /EN/List/Instructions_
+  # and its own documents are titled "Instructions for ...", but the site files
+  # it under a crumb reading "Regulations". `source_system` follows the url and
+  # the documents rather than the crumb, because that is what the instruments
+  # call themselves and what a reviewer will look for.
+  #
+  # BOTH CRUMBS ARE DROPPED, not just "Legislation" as on its two siblings.
+  # "Regulations" does not repeat source_system so `_clean_trail` cannot remove
+  # it, and left in it would read "CBJ | Instructions | Regulations | <title>"
+  # -- one level deeper than Laws and MoUs, for a folder the manual library
+  # does not have and whose name contradicts the source it sits under.
+  - name: "Regulations and Instructions"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Instructions_"
+    scope: prefix
+    strategy: generic
+    source_system: "Instructions"
+    drop_sections: ["Legislation", "Regulations"]
+    include_pages: never
+    doc_path_title: true
+    # ESSENTIAL HERE, not just tidy. 106 documents across four file types, and
+    # MEASURED at least five titles published twice -- e.g. "Instructions of
+    # Corporate Governance for Banks No. (2/2023)" and "Instructions on the
+    # Implementation of Financial Accounting Standards No (6/2020)". Without
+    # this each pair is two rows competing for one folder node.
+    merge_files_at_same_path: true
+    max_pages: 1
+    max_depth: 1
+
+  # ---- Payment Systems Legislations ---------------------------------------
+  # The largest CBJ source, and it was missed until 2026-09-14: the site's nav
+  # lists FIVE legislation pages and this config covered two.
+  #
+  # MEASURED 2026-09-14 by running the engine against the seed below:
+  #   pages         1
+  #   documents   140   all PDF
+  #   breadcrumb  ['Home', 'Legislations', 'Payment Systems Legislations']
+  #   page text   6,905 characters -- the same site chrome as every other CBJ
+  #               listing, hence `include_pages: never`
+  #   titles      human-readable, e.g.
+  #               "Automated Teller Machine Instructions No. (6/2018)"
+  #               "Circular No. (26/1/7335) dated 21/4/2025 regarding the
+  #                Settlement of ..."
+  #
+  # "Legislations" IS PLURAL HERE, AND THAT MATTERS. Its three siblings drop
+  # "Legislation"; this page's crumb is "Legislations". `drop_sections` matches
+  # on exact lowercase equality (generic_crawler_wrapper.py: `p.strip().lower()
+  # not in self.drop_sections`), so copying the siblings' value would silently
+  # fail to drop it and file this source one level deeper than the other four.
+  #
+  # NO `merge_files_at_same_path`, DELIBERATELY. Its three siblings all need it
+  # -- Laws had 2 instruments published as .pdf and .docx, Instructions at least
+  # 5, Circulars exactly 5. MEASURED here: 140 documents, 140 distinct titles,
+  # ZERO duplicates, and every file is a PDF. There is no pair to fold. Setting
+  # it anyway would be harmless today and wrong the day CBJ publishes two
+  # genuinely different documents under one title, because it would fuse them.
+  #
+  # THE CATEGORY DROPDOWN IS REAL AND IS NOT USED. Every CBJ listing carries
+  # `ddlCategory1` -- Banking Supervision Department, Money Exchange, Financial
+  # Stability, and so on -- which looks like the area tree the manual library
+  # shows. MEASURED 2026-09-14 by driving it in a browser: on Circulars and on
+  # Instructions_ EVERY category returns zero rows, and only this page's two
+  # categories (Circulars, Instructions) return any. So the classification is
+  # unpopulated for the other sources, not merely hard to reach.
+  #
+  # It is not needed here either: the filter and the pager are both DISPLAY
+  # ONLY. The raw markup carries all 140 document links whatever category is
+  # selected and whichever of the six pages is shown -- documents that appear
+  # only under the "Instructions" filter are present in the unfiltered HTML. So
+  # `max_pages: 1` sees everything, the same way it already does for Circulars'
+  # 56 documents across six pages.
+  - name: "Payment Systems Legislations"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Payment_Systems_Legislations"
+    scope: prefix
+    strategy: generic
+    source_system: "Payment Systems Legislations"
+    drop_sections: ["Legislations"]
+    include_pages: never
+    doc_path_title: true
+    max_pages: 1
+    max_depth: 1
+
+  # ---- Circulars ----------------------------------------------------------
+  # The fourth sibling. Same shape as the other three: one listing page whose
+  # links ARE the instruments.
+  #
+  # MEASURED 2026-09-14 by running the engine against the seed below:
+  #   pages        1
+  #   documents   56   (48 pdf, 5 docx, 3 doc)
+  #   guid titles  0   -- every one already human-readable, e.g.
+  #                "Circular to the Banks operating in the kingdom No. (22/2026)"
+  #                "Circular No. 27/4430 dated 26th Feb. 2025 regarding Women Owned..."
+  #   page text    6,905 characters
+  #
+  # THE PAGE TEXT IS ENTIRELY SITE CHROME, and this is the first source here
+  # where that was checked rather than inferred. Those 6,905 characters are the
+  # accessibility widget -- the same number the MoUs and Laws pages report, and
+  # the reason is now visible: a search of the extracted text finds ZERO
+  # occurrences of "Circular", "Legislation", "Regulations" or "Home". What
+  # `JS_MAIN_CONTENT` reaches on cbj.gov.jo is never the list. So
+  # `include_pages: never` is not a preference about indexes, it is the
+  # difference between 56 documents and 57 rows where the 57th is a cookie
+  # banner wearing the page's title.
+  #
+  # `drop_sections` IS DEFENSIVE, NOT MEASURED. Its three siblings all drop
+  # "Legislation" because their breadcrumbs read "Home > Legislation > ...".
+  # This page's breadcrumb came back EMPTY, so the key is a no-op today. It is
+  # kept because the extractor demonstrably finds the crumb on the sibling
+  # pages and missed it here, and the two possible reasons -- the page really
+  # has none, or the extraction failed -- are indistinguishable from the
+  # output. A no-op costs nothing; a crumb appearing later would file Circulars
+  # one level deeper than its three siblings, which is the asymmetry the manual
+  # library does not have.
+  - name: "Circulars"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Circulars"
+    scope: prefix
+    strategy: generic
+    source_system: "Circulars"
+    drop_sections: ["Legislation"]
+    include_pages: never
+    doc_path_title: true
+    # NEEDED, AND VERIFIED RATHER THAN ASSUMED. 5 titles appear twice, and all
+    # five pairs are ONE instrument in TWO FORMATS -- each is a .pdf beside a
+    # .docx or .doc, two of them sharing a filename stem outright:
+    #
+    #   circular_no.10-1-10457_dated_1-7-2024.pdf / .docx
+    #
+    # That is the test config/sources/cbj.yml's Laws source asks for before
+    # setting this key: same instrument twice wants the merge, different
+    # instruments sharing a title want distinguishing titles instead. These are
+    # the former, so the 56 links become 51 rows with both files carried in
+    # extra_meta.attachment_links and document_url left empty.
+    merge_files_at_same_path: true
+    max_pages: 1
+    max_depth: 1
