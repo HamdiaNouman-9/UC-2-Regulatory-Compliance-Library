@@ -157,10 +157,12 @@ class ExcelRepo:
         return rid
 
     def update_regulation(self, regulation_id: int, **fields) -> None:
+        updated_at = fields.pop("updated_at", None)
         for r in self.t["regulations"]:
             if r.get("id") == regulation_id:
                 r.update({k: _flat(v) for k, v in fields.items()})
-                r["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                r["updated_at"] = _flat(updated_at) if updated_at is not None \
+                    else datetime.now().isoformat(timespec="seconds")
                 return
 
     def get_regulation_by_id(self, regulation_id: int) -> Optional[dict]:
@@ -337,7 +339,7 @@ class ExcelRepo:
     def insert_regulation_version(self, regulation_id: int, content_text: str = "",
                                   content_html: str = "", content_hash: str = "",
                                   updated_date=None, change_summary: str = "",
-                                  status: str = "active", **kw) -> int:
+                                  status: str = "active", created_at=None, **kw) -> int:
         vid = self._id("regulation_versions")
         self.t["regulation_versions"].append({
             "version_id": vid, "regulation_id": regulation_id,
@@ -345,6 +347,8 @@ class ExcelRepo:
             "updated_date": _flat(updated_date or date.today()),
             "change_summary": change_summary,
             "content_text": _flat(content_text), "content_html": _flat(content_html),
+            "created_at": _flat(created_at) if created_at is not None
+                else datetime.now().isoformat(timespec="seconds"),
         })
         return vid
 

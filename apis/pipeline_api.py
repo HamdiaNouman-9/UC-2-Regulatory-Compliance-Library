@@ -8,7 +8,7 @@ import logging
 import os
 import json
 import tempfile
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import time
 from threading import Thread, Lock
 from datetime import time as dtime
@@ -173,18 +173,27 @@ def row_to_dict(row, columns):
 def _attach_regulation_counts(cursor, categories: list):
     """Mark each category dict with whether it has regulations directly
     attached, so a category that is both a folder (has children) and a
-    leaf (owns a regulation) surfaces both facts instead of just the tree."""
-    ids = [c["compliancecategory_id"] for c in categories]
-    counts = {}
-    if ids:
-        placeholders = ",".join("?" for _ in ids)
-        cursor.execute(
-            f"SELECT compliancecategory_id, COUNT(*) FROM regulations "
-            f"WHERE compliancecategory_id IN ({placeholders}) "
-            f"GROUP BY compliancecategory_id",
-            ids,
-        )
-        counts = {row[0]: row[1] for row in cursor.fetchall()}
+    leaf (owns a regulation) surfaces both facts instead of just the tree.
+
+    MEASURED 2026-08-28: this used to filter with
+    `WHERE compliancecategory_id IN (?,?,?,...)`, one placeholder per category
+    passed in. `compliancecategory` now holds 8,893 rows, and `/categories`
+    and `/categories/root` (which pass the full list) blew past what the ODBC
+    driver accepts as parameters in one query:
+        07002 [Microsoft][ODBC Driver 17 for SQL Server]COUNT field incorrect
+        or syntax error (0) (SQLExecDirectW)
+    Aggregating over ALL of `regulations` unfiltered and looking counts up by
+    id afterwards needs zero parameters and is one query regardless of how
+    many categories `categories` holds -- the same code path now works for
+    the full-tree callers and the small-list callers (`/categories/roots`,
+    `/categories/children/{id}`) alike.
+    """
+    cursor.execute(
+        "SELECT compliancecategory_id, COUNT(*) FROM regulations "
+        "WHERE compliancecategory_id IS NOT NULL "
+        "GROUP BY compliancecategory_id"
+    )
+    counts = {row[0]: row[1] for row in cursor.fetchall()}
     for c in categories:
         cnt = counts.get(c["compliancecategory_id"], 0)
         c["has_regulations"] = cnt > 0
@@ -328,6 +337,7 @@ class RegulationModel(BaseModel):
     reference_no: Optional[str]
     department: Optional[str]
     year: Optional[int]
+    ref_key: Optional[str]
     source_page_url: Optional[str]
     extra_meta: Optional[Dict[str, Any]]
     created_at: Optional[str]
@@ -445,6 +455,7 @@ def _build_upload_doc_object(
         "org_pdf_text":    text,
         "upload_filename": filename,
     }
+    
     return doc
 
 
@@ -1482,7 +1493,7 @@ def get_regulations_by_category(
                 return cached
 
         query = """
-            SELECT id, regulator, source_system, category, title, document_url, document_html,
+            SELECT id, ref_key, regulator, source_system, category, title, document_url, document_html,
                    TRY_CONVERT(DATETIME, published_date, 103) AS published_date,
                    reference_no, department, doc_path, [year], source_page_url, extra_meta,
                    TRY_CAST(created_at AS DATETIME) AS created_at,
@@ -1510,21 +1521,77 @@ def get_regulations_by_category(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/regulations/{regulator}")
-def get_regulations_by_regulator(
-    regulator: str,
-    category_id: Optional[int] = Query(None),
-    year: Optional[int] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+@app.get("/regulations")
+def get_regulations(
+    regulator: Optional[List[str]] = Query(
+        None, description="One or more regulators -- either the exact full name or just its "
+                          "acronym, e.g. ?regulator=CBE&regulator=MLCU or "
+                          "?regulator=Central Bank of Egypt (CBE), case-insensitive either "
+                          "way. Omit to include every regulator."),
+    country: Optional[str] = Query(
+        None, description="One country -- exact name from config/countries.yml (e.g. "
+                          "'Bahrain') or its alpha-3 code (e.g. 'BHR'), case-insensitive. "
+                          "Omit to include every country. Combined with regulator as AND: "
+                          "country narrows which regulators are eligible, regulator (if also "
+                          "given) narrows further within that."),
+    # Optional and defaults to None, not 100 -- omit it (or send nothing)
+    # and every matching row comes back, no cap at all. Pass a number to
+    # actually page. No upper bound on the number itself either -- SQL
+    # Server's OFFSET/FETCH NEXT naturally caps out at however many rows
+    # match, so there's nothing left for an artificial ceiling to protect.
+    limit: Optional[int] = Query(None, ge=1),
     offset: int = Query(0, ge=0),
     lang: str = Query("en"),
 ):
+    """Regulations grouped by country. regulator accepts multiple values;
+    country takes exactly one -- see their own descriptions above for how
+    they combine. Leave limit unset for everything matching the filter, in
+    one response, sorted by published_date desc; pass it to page instead.
+    """
+    from utils.countries import resolve_country, resolve_regulator, regulators_for_country, country_for
+
     lang = _validate_lang(lang)
     try:
+        # country -> canonical name, rejecting anything that matches neither
+        # a name nor a code -- silently ignoring a typo'd country is worse
+        # than telling the caller it matched nothing.
+        resolved_country = None
+        if country:
+            resolved_country = resolve_country(country)
+            if not resolved_country:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown country: {country!r}. Use a name from "
+                          f"config/countries.yml or its alpha-3 code.")
+
+        # Two independent filters on the SAME underlying column
+        # (regulations.regulator) -- country resolves to the regulators filed
+        # under it, `regulator` is the caller's own explicit list (each value
+        # resolved from a bare acronym to its full stored name where one
+        # matches; passed through as-is otherwise -- see resolve_regulator's
+        # own docstring for why an unresolved value is not an error here).
+        # When both are given, AND means the intersection; when only one is
+        # given, that one alone; when neither, no filter at all
+        # (effective_regulators stays None, distinct from "resolved to zero
+        # regulators").
+        country_regulators = None
+        if resolved_country:
+            country_regulators = {r.upper() for r in regulators_for_country(resolved_country)}
+        explicit_regulators = (
+            {(resolve_regulator(r) or r).upper() for r in regulator} if regulator else None
+        )
+
+        if country_regulators is not None and explicit_regulators is not None:
+            effective_regulators = country_regulators & explicit_regulators
+        elif country_regulators is not None:
+            effective_regulators = country_regulators
+        else:
+            effective_regulators = explicit_regulators  # may be None -- no filter
+
         if lang == "ar":
             cache_key = (
-                f"GET /regulations/{regulator}"
-                f"?category_id={category_id}&year={year}&limit={limit}&offset={offset}"
+                f"GET /regulations?regulator={sorted(regulator or [])}"
+                f"&country={country}&limit={limit}&offset={offset}"
             )
             cached = _get_ar_cache(cache_key)
             if cached:
@@ -1533,8 +1600,38 @@ def get_regulations_by_regulator(
                     media_type="application/json",
                 )
 
-        query = """
-            SELECT r.id, r.regulator, r.source_system, r.category, r.title, r.document_url,
+        def _where(alias_prefix: str = "r.") -> Tuple[str, list]:
+            clauses, params = [], []
+            if effective_regulators is not None:
+                if not effective_regulators:
+                    # country and regulator were both given and share nothing
+                    # -- a real, valid answer ("zero rows"), not an error.
+                    clauses.append("1 = 0")
+                else:
+                    placeholders = ", ".join("?" for _ in effective_regulators)
+                    clauses.append(f"UPPER({alias_prefix}regulator) IN ({placeholders})")
+                    params.extend(sorted(effective_regulators))
+            return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+        where_sql, where_params = _where()
+
+        # OFFSET alone is valid T-SQL and returns everything from `offset`
+        # onward with no cap; FETCH NEXT is only appended when a limit was
+        # actually given. This is what makes "leave limit unset" mean
+        # "everything", not "the server's own idea of a reasonable page size".
+        fetch_clause = " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY" if limit is not None else " OFFSET ? ROWS"
+        page_params = [offset, limit] if limit is not None else [offset]
+
+        # Sorted by created_at, not published_date -- checked directly:
+        # published_date is NULL on 2,692 rows and present-but-unparseable
+        # (TRY_CONVERT fails) on another 336, ~a third of the table. SQL
+        # Server sorts NULL as the lowest value, so DESC pushed every one of
+        # those rows to the very last page, invisible under any real `limit`.
+        # created_at has zero NULLs and zero unparseable values -- it's set
+        # by the crawler/orchestrator at insert time, not scraped off a
+        # source page, so it can't have the same gap.
+        query = f"""
+            SELECT r.id, r.ref_key, r.regulator, r.source_system, r.category, r.title, r.document_url,
                    r.document_html, TRY_CONVERT(DATETIME, r.published_date, 103) AS published_date,
                    r.reference_no, r.department, r.doc_path, r.[year], r.source_page_url,
                    r.extra_meta, TRY_CAST(r.created_at AS DATETIME) AS created_at,
@@ -1542,28 +1639,27 @@ def get_regulations_by_regulator(
                    cc.title AS category_title, cc.parentid AS category_parent_id, cc.type AS category_type
             FROM regulations r
             LEFT JOIN compliancecategory cc ON r.compliancecategory_id = cc.compliancecategory_id
-            WHERE r.regulator = ?
+            {where_sql}
+            ORDER BY TRY_CAST(r.created_at AS DATETIME) DESC{fetch_clause}
         """
-        params = [regulator.upper()]
-        if category_id is not None:
-            query += " AND r.compliancecategory_id = ?"
-            params.append(category_id)
-        if year is not None:
-            query += " AND r.[year] = ?"
-            params.append(year)
-        query += " ORDER BY TRY_CONVERT(DATETIME, r.published_date, 103) DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
-        params.extend([offset, limit])
+        params = where_params + page_params
 
         with repo._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
             rows     = cursor.fetchall()
             columns  = [col[0] for col in cursor.description]
+            raw_rows = [row_to_dict(row, columns) for row in rows]
+
             regulations = []
-            for row in rows:
-                reg_dict = row_to_dict(row, columns)
+            for reg_dict in raw_rows:
                 if reg_dict.get("document_html"):
                     reg_dict["document_html"] = reg_dict["document_html"].replace('\\"', '"')
+                if reg_dict.get("doc_path"):
+                    try:
+                        reg_dict["doc_path"] = json.loads(reg_dict["doc_path"])
+                    except Exception:
+                        pass
                 if reg_dict.get("extra_meta"):
                     try:
                         # ALLOWLIST, not pop(). Popping two known-bad keys
@@ -1581,31 +1677,56 @@ def get_regulations_by_regulator(
                 }
                 regulations.append(reg_dict)
 
-            count_query  = "SELECT COUNT(*) FROM regulations WHERE regulator = ?"
-            count_params = [regulator.upper()]
-            if category_id is not None:
-                count_query += " AND compliancecategory_id = ?"
-                count_params.append(category_id)
-            if year is not None:
-                count_query += " AND [year] = ?"
-                count_params.append(year)
-            cursor.execute(count_query, count_params)
+            count_where_sql, count_where_params = _where()
+            cursor.execute(f"SELECT COUNT(*) FROM regulations r{count_where_sql}", count_where_params)
             total_count = cursor.fetchone()[0]
+
+            # Per-country totals across ALL matching rows, not just this page
+            # -- one GROUP BY, then bucket each regulator's count under its
+            # country in Python, rather than fetching every row just to count.
+            group_where_sql, group_where_params = _where(alias_prefix="")
+            cursor.execute(
+                f"SELECT regulator, COUNT(*) FROM regulations{group_where_sql} GROUP BY regulator",
+                group_where_params)
+            country_totals: Dict[str, int] = {}
+            for reg_name, cnt in cursor.fetchall():
+                bucket = country_for(reg_name) or "Unlisted"
+                country_totals[bucket] = country_totals.get(bucket, 0) + cnt
 
         if lang == "ar":
             regulations = [translate_regulation(reg, lang) for reg in regulations]
 
+        # Bucket THIS PAGE's rows by country. A regulator with no entry in
+        # config/countries.yml (e.g. SBP/SECP today -- Pakistan isn't listed
+        # yet) buckets under "Unlisted" rather than being dropped silently.
+        grouped: Dict[str, dict] = {}
+        for reg_dict in regulations:
+            bucket = country_for(reg_dict.get("regulator")) or "Unlisted"
+            grouped.setdefault(bucket, {"total": country_totals.get(bucket, 0), "regulations": []})
+            grouped[bucket]["regulations"].append(reg_dict)
+        # A country can have a total > 0 (rows exist) but none on THIS page
+        # -- still worth listing with an empty page-slice, so pagination
+        # doesn't make a country silently vanish from the response shape.
+        for bucket, total in country_totals.items():
+            grouped.setdefault(bucket, {"total": total, "regulations": []})
+
         response_data = {
             "success": True,
             "lang": lang,
-            "data": regulations,
+            "filters": {
+                "regulator": regulator, "country": resolved_country,
+            },
+            "data": grouped,
             "pagination": {
                 "total":        total_count,
                 "limit":        limit,
                 "offset":       offset,
-                "has_more":     (offset + limit) < total_count,
-                "current_page": (offset // limit) + 1,
-                "total_pages":  (total_count + limit - 1) // limit,
+                # limit=None means every matching row (from offset onward)
+                # already came back in this one response -- there is no
+                # "more" to page to, regardless of how large total is.
+                "has_more":     False if limit is None else (offset + limit) < total_count,
+                "current_page": 1 if limit is None else (offset // limit) + 1,
+                "total_pages":  1 if limit is None else (total_count + limit - 1) // limit if limit else 1,
             },
         }
 
@@ -1617,8 +1738,10 @@ def get_regulations_by_regulator(
             media_type="application/json",
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Error fetching regulations for {regulator}")
+        logger.exception(f"Error fetching regulations (regulator={regulator}, country={country})")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1639,7 +1762,7 @@ def get_regulation_detail(
                 )
 
         query = """
-            SELECT r.id, r.regulator, r.source_system, r.category, r.title, r.document_url,
+            SELECT r.id, r.ref_key, r.regulator, r.source_system, r.category, r.title, r.document_url,
                    r.document_html, TRY_CONVERT(DATETIME, r.published_date, 103) AS published_date,
                    r.reference_no, r.department, r.doc_path, r.[year], r.source_page_url,
                    r.extra_meta, TRY_CAST(r.created_at AS DATETIME) AS created_at,
@@ -1659,6 +1782,11 @@ def get_regulation_detail(
             reg_dict = row_to_dict(row, columns)
             if reg_dict.get("document_html"):
                 reg_dict["document_html"] = reg_dict["document_html"].replace('\\"', '"')
+            if reg_dict.get("doc_path"):
+                try:
+                    reg_dict["doc_path"] = json.loads(reg_dict["doc_path"])
+                except Exception:
+                    pass
             if reg_dict.get("extra_meta"):
                 try:
                     # ALLOWLIST, not pop() -- see utils/public_meta.py.
@@ -2088,10 +2216,19 @@ def get_categories(lang: str = Query("en")):
             for cat, tr in zip(categories, translated):
                 cat["title"] = tr
 
+        # Two passes, not one: `ORDER BY parentid, title` sorts each row by
+        # ITS OWN parentid, which says nothing about whether a category's
+        # PARENT row has already been reached in this same loop. A single
+        # pass that set `children=[]` and attached to the parent together
+        # threw `KeyError: 'children'` whenever a child's iteration turn came
+        # before its parent's — unmasked once `_attach_regulation_counts`
+        # stopped 500ing first. `/categories/root` below already does this
+        # correctly in two passes; this now matches it.
         categories_by_id = {cat["compliancecategory_id"]: cat for cat in categories}
-        root_categories  = []
         for cat in categories:
             cat["children"] = []
+        root_categories = []
+        for cat in categories:
             if cat["parentid"] is None:
                 root_categories.append(cat)
             else:
@@ -3162,9 +3299,15 @@ def get_regulation_versions(
 ):
     lang = _validate_lang(lang)
     """
-    Get content version history for a CBB regulation.
+    Get content version history for a regulation.
 
     Returns all versions from regulation_versions table with their content snapshots.
+    Every regulator is versioned this way now -- dynamic_crawler/formfill/orch.py's
+    _process_versioned_doc() takes every document through the versioned path
+    regardless of regulator (see its own comment: "No `if regulator == CBB`...
+    Everything takes the versioned path."). A regulation with no rows here simply
+    predates that change, or was never re-crawled since -- not "this regulator
+    doesn't support versioning."
 
     Use ?include_details=true to get full regulation data (document_html, extra_meta, etc.)
     for each version, similar to the /regulation/{id} endpoint.
@@ -3175,17 +3318,6 @@ def get_regulation_versions(
 
     regulator = regulation.get("regulator")
 
-    if regulator != "Central Bank of Bahrain":
-        return {
-            "success": True,
-            "lang": lang,
-            "regulation_id": regulation_id,
-            "title": regulation.get("title"),
-            "regulator": regulator,
-            "total_versions": 0,
-            "versions": [],
-            "note": "Content versioning is only available for CBB regulations."
-        }
     if lang == "ar":
         cache_key = f"GET /regulation/{regulation_id}/versions?include_details={include_details}"
         cached = _get_ar_cache(cache_key)
@@ -3235,6 +3367,7 @@ def get_regulation_versions(
                 "content_html_length": len(v["content_html"] or ""),
                 # Add regulation metadata (from main table)
                 "regulation_details": {
+                    "ref_key": regulation.get("ref_key"),
                     "title": regulation.get("title"),
                     "document_url": regulation.get("document_url"),
                     "source_page_url": regulation.get("source_page_url"),
@@ -3289,12 +3422,15 @@ def get_regulation_versions(
         "success": True,
         "lang": lang,
         "regulation_id": regulation_id,
+        "ref_key": regulation.get("ref_key"),
         "title": regulation.get("title"),
         "regulator": regulator,
         "include_details": include_details,
         "total_versions": len(versions),
         "versions": versions,
-        "note": None
+        "note": None if versions else
+            "No versions recorded yet -- this regulation predates content "
+            "versioning, or hasn't been re-crawled since.",
     }
 
     if lang == "ar":
@@ -3547,6 +3683,7 @@ def get_analysis_versions(
         "success": True,
         "lang": lang,
         "regulation_id": regulation_id,
+        "ref_key": regulation.get("ref_key"),
         "title": regulation.get("title"),
         "regulator": regulator,
         "include_details": include_details,
@@ -4261,6 +4398,7 @@ def test_get_cbb_regulations(limit: int = Query(10, ge=1, le=100)):
         query = f"""
             SELECT TOP {limit}
                 r.id,
+                r.ref_key,
                 r.title,
                 r.reference_no,
                 r.published_date,
@@ -4520,40 +4658,39 @@ def get_active_version(regulation_id: int, lang: str = Query("en")):
     regulation = repo.get_regulation_by_id(regulation_id)
     if not regulation:
         raise HTTPException(404, f"Regulation {regulation_id} not found")
- 
+
     regulator = regulation.get("regulator")
-    if regulator != "Central Bank of Bahrain":
-        return {
-            "success":        True,
-            "lang":           lang,
-            "regulation_id":  regulation_id,
-            "regulator":      regulator,
-            "has_versioning": False,
-            "active_version": None,
-            "note": "Content versioning is only available for CBB regulations.",
-        }
- 
+
+    # Versioning applies to every regulator now -- dynamic_crawler/formfill/
+    # orch.py's _process_versioned_doc() takes every document through the
+    # versioned path regardless of regulator. A regulation with no active
+    # version simply predates that change or hasn't been re-crawled since;
+    # it is not specific to any one regulator, so there is nothing to gate
+    # on `regulator` here any more.
     version_data = repo.get_active_regulation_version(regulation_id)
     if not version_data:
         return {
             "success":        True,
             "lang":           lang,
             "regulation_id":  regulation_id,
+            "ref_key":        regulation.get("ref_key"),
             "regulator":      regulator,
-            "has_versioning": True,
+            "has_versioning": False,
             "active_version": None,
-            "note": "No active version found.",
+            "note": "No active version recorded yet -- this regulation predates "
+                   "content versioning, or hasn't been re-crawled since.",
         }
- 
+
     change_summary = version_data.get("change_summary") or ""
     if lang == "ar" and change_summary:
         translated = translate_texts_batch([change_summary], lang)
         change_summary = translated[0] if translated else change_summary
- 
+
     return {
         "success":        True,
         "lang":           lang,
         "regulation_id":  regulation_id,
+        "ref_key":        regulation.get("ref_key"),
         "regulator":      regulator,
         "has_versioning": True,
         "active_version": {

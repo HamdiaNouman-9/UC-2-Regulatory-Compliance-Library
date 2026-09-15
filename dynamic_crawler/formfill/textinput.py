@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 # Matches orchestrator.py's MIN_TEXT_LEN. Kept as a parameter so the two cannot
 # drift silently: the caller passes its own value in.
@@ -48,9 +48,13 @@ _FILE_EXT = re.compile(r"\.(pdf|docx?|xlsx?|pptx?|rtf|txt)(\?|#|$)", re.I)
 _DOWNLOAD_HINT = re.compile(r"wpdmdl=|/download/|/document/|attachment", re.I)
 
 # The separator the model sees when both sources are sent. Explicit, because the
-# model must know it is reading one regulation twice and not two regulations.
-BOTH_HEADER_HTML = "=== SOURCE 1 OF 2 — text of the published web page ==="
-BOTH_HEADER_FILE = "=== SOURCE 2 OF 2 — text of the attached document ({name}) ==="
+# model must know it is reading one regulation twice (or once plus N attachments),
+# not several unrelated regulations. {total} is 1 (the page) + however many
+# attachments actually yielded usable text -- almost always 2, but
+# attachment_links can carry several files for one regulation (CMA, Ministry of
+# Commerce rows commonly have 3-10), so this can no longer be hardcoded at "2".
+BOTH_HEADER_HTML = "=== SOURCE 1 OF {total} — text of the published web page ==="
+BOTH_HEADER_FILE = "=== SOURCE {n} OF {total} — text of an attached document ({name}) ==="
 
 
 def is_file_url(url: str) -> bool:
@@ -92,13 +96,34 @@ def same_content(a: str, b: str, threshold: float = SAME_CONTENT_THRESHOLD) -> b
 @dataclass
 class Decision:
     """What to analyse, and why — the `why` is logged so a skipped document can
-    always be explained without re-running anything."""
+    always be explained without re-running anything.
+
+    attempted_files/succeeded_files exist so a caller can tell "there were no
+    attachments to begin with" apart from "there were attachments and every
+    one of them failed to fetch" -- `sources` alone can't: an html-only
+    Decision looks identical either way. That distinction matters most for an
+    attachment_links bundle, where html/content_text is deliberately just a
+    thin wrapper (see decide_for_document) -- falling back to it because
+    every real attachment failed produces a plausible-looking but misleading
+    result, which the caller needs to be able to detect and refuse rather
+    than silently analyse.
+    """
     skip: bool
     reason: str
     text: Optional[str] = None
     content_type: str = "html"
     sources: List[str] = field(default_factory=list)
     overlap: Optional[float] = None
+    attempted_files: int = 0
+    succeeded_files: int = 0
+    # Raw pieces, before decide() combines them into `text`. Exists so a
+    # caller wanting per-document granularity (the Requirement/Activity
+    # pipeline's `documents=[{"source_document":..., "text":...}, ...]`
+    # input -- see requirement_analyzer.py) can build it directly from a
+    # Decision already computed for the old flow, instead of re-fetching
+    # every attachment a second time.
+    html_text: str = ""
+    file_parts: List[Tuple[str, str]] = field(default_factory=list)  # (name, text)
 
     def __str__(self) -> str:
         if self.skip:
@@ -113,6 +138,7 @@ def decide(
     content_text: str = "",
     document_url: str = "",
     attachment_url: str = "",
+    attachment_urls: Optional[List[str]] = None,
     fetch_file_text: Optional[Callable[[str], Optional[str]]] = None,
     fetch_page_text: Optional[Callable[[str], Optional[str]]] = None,
     min_text_len: int = DEFAULT_MIN_TEXT_LEN,
@@ -122,22 +148,55 @@ def decide(
 
     `content_text` is the crawler's already-extracted page text and is preferred
     over `document_html` — it is the same content with the markup already gone.
-    `attachment_url` is extra_meta["org_pdf_link"] when the page has a file
-    hanging off it; when `document_url` is itself a file, that is used instead.
+
+    `attachment_url` (single) and `attachment_urls` (list) are both accepted and
+    combined -- `attachment_url` stays for any existing caller passing one URL
+    positionally-by-name; `attachment_urls` is what extra_meta["attachment_links"]
+    (pipe-separated, often 2+ files -- CMA/Ministry of Commerce rows commonly
+    carry 3-10) actually needs. extra_meta["org_pdf_link"] used to be this
+    function's only attachment source; checked against the live data (2026-09-07)
+    it never carries a URL that attachment_links doesn't already contain as its
+    first entry, so it is no longer read here at all -- decide_for_document below
+    is where that switch happens. When `document_url` is itself a file (SAMA's
+    actual mechanism -- a direct .pdf link, not a metadata field), it is folded
+    into the same URL list rather than handled as a separate case.
     """
     html_text = (content_text or "").strip() or (document_html or "").strip()
     doc_is_file = is_file_url(document_url)
-    file_url = document_url if doc_is_file else (attachment_url or "").strip()
+    urls: List[str] = []
+    if attachment_url and attachment_url.strip():
+        urls.append(attachment_url.strip())
+    for u in (attachment_urls or []):
+        if u and u.strip() and u.strip() not in urls:
+            urls.append(u.strip())
+    if doc_is_file and document_url not in urls:
+        urls.insert(0, document_url)
     page_url = "" if doc_is_file else (document_url or "").strip()
 
     # ---- THE GATE ----------------------------------------------------------
-    if len(html_text) < min_text_len and not file_url and not page_url:
-        return Decision(True, "no html text, no file, no page to fetch")
+    if len(html_text) < min_text_len and not urls and not page_url:
+        return Decision(True, "no html text, no file, no page to fetch",
+                        attempted_files=0, succeeded_files=0)
 
     # ---- gather what we can -----------------------------------------------
-    file_text = ""
-    if file_url and fetch_file_text:
-        file_text = (fetch_file_text(file_url) or "").strip()
+    # Each URL that is itself a file (not every entry needs to be -- a page
+    # can link to a mix) is fetched independently; a fetch failure or a file
+    # too short to be useful (e.g. a .docx we have no extractor for, which
+    # fetch_file_text returns as None/empty for rather than raising) just
+    # drops that one entry instead of losing every attachment on this row.
+    file_parts: List[Tuple[str, str]] = []  # (name, text), in URL order
+    attempted_files = 0
+    if fetch_file_text:
+        for u in urls:
+            if not is_file_url(u):
+                continue
+            attempted_files += 1
+            t = (fetch_file_text(u) or "").strip()
+            if len(t) >= min_text_len:
+                name = u.rsplit("/", 1)[-1][:80] or "attached file"
+                file_parts.append((name, t))
+    file_text = "\n\n".join(t for _, t in file_parts)
+    succeeded_files = len(file_parts)
 
     if len(html_text) < min_text_len and page_url and fetch_page_text:
         # The document_url is a web page and nothing was captured at crawl time,
@@ -146,45 +205,73 @@ def decide(
         html_text = (fetch_page_text(page_url) or "").strip()
 
     html_ok = len(html_text) >= min_text_len
-    file_ok = len(file_text) >= min_text_len
+    file_ok = bool(file_parts)
 
     # ---- THE INPUT --------------------------------------------------------
     if html_ok and file_ok:
         ov = containment(html_text, file_text)
         if ov >= threshold:
-            # The file is the same regulation rendered as a document. Send the
-            # HTML: it is already text, so it needs no OCR trust.
+            # The file(s) are the same regulation rendered as a document. Send
+            # the HTML: it is already text, so it needs no OCR trust.
             return Decision(False, f"file duplicates the page (overlap {ov:.2f}) — html only",
-                            html_text, "html", ["html"], ov)
-        name = file_url.rsplit("/", 1)[-1][:80] or "attached file"
-        combined = "\n\n".join([
-            BOTH_HEADER_HTML, html_text,
-            BOTH_HEADER_FILE.format(name=name), file_text,
-        ])
+                            html_text, "html", ["html"], ov,
+                            attempted_files=attempted_files, succeeded_files=succeeded_files,
+                            html_text=html_text, file_parts=file_parts)
+        total = 1 + len(file_parts)
+        pieces = [BOTH_HEADER_HTML.format(total=total), html_text]
+        for i, (name, text) in enumerate(file_parts, start=2):
+            pieces.append(BOTH_HEADER_FILE.format(n=i, total=total, name=name))
+            pieces.append(text)
+        combined = "\n\n".join(pieces)
         # "pdf_text" so the analyser's normaliser leaves it alone: the HTML half
         # is already plain text by this point, and running the HTML cleaner over
-        # the combined string would mangle the PDF half.
-        return Decision(False, f"page and file differ (overlap {ov:.2f}) — sending both",
-                        combined, "pdf_text", ["html", "file"], ov)
+        # the combined string would mangle the file half(ves).
+        return Decision(False, f"page and file(s) differ (overlap {ov:.2f}) — sending both",
+                        combined, "pdf_text", ["html", "file"], ov,
+                        attempted_files=attempted_files, succeeded_files=succeeded_files,
+                        html_text=html_text, file_parts=file_parts)
 
     if html_ok:
-        return Decision(False, "html only", html_text, "html", ["html"])
+        return Decision(False, "html only", html_text, "html", ["html"],
+                        attempted_files=attempted_files, succeeded_files=succeeded_files,
+                        html_text=html_text, file_parts=file_parts)
     if file_ok:
-        return Decision(False, "file only", file_text, "pdf_text", ["file"])
+        if len(file_parts) > 1:
+            pieces = []
+            for i, (name, text) in enumerate(file_parts, start=1):
+                pieces.append(f"=== ATTACHMENT {i} OF {len(file_parts)} ({name}) ===")
+                pieces.append(text)
+            file_text = "\n\n".join(pieces)
+        return Decision(False, "file only", file_text, "pdf_text", ["file"],
+                        attempted_files=attempted_files, succeeded_files=succeeded_files,
+                        html_text=html_text, file_parts=file_parts)
 
     got = f"html {len(html_text)} chars, file {len(file_text)} chars"
-    return Decision(True, f"nothing reached {min_text_len} chars ({got})")
+    return Decision(True, f"nothing reached {min_text_len} chars ({got})",
+                    attempted_files=attempted_files, succeeded_files=succeeded_files,
+                    html_text=html_text, file_parts=file_parts)
 
 
 def decide_for_document(doc, *, fetch_file_text=None, fetch_page_text=None,
                         min_text_len: int = DEFAULT_MIN_TEXT_LEN) -> Decision:
-    """Convenience wrapper for a RegulatoryDocument."""
+    """Convenience wrapper for a RegulatoryDocument.
+
+    Reads extra_meta["attachment_links"] (pipe-separated, possibly several
+    files) as the attachment source. extra_meta["org_pdf_link"] is no longer
+    read: checked against the live regulations table (2026-09-07), every row
+    where it ever holds a real value also has attachment_links containing that
+    exact same URL as its first entry -- SAMA, the one regulator with heavy
+    org_pdf_link *key* presence, always has it null there; SAMA's actual
+    attachment is document_url itself being a direct .pdf link, which `decide`
+    already picks up on its own via is_file_url(document_url)."""
     meta = getattr(doc, "extra_meta", None) or {}
+    raw_links = meta.get("attachment_links") or ""
+    attachment_urls = [u.strip() for u in str(raw_links).split("|") if u.strip()]
     return decide(
         document_html=getattr(doc, "document_html", "") or "",
         content_text=meta.get("content_text") or "",
         document_url=getattr(doc, "document_url", "") or "",
-        attachment_url=meta.get("org_pdf_link") or "",
+        attachment_urls=attachment_urls,
         fetch_file_text=fetch_file_text,
         fetch_page_text=fetch_page_text,
         min_text_len=min_text_len,

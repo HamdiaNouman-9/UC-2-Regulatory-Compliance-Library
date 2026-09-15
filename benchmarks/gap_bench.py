@@ -128,7 +128,7 @@ def build_inputs(from_run: str, doc_file: str):
     return text, requirements
 
 
-def run(label: str, from_run: str, doc_file: str):
+def run(label: str, from_run: str, doc_file: str, model: str = None):
     out = RUNS_DIR / label
     (out / "calls").mkdir(parents=True, exist_ok=True)
 
@@ -140,7 +140,8 @@ def run(label: str, from_run: str, doc_file: str):
 
     rec = CallRecorder()
     rec.install()
-    analyzer = GapAnalyzer()
+    analyzer = GapAnalyzer(model=model) if model else GapAnalyzer()
+    print(f"  model              : {analyzer.model}")
     print(f"  max_chunk_size     : {analyzer.max_chunk_size:,} "
           f"-> {'CHUNKED' if len(text) > analyzer.max_chunk_size else 'single pass'}")
 
@@ -283,6 +284,11 @@ def compare(a, b):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--model", default=None,
+                   help="model id to test, e.g. qwen/qwen-2.5-72b-instruct. "
+                        "Defaults to GapAnalyzer's own default. Lets a CANDIDATE "
+                        "model be measured through OpenRouter before any hosting "
+                        "decision is made -- quality first, infrastructure second.")
     p.add_argument("--label")
     p.add_argument("--from-run", default="optimized")
     p.add_argument("--doc-file",
@@ -294,7 +300,7 @@ def main():
         return
     if not a.label:
         p.error("--label is required (or --compare A B)")
-    run(a.label, a.from_run, a.doc_file)
+    run(a.label, a.from_run, a.doc_file, a.model)
 
 
 if __name__ == "__main__":

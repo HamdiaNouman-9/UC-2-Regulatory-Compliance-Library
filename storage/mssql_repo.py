@@ -1,12 +1,72 @@
 from typing import Dict, List, Optional, Tuple
 import pyodbc
 import json
+import re
 import time
 from storage.repository import DocumentRepository
 from models.models import RegulatoryDocument
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------- #
+#  regulations.ref_key -- REG-{country}-{regulator}-{source}-{id}         #
+#  e.g. REG-SAU-SAMA-RUL-104. {country} is ISO 3166-1 alpha-3, derived    #
+#  from the regulator via utils.countries.country_code_for -- not a      #
+#  separate input, so every caller already passing regulator/source/id   #
+#  gets it for free.                                                     #
+#                                                                          #
+#  Module-level, not methods: needed by both _insert_regulation below     #
+#  (new rows) and scripts/backfill_regulation_ref_keys.py (existing rows) #
+#  -- one implementation, so the two can never compute it two different   #
+#  ways.                                                                  #
+# ---------------------------------------------------------------------- #
+
+_ACRONYM_STOPWORDS = {"of", "the", "and", "for", "in", "on"}
+
+
+def regulator_acronym(regulator: str) -> str:
+    """SAMA from "Saudi Arabian Monetary Authority (SAMA)". Most regulator
+    names in this table already end in a parenthesized short code -- use it
+    verbatim when present. The few that don't ("Ministry of Education",
+    "Saudi Exchange") fall back to an initialism of the significant words,
+    stopwords dropped: "Ministry of Education" -> "ME"."""
+    if not regulator:
+        return "UNK"
+    m = re.search(r'\(([A-Za-z0-9]+)\)\s*$', regulator.strip())
+    if m:
+        return m.group(1).upper()
+    words = [w for w in re.findall(r"[A-Za-z]+", regulator) if w.lower() not in _ACRONYM_STOPWORDS]
+    initials = "".join(w[0] for w in words).upper()
+    return initials or "UNK"
+
+
+def source_acronym(source_system: str, reg_acronym: str) -> str:
+    """First 3 letters of source_system, with the regulator's own name
+    stripped off the front first if it's there (checked against real data:
+    SAMA's source_system is "SAMA RULEBOOK", CMA's is "CMA-RULES" -- space
+    and hyphen both occur, hence the character class covering both). Most
+    regulators (CBE in particular) have a source_system that never repeats
+    the regulator name at all -- e.g. "Circulars", "Financial Stability" --
+    so for those this is just "first 3 letters of the whole thing". Two
+    different source_systems CAN reduce to the same 3 letters (CBE's
+    "Financial Stability" and "Financial Technology" both give "FIN") --
+    harmless, since the ref_key's own trailing {id} already guarantees
+    uniqueness regardless; this segment is for readability, not identity."""
+    s = (source_system or "").strip()
+    if not s:
+        return "GEN"
+    stripped = re.sub(rf'^{re.escape(reg_acronym)}[\s\-_]*', '', s, flags=re.IGNORECASE) or s
+    letters = re.sub(r'[^A-Za-z]', '', stripped)
+    return (letters[:3] or "GEN").upper()
+
+
+def compute_regulation_ref_key(regulator: str, source_system: str, regulation_id) -> str:
+    from utils.countries import country_code_for
+    country = country_code_for(regulator)
+    reg = regulator_acronym(regulator)
+    src = source_acronym(source_system, reg)
+    return f"REG-{country}-{reg}-{src}-{regulation_id}"
 
 
 class MSSQLRepository(DocumentRepository):
@@ -358,23 +418,44 @@ class MSSQLRepository(DocumentRepository):
                     getattr(document, "content_hash", None) or None,
                 ))
                 reg_id = cursor.fetchone()[0]
+                # ref_key needs the row's own id, which only exists after the
+                # INSERT above -- same transaction, so a crash between the two
+                # statements can never leave a regulation row with no ref_key.
+                ref_key = compute_regulation_ref_key(
+                    document.regulator, document.source_system, reg_id)
+                cursor.execute(
+                    "UPDATE regulations SET ref_key = ? WHERE id = ?", (ref_key, reg_id))
                 conn.commit()
 
             document.id = reg_id
-            logger.info(f"Inserted regulation ID: {reg_id} (type={doc_type})")
+            logger.info(f"Inserted regulation ID: {reg_id} (type={doc_type}, ref_key={ref_key})")
             return reg_id
         except Exception as e:
             logger.error(f"Failed to insert regulation: {e}")
             raise
 
     def update_regulation(self, regulation_id: int, **kwargs):
+        """
+        updated_at defaults to SYSDATETIMEOFFSET() (unchanged behaviour).
+        Pass it explicitly in kwargs to pin it to a specific instant instead --
+        e.g. to make it match the created_at of a regulation_versions row
+        written in the same modification, rather than the moment this
+        particular statement happens to execute.
+        """
         if not kwargs:
             return
-        set_clause = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [regulation_id]
+        updated_at = kwargs.pop("updated_at", None)
+        set_parts = [f"{k} = ?" for k in kwargs.keys()]
+        values = list(kwargs.values())
+        if updated_at is not None:
+            set_parts.append("updated_at = ?")
+            values.append(updated_at)
+        else:
+            set_parts.append("updated_at = SYSDATETIMEOFFSET()")
+        values.append(regulation_id)
         query = f"""
             UPDATE regulations
-            SET {set_clause}, updated_at = SYSDATETIMEOFFSET()
+            SET {", ".join(set_parts)}
             WHERE id = ?
         """
         try:
@@ -897,7 +978,7 @@ class MSSQLRepository(DocumentRepository):
     def get_regulation_by_id(self, regulation_id: int) -> Optional[dict]:
         query = """
             SELECT
-                id, regulator, source_system, category, title,
+                id, ref_key, regulator, source_system, category, title,
                 document_url, doc_path, published_date, reference_no,
                 department, year, source_page_url,
                 CAST(extra_meta AS NVARCHAR(MAX)) as extra_meta,
@@ -992,6 +1073,7 @@ class MSSQLRepository(DocumentRepository):
         updated_date=None,
         change_summary: str = "",
         status: str = "active",
+        created_at=None,
         **kw,
     ) -> int:
         """
@@ -1015,30 +1097,41 @@ class MSSQLRepository(DocumentRepository):
 
         `**kw` is here for the same reason ExcelRepo has it: a caller written
         against one repo must not crash against the other.
+
+        `created_at` is normally left to GETDATE() (unchanged default
+        behaviour). Pass it explicitly when this version's timestamp must
+        match another write in the same logical operation exactly -- e.g.
+        regulations.updated_at on a modification -- rather than letting SQL
+        Server stamp it independently at whatever instant this statement
+        happens to execute.
         """
         """
         Insert a new version snapshot into regulation_versions.
         Returns the new version_id.
         """
-        query = """
+        created_at_sql = "?" if created_at is not None else "GETDATE()"
+        query = f"""
             INSERT INTO regulation_versions
                 (regulation_id, regulator, content_html, content_text,
                  content_hash, updated_date, change_summary, status, created_at)
             OUTPUT INSERTED.version_id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, {created_at_sql})
         """
+        params = [
+            regulation_id,
+            regulator,
+            content_html,
+            content_text,
+            content_hash,
+            updated_date,
+            change_summary,
+            status,
+        ]
+        if created_at is not None:
+            params.append(created_at)
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, [
-                regulation_id,
-                regulator,
-                content_html,
-                content_text,
-                content_hash,
-                updated_date,
-                change_summary,
-                status,
-            ])
+            cursor.execute(query, params)
             row = cursor.fetchone()
             conn.commit()
             return int(row[0])
@@ -1182,7 +1275,7 @@ class MSSQLRepository(DocumentRepository):
 
     # The copy half of the archive. `is_current` is written as 0 rather than
     # copied from the source row: these rows ARE the archive, so landing them
-    # flagged current was wrong regardless of the retire step below.
+    # flagged current was wrong regardless of the delete step below.
     _ARCHIVE_ANALYSIS_SQL = """
         INSERT INTO compliance_analysis_versions
             (regulation_id, version_id,
@@ -1203,12 +1296,17 @@ class MSSQLRepository(DocumentRepository):
           AND is_current = 1
     """
 
-    # The retire half. MUST run after the copy: the SELECT above is scoped by
-    # `is_current = 1`, so retiring first would archive nothing.
-    _RETIRE_ANALYSIS_SQL = """
-        UPDATE compliance_analysis
-        SET is_current = 0,
-            status     = 'inactive'
+    # The delete half. MUST run after the copy: the SELECT above is scoped by
+    # `is_current = 1`, so deleting first would archive nothing. Once this
+    # runs, the row's only surviving copy is the one just written into
+    # compliance_analysis_versions above -- which is the point: that table is
+    # already the durable archive, so keeping a second, flagged-off copy in
+    # compliance_analysis bought no extra recoverability, just an
+    # ever-growing table (every reader filters `is_current = 1` already, so
+    # the flagged-off copies were invisible dead weight, not a safety net
+    # anyone could actually query).
+    _DELETE_ANALYSIS_SQL = """
+        DELETE FROM compliance_analysis
         WHERE regulation_id = ?
           AND is_current = 1
     """
@@ -1216,7 +1314,7 @@ class MSSQLRepository(DocumentRepository):
     def _archive_analysis_stmts(self, cursor, regulation_id: int,
                                 version_id: int) -> Tuple[int, int]:
         """Issue both archive statements on an open cursor. Returns
-        (archived, retired).
+        (archived, deleted).
 
         Split out from the public method so the ORDER and SCOPE of the two
         statements can be tested without a database — see
@@ -1224,9 +1322,9 @@ class MSSQLRepository(DocumentRepository):
         """
         cursor.execute(self._ARCHIVE_ANALYSIS_SQL, [version_id, regulation_id])
         archived = cursor.rowcount
-        cursor.execute(self._RETIRE_ANALYSIS_SQL, [regulation_id])
-        retired = cursor.rowcount
-        return archived, retired
+        cursor.execute(self._DELETE_ANALYSIS_SQL, [regulation_id])
+        deleted = cursor.rowcount
+        return archived, deleted
 
     def archive_current_analysis(self, regulation_id: int, version_id: int) -> int:
         """Move the current compliance_analysis rows into
@@ -1241,35 +1339,42 @@ class MSSQLRepository(DocumentRepository):
         quadratically. `ExcelRepo.archive_current_analysis` retires correctly,
         which is why every preview run looked clean while production doubled.
 
-        `is_current = 0` rather than DELETE. The class docstring in
-        orchestrator.py says "deleted", but since every reader already filters on
-        the flag, flipping it hides the rows exactly as a delete would and keeps
-        them recoverable if an archive turns out to have been wrong.
+        DELETE, not `is_current = 0`. An earlier version of this fix flagged
+        the old rows off instead of removing them, reasoning that it kept them
+        "recoverable if an archive turns out to have been wrong." That
+        reasoning didn't hold up: the row is already durably copied into
+        compliance_analysis_versions by the INSERT ... SELECT above, before
+        this DELETE ever runs, so nothing is lost by removing it here too.
+        Flagging off instead of deleting just left compliance_analysis
+        accumulating one full row-set per past version forever, all of it
+        invisible to every reader (they all filter `is_current = 1`) — a
+        silently growing table with no one able to query the rows it grew by.
 
         Both statements share ONE transaction, so a crash between them leaves
-        neither applied — the archive and the retire cannot diverge.
+        neither applied — the archive and the delete cannot diverge.
 
         Safe to re-run: a second call finds no `is_current = 1` rows, archives 0
-        and retires 0. That is what makes it retryable after a partial failure.
+        and deletes 0. That is what makes it retryable after a partial failure.
         """
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            archived, retired = self._archive_analysis_stmts(
+            archived, deleted = self._archive_analysis_stmts(
                 cursor, regulation_id, version_id)
             conn.commit()
 
-        if archived != retired:
+        if archived != deleted:
             # Not raised: the transaction already committed and the rows are
             # consistent with each other. This means rowcount reporting differed
             # from what we expect, which is worth investigating but not worth
             # failing an ingestion run over.
             logger.error(
                 f"archive_current_analysis count mismatch for regulation "
-                f"{regulation_id}: archived {archived}, retired {retired}")
+                f"{regulation_id}: archived {archived}, deleted {deleted}")
         else:
             logger.info(
-                f"Archived and retired {archived} analysis rows for regulation "
-                f"{regulation_id} (version_id={version_id})")
+                f"Archived {archived} analysis row(s) for regulation "
+                f"{regulation_id} into compliance_analysis_versions "
+                f"(version_id={version_id})")
         return archived
 
     # ================================================================== #
@@ -1959,6 +2064,142 @@ class MSSQLRepository(DocumentRepository):
             raise
 
     # ================================================================== #
+    #  GAP ANALYSIS                                                        #
+    # ================================================================== #
+    #
+    # `gap_analysis` and `gap_analysis_session` already existed in the schema
+    # with no repository methods pointed at them — apis/pipeline_api.py called
+    # `repo.create_gap_session`, `repo.store_gap_results` and
+    # `repo.get_gap_results_by_session`, none of which existed, so every
+    # /gap-analysis/* endpoint 500'd on the first line that touched the repo.
+    #
+    # `gap_analysis` only carries (regulation_id, requirement_text,
+    # coverage_status, evidence_text, gap_description, session_id) — no
+    # obligation_id/requirement_id/criticality/etc. That matches what
+    # `_run_gap_for_regulation_v2` in pipeline_api.py actually hands to
+    # `store_gap_results`: the RAW `gap_analyzer.analyze_gaps()` output, before
+    # it enriches each result with obligation/requirement metadata pulled live
+    # from `compliance_analysis` for that single response. So a session replayed
+    # later via GET /gap-analysis/session/{id} legitimately comes back without
+    # that enrichment — it was never persisted, by the original design, not by
+    # an omission here.
+
+    def create_gap_session(self, uploaded_document_name: str,
+                            uploaded_document_text: str) -> int:
+        """Start a gap-analysis session for one uploaded document, return its id."""
+        query = """
+            INSERT INTO gap_analysis_session
+                (uploaded_document_name, uploaded_document_text, created_at)
+            OUTPUT INSERTED.id
+            VALUES (?, ?, SYSDATETIMEOFFSET())
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (uploaded_document_name, uploaded_document_text))
+                session_id = cursor.fetchone()[0]
+                conn.commit()
+                logger.info(f"Created gap session {session_id} for "
+                            f"{uploaded_document_name!r}")
+                return session_id
+        except Exception as e:
+            logger.error(f"Failed to create gap session: {e}")
+            raise
+
+    def store_gap_results(self, session_id: int, regulation_id: int,
+                           results: list) -> None:
+        """Persist one regulation's gap results under an existing session.
+
+        `results` is `gap_analyzer.analyze_gaps()`'s raw output — each item
+        carries both `obligation_text` and `requirement_text` (the analyzer's
+        own backward-compat alias, same value); either name is accepted here
+        since callers have used both historically.
+        """
+        if not results:
+            return
+        query = """
+            INSERT INTO gap_analysis
+                (regulation_id, requirement_text, coverage_status,
+                 evidence_text, gap_description, session_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET())
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                for r in results:
+                    cursor.execute(query, (
+                        regulation_id,
+                        r.get("requirement_text") or r.get("obligation_text") or "",
+                        r.get("coverage_status", "missing"),
+                        r.get("evidence_text"),
+                        r.get("gap_description"),
+                        session_id,
+                    ))
+                conn.commit()
+                logger.info(f"Stored {len(results)} gap result(s) for session "
+                            f"{session_id}, regulation {regulation_id}")
+        except Exception as e:
+            logger.error(f"Failed to store gap results: {e}")
+            raise
+
+    def get_gap_results_by_session(self, session_id: int) -> Optional[dict]:
+        """Everything recorded under one gap-analysis session, grouped by
+        regulation. `None` if the session id doesn't exist — the caller turns
+        that into a 404 rather than an empty-but-real session."""
+        query_session = """
+            SELECT id, uploaded_document_name,
+                   CAST(created_at AS DATETIME2) AS created_at
+            FROM gap_analysis_session WHERE id = ?
+        """
+        query_results = """
+            SELECT regulation_id, requirement_text, coverage_status,
+                   evidence_text, gap_description
+            FROM gap_analysis
+            WHERE session_id = ?
+            ORDER BY regulation_id, id
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query_session, (session_id,))
+                session_row = cursor.fetchone()
+                if not session_row:
+                    return None
+
+                cursor.execute(query_results, (session_id,))
+                by_regulation: Dict[int, list] = {}
+                for reg_id, req_text, status, evidence, gap_desc in cursor.fetchall():
+                    by_regulation.setdefault(reg_id, []).append({
+                        "obligation_text": req_text,
+                        "coverage_status": status,
+                        "evidence_text":   evidence,
+                        "gap_description": gap_desc,
+                    })
+
+                regulations = []
+                for reg_id, results_list in by_regulation.items():
+                    counts = {"total": len(results_list), "covered": 0,
+                              "partial": 0, "missing": 0}
+                    for r in results_list:
+                        status = r["coverage_status"]
+                        if status in counts:
+                            counts[status] += 1
+                    regulations.append({
+                        "regulation_id": reg_id,
+                        "results": results_list,
+                        "summary": counts,
+                    })
+
+                return {
+                    "session_id": session_row[0],
+                    "uploaded_document_name": session_row[1],
+                    "regulations": regulations,
+                }
+        except Exception as e:
+            logger.error(f"Failed to get gap results for session {session_id}: {e}")
+            return None
+
+    # ================================================================== #
     #  LOGGING                                                             #
     # ================================================================== #
 
@@ -1989,6 +2230,346 @@ class MSSQLRepository(DocumentRepository):
                 conn.commit()
         except Exception as e:
             logger.error(f"Failed to write processing log: {e}")
+
+    # ================================================================== #
+    #  REQUIREMENT / ACTIVITY LOOKUPS                                      #
+    # ================================================================== #
+
+    def get_requirement_types(self) -> List[str]:
+        """Every RequirementType name, in display order.
+
+        The analyzer prompt must never hardcode this list -- it is a lookup
+        table specifically so the taxonomy can change without a code or
+        prompt edit. Callers pass the returned list into the analyzer; the
+        analyzer itself stays DB-free, same reasoning as every other LLM
+        client in this codebase.
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM RequirementType ORDER BY requirement_type_id")
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to fetch requirement types: {e}")
+            raise
+
+    def get_activity_types(self) -> List[str]:
+        """Every ActivityType name, in display order. Same reasoning as
+        get_requirement_types() -- passed into the analyzer, never hardcoded."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM ActivityType ORDER BY activity_type_id")
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to fetch activity types: {e}")
+            raise
+
+    def get_requirement_type_id(self, name: str) -> Optional[int]:
+        """Analyzer output only ever carries the TYPE NAME (it stays DB-free,
+        same reasoning as get_requirement_types itself) -- this is the one
+        place that turns it back into the FK id insert_requirement needs."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT requirement_type_id FROM RequirementType WHERE name = ?", (name,))
+                row = cursor.fetchone()
+                return int(row[0]) if row else None
+        except Exception as e:
+            logger.error(f"Failed to look up requirement_type_id for {name!r}: {e}")
+            return None
+
+    def get_activity_type_id(self, name: str) -> Optional[int]:
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT activity_type_id FROM ActivityType WHERE name = ?", (name,))
+                row = cursor.fetchone()
+                return int(row[0]) if row else None
+        except Exception as e:
+            logger.error(f"Failed to look up activity_type_id for {name!r}: {e}")
+            return None
+
+    def get_departments(self) -> List[str]:
+        """Every Department name, in display order. Same reasoning as
+        get_activity_types() -- activity_analyzer.py must pick a department
+        from this list rather than inventing free text. See
+        migrations/2026-09-08_add_department_lookup.sql."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM Department ORDER BY department_id")
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to fetch departments: {e}")
+            raise
+
+    # ================================================================== #
+    #  REQUIREMENT / ACTIVITY VERSIONING                                   #
+    #  See migrations/2026-09-08_requirement_activity_spans.sql and        #
+    #  processor/requirement_activity_sync.py for the diff logic that      #
+    #  calls these.                                                        #
+    #                                                                       #
+    #  Requirement/Activity are permanent, content-addressed catalogs --   #
+    #  one row per distinct ref_key, ever, never duplicated, never         #
+    #  deleted. Version lifecycle lives entirely in RequirementSpan/       #
+    #  ActivitySpan instead: a requirement/activity can have MORE than one #
+    #  span (one row per contiguous stretch of being active), which is     #
+    #  what lets content that was superseded reappear later without        #
+    #  hitting ref_key's UNIQUE constraint or misrepresenting the gap in   #
+    #  between as "always active" -- see the migration file's docstring    #
+    #  for the full reasoning.                                             #
+    # ================================================================== #
+
+    def get_all_requirements_for_regulation(self, regulation_id: int) -> Dict[str, int]:
+        """{ref_key: requirement_id} for EVERY requirement this regulation has
+        ever had, active or not -- the "has this exact content ever existed
+        before" check. Distinguishes a resurrected requirement (reuse the
+        id, open a new span) from genuinely new content (insert a new row).
+        Deliberately unfiltered by span status, unlike get_current_requirements
+        below."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT ref_key, requirement_id FROM Requirement WHERE regulation_id = ?",
+                    (regulation_id,))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Failed to fetch all requirements for regulation "
+                        f"{regulation_id}: {e}")
+            raise
+
+    def get_current_requirements(self, regulation_id: int) -> Dict[str, int]:
+        """{ref_key: requirement_id} for every requirement with an OPEN span
+        under this regulation -- what the sync diff compares a fresh
+        extraction's ref_keys against to decide "unchanged" vs "needs a
+        write"."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT r.ref_key, r.requirement_id "
+                    "FROM Requirement r "
+                    "JOIN RequirementSpan s ON s.requirement_id = r.requirement_id "
+                    "WHERE r.regulation_id = ? AND s.superseded_in_version_id IS NULL",
+                    (regulation_id,))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Failed to fetch current requirements for regulation "
+                        f"{regulation_id}: {e}")
+            raise
+
+    def insert_requirement(self, regulation_id: int, version_id: int, ref_key: str,
+                           title: str, description: str, source_reference: str,
+                           source_refs: list, requirement_type_name: str = "",
+                           actor: str = "", nature: str = "", condition_text: str = "",
+                           cross_references: Optional[list] = None,
+                           disposition: str = "", disposition_reason: str = "") -> int:
+        """Brand-new content: a Requirement row (permanent) plus its first
+        RequirementSpan (opened at version_id), in one transaction -- a
+        requirement must never exist without at least one span.
+
+        actor/nature/condition_text/cross_references/disposition/
+        disposition_reason are content, same category as title/description --
+        see migrations/2026-09-09_add_requirement_disposition_fields.sql.
+        All optional (default "") so existing callers that predate the
+        OBL/COND/REG/DEF/INFO disposition work keep working unchanged."""
+        requirement_type_id = (self.get_requirement_type_id(requirement_type_name)
+                               if requirement_type_name else None)
+        source_refs_json = json.dumps(source_refs, ensure_ascii=False) if source_refs else None
+        cross_refs_json = (json.dumps(cross_references, ensure_ascii=False)
+                           if cross_references else None)
+        req_query = """
+            INSERT INTO Requirement
+                (regulation_id, ref_key, title, description, source_reference,
+                 source_refs, requirement_type_id, actor, nature, condition_text,
+                 cross_references, disposition, disposition_reason)
+            OUTPUT INSERTED.requirement_id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        span_query = """
+            INSERT INTO RequirementSpan (requirement_id, introduced_in_version_id)
+            VALUES (?, ?)
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(req_query, (
+                    regulation_id, ref_key, title, description, source_reference,
+                    source_refs_json, requirement_type_id,
+                    actor or None, nature or None, condition_text or None,
+                    cross_refs_json, disposition or None, disposition_reason or None,
+                ))
+                requirement_id = int(cursor.fetchone()[0])
+                cursor.execute(span_query, (requirement_id, version_id))
+                conn.commit()
+                return requirement_id
+        except Exception as e:
+            logger.error(f"Failed to insert requirement {ref_key!r}: {e}")
+            raise
+
+    def open_requirement_span(self, requirement_id: int, version_id: int) -> None:
+        """Resurrected content: the Requirement row already exists (its
+        ref_key matched something in get_all_requirements_for_regulation), so
+        only a new span is needed -- no content write, no risk of colliding
+        with the ref_key UNIQUE constraint on the row that's still there from
+        its earlier, now-closed span."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO RequirementSpan (requirement_id, introduced_in_version_id) "
+                    "VALUES (?, ?)",
+                    (requirement_id, version_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to open span for requirement {requirement_id}: {e}")
+            raise
+
+    def mark_requirement_superseded(self, requirement_id: int, version_id: int) -> None:
+        """Closes the ONE open span for this requirement --
+        UQ_RequirementSpan_OneOpenSpan guarantees there is at most one row
+        this can ever match."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE RequirementSpan SET superseded_in_version_id = ? "
+                    "WHERE requirement_id = ? AND superseded_in_version_id IS NULL",
+                    (version_id, requirement_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark requirement {requirement_id} superseded: {e}")
+            raise
+
+    def get_all_activities_for_requirement(self, requirement_id: int) -> Dict[str, int]:
+        """{ref_key: activity_id} for EVERY activity this requirement has ever
+        had, active or not -- the Activity-level equivalent of
+        get_all_requirements_for_regulation, used the same way (resurrection
+        vs brand-new)."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT ref_key, activity_id FROM Activity WHERE requirement_id = ?",
+                    (requirement_id,))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Failed to fetch all activities for requirement "
+                        f"{requirement_id}: {e}")
+            raise
+
+    def get_current_activities_for_requirement(self, requirement_id: int) -> Dict[str, int]:
+        """{ref_key: activity_id} for open-span activities under this
+        requirement -- the Activity-level equivalent of
+        get_current_requirements, used by the sync diff to decide "unchanged"
+        vs "needs a write" for one requirement's activities."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT a.ref_key, a.activity_id "
+                    "FROM Activity a "
+                    "JOIN ActivitySpan s ON s.activity_id = a.activity_id "
+                    "WHERE a.requirement_id = ? AND s.superseded_in_version_id IS NULL",
+                    (requirement_id,))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Failed to fetch current activities for requirement "
+                        f"{requirement_id}: {e}")
+            raise
+
+    def get_activities_for_requirement(self, requirement_id: int) -> List[int]:
+        """OPEN activity_ids under one requirement -- for cascading supersede
+        when the requirement itself becomes superseded."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT a.activity_id "
+                    "FROM Activity a "
+                    "JOIN ActivitySpan s ON s.activity_id = a.activity_id "
+                    "WHERE a.requirement_id = ? AND s.superseded_in_version_id IS NULL",
+                    (requirement_id,))
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to fetch activities for requirement {requirement_id}: {e}")
+            raise
+
+    def insert_activity(self, requirement_id: int, version_id: int, ref_key: str,
+                        title: str, description: str, suggested_department: str,
+                        frequency: str, frequency_type: Optional[str], priority: str,
+                        evidence_expected: list, suggested_activity_type: str = "") -> int:
+        """Same split as insert_requirement: an Activity row (permanent) plus
+        its first ActivitySpan, in one transaction.
+
+        suggested_department / suggested_activity_type are plain free text --
+        no FK, no lookup-table matching. See migrations/
+        2026-09-14_drop_activity_type_fk.sql and processor/activity_analyzer.py's
+        module docstring for why: the model suggests both itself, and neither
+        is sent to it as a controlled list any more."""
+        evidence_text = "; ".join(evidence_expected) if evidence_expected else None
+        act_query = """
+            INSERT INTO Activity
+                (requirement_id, ref_key, title, description, suggested_department, frequency,
+                 frequency_type, priority, evidence_expected, suggested_activity_type)
+            OUTPUT INSERTED.activity_id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        span_query = """
+            INSERT INTO ActivitySpan (activity_id, introduced_in_version_id)
+            VALUES (?, ?)
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(act_query, (
+                    requirement_id, ref_key, title, description, suggested_department, frequency,
+                    frequency_type, priority, evidence_text, suggested_activity_type,
+                ))
+                activity_id = int(cursor.fetchone()[0])
+                cursor.execute(span_query, (activity_id, version_id))
+                conn.commit()
+                return activity_id
+        except Exception as e:
+            logger.error(f"Failed to insert activity {ref_key!r}: {e}")
+            raise
+
+    def open_activity_span(self, activity_id: int, version_id: int) -> None:
+        """Resurrected activity -- same reasoning as open_requirement_span."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO ActivitySpan (activity_id, introduced_in_version_id) "
+                    "VALUES (?, ?)",
+                    (activity_id, version_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to open span for activity {activity_id}: {e}")
+            raise
+
+    def mark_activity_superseded(self, activity_id: int, version_id: int) -> None:
+        """Closes the ONE open span for this activity --
+        UQ_ActivitySpan_OneOpenSpan guarantees there is at most one row this
+        can ever match."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE ActivitySpan SET superseded_in_version_id = ? "
+                    "WHERE activity_id = ? AND superseded_in_version_id IS NULL",
+                    (version_id, activity_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark activity {activity_id} superseded: {e}")
+            raise
 
     # ================================================================== #
     #  UTILITY                                                             #

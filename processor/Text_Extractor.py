@@ -146,6 +146,7 @@ class OCRProcessor:
             'bad_pages': len(bad_pages),
             'ocr_pages': len(ocr_pages)
         }
+        OCRProcessor._flag_low_quality(metadata)
 
         logger.info(
             f" Done: {len(good_pages)}/{total_pages} pages kept, "
@@ -153,6 +154,27 @@ class OCRProcessor:
         )
 
         return final_text, metadata
+
+    @staticmethod
+    def _flag_low_quality(metadata: Dict) -> None:
+        """Sets metadata['low_quality'] in place -- True when so few pages
+        survived that the extraction is functionally worthless even though
+        it isn't literally empty.
+
+        good_pages == 0 already makes final_text empty, which callers (e.g.
+        orchestrator.py's _download_and_extract_pdf) already treat as a
+        failure via `if text_content:`. The gap this closes is the case where
+        SOME pages survived -- final_text is non-empty, reads as a normal
+        success -- but the fraction is so low the result is still not
+        trustworthy, e.g. 1 good page out of 20 (a near-total OCR failure, or
+        the "1 page, 123 chars" shape a WAF block page produces when it slips
+        past the magic-bytes check some other way). Reuses _is_pdf_scanned's
+        own 0.34 threshold rather than inventing an unvalidated second number
+        for a very similar judgment call.
+        """
+        total = metadata.get('total_pages') or 0
+        good = metadata.get('good_pages') or 0
+        metadata['low_quality'] = bool(total) and (good / total) < 0.34
 
     @staticmethod
     def _is_pdf_scanned(pdf_doc) -> bool:
@@ -227,6 +249,7 @@ class OCRProcessor:
             'bad_pages': len(bad_pages),
             'ocr_pages': len(good_pages)  # All good pages used OCR
         }
+        OCRProcessor._flag_low_quality(metadata)
 
         logger.info(
             f" OCR complete: {len(good_pages)}/{total_pages} pages kept"
