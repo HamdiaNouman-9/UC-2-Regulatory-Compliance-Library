@@ -5,10 +5,8 @@
 # with only a main(), so `mode: custom` cannot name it. `mode: generic` runs the
 # same engine driven by this file.
 #
-# NOT YET CALIBRATED — run it, read the workbook, record the count here.
-#
 # Two things the standalone crawler learned about this site, both worth knowing
-# if the first run looks wrong:
+# if a run looks wrong:
 #
 #   * JS_BREADCRUMB finds nothing on ZATCA's category pages, so `scope:
 #     breadcrumb` is the wrong choice here — hence prefix.
@@ -16,20 +14,112 @@
 #     and a "Comments and Suggestions" widget, all of which the standalone
 #     crawler strips explicitly. The generic engine may pull them in as content.
 #     If titles or text look polluted, that is why.
+#
+# ---------------------------------------------------------------------------
+# SPLIT INTO THREE SOURCES 2026-09-15, from one "Laws and Regulations" source
+# ---------------------------------------------------------------------------
+# The site's own nav files Rules and Regulations as THREE sections:
+#
+#     Zakat, Tax and Customs Regulations   /RulesRegulations/Taxes/...
+#     Tax and Customs Agreements           /RulesRegulations/Agreements/...
+#     Information Exchange Portal          /RulesRegulations/InformationExchange/...
+#
+# One source seeded at the parent could not reproduce that, and MEASURED on the
+# 2026-09-15 export it did not: 35 rows came back as 13 sitting directly under
+# the source and 22 under "Information Exchange Portal", with the other two
+# sections nowhere in the tree.
+#
+# THE BREADCRUMB IS WHY. `section_path` on this site stops at "Rules and
+# Regulations" for everything outside the Information Exchange Portal:
+#
+#     ZATCA > Home                                          3 docs
+#     ZATCA > Home > Rules and Regulations                 10 docs
+#     ZATCA > Home > Rules and Regulations > Information…  22 docs
+#
+# Drop "ZATCA", let "Home" go as a CMS crumb, and dedupe "Rules and Regulations"
+# against source_system, and the Agreements documents have NO folder left. The
+# section identity lives in the URL path, not the crumb -- so it has to come
+# from `source_system`, which means one source per section.
+#
+# AND THE SPLIT IS NOT ONLY COSMETIC. The same measurement showed
+# `/RulesRegulations/Taxes/` contributed ZERO documents -- the branch was never
+# reached, and under one source that is invisible: 35 rows is 35 rows. Split,
+# `orch._docs_by_source` gives each section its own row and its own baseline, so
+# a section returning nothing is a finding rather than a smaller total. That is
+# the argument config/sources/cbb.yml section 3 makes, applied here.
+#
+# `Taxes` is likely the LARGEST of the three -- VAT, Zakat, Excise and Income
+# Tax regulations all live under it -- so check its count before trusting a run.
+#
+# The Information Exchange Portal keeps its own sub-pages (Agreements,
+# Information Exchange Guidelines, Circulars) as FOLDERS, because for that
+# branch alone the breadcrumb does carry the level.
 
 regulator: "Zakat, Tax and Customs Authority (ZATCA)"
 owner: lead
 
+#: Shared by all three sources below. `drop_sections` removes the two crumbs the
+#: site puts above every page -- "ZATCA" is the site name and "Home" is a CMS
+#: crumb -- so what survives is the section structure and nothing else.
+#: `doc_path_title` makes the document's own name the leaf; without it the leaf
+#: is the last section name and every document in a section shares it. MEASURED
+#: before it was set: 38 documents carried 3 distinct leaf names between them,
+#: 22 of them identically called "Information Exchange Portal".
 sources:
-  - name: "Laws and Regulations"
+  # ---- Zakat, Tax and Customs Regulations ---------------------------------
+  # NOT REACHED BY THE OLD SINGLE-SOURCE CRAWL. Seeded directly here, which is
+  # the point of the split. Expect this to be the biggest of the three; if it
+  # comes back small or empty, that is a finding, not a quiet total.
+  - name: "Zakat, Tax and Customs Regulations"
     mode: generic
-    seed_url: "https://zatca.gov.sa/en/RulesRegulations/Pages/rules.aspx"
+    seed_url: "https://zatca.gov.sa/en/RulesRegulations/Taxes/Pages/default.aspx"
     scope: prefix
-    source_system: "Rules and Regulations"
+    source_system: "Zakat, Tax and Customs Regulations"
     category: "Laws and Regulations"
+    doc_path_title: true
+    drop_sections: ["ZATCA", "Home", "Rules and Regulations"]
     max_pages: 150
     max_depth: 8
     # The landing page renders its links client-side. At the engine default it
     # reads back text_len=22 and queues NOTHING, so the crawl stops at the seed.
     # Measured 2026-08-12.
+    wait_ms: 6000
+
+  # ---- Tax and Customs Agreements -----------------------------------------
+  # The 9 documents the old crawl found at /RulesRegulations/Agreements landed
+  # with no folder at all, because the breadcrumb for them stops at "Rules and
+  # Regulations". Seeding the section directly puts them under its own name.
+  - name: "Tax and Customs Agreements"
+    mode: generic
+    seed_url: "https://zatca.gov.sa/en/RulesRegulations/Agreements/Pages/default.aspx"
+    scope: prefix
+    source_system: "Tax and Customs Agreements"
+    category: "Laws and Regulations"
+    doc_path_title: true
+    drop_sections: ["ZATCA", "Home", "Rules and Regulations"]
+    max_pages: 150
+    max_depth: 8
+    wait_ms: 6000
+
+  # ---- Information Exchange Portal ----------------------------------------
+  # The only branch whose breadcrumb carries its own level, so its three
+  # sub-pages survive as folders rather than needing sources of their own:
+  #
+  #     Agreements                      .../Pages/Agreements.aspx    7 docs
+  #     Information Exchange Guidelines .../Pages/guidelines.aspx    4 docs
+  #     Circulars                       .../Pages/circulars.aspx    11 docs
+  #
+  # "Information Exchange Portal" is dropped from `drop_sections` DELIBERATELY:
+  # it is this source's own name, so `_clean_trail` folds it against
+  # source_system, and what remains below it is the three sub-pages.
+  - name: "Information Exchange Portal"
+    mode: generic
+    seed_url: "https://zatca.gov.sa/en/RulesRegulations/InformationExchange/Pages/default.aspx"
+    scope: prefix
+    source_system: "Information Exchange Portal"
+    category: "Laws and Regulations"
+    doc_path_title: true
+    drop_sections: ["ZATCA", "Home", "Rules and Regulations"]
+    max_pages: 150
+    max_depth: 8
     wait_ms: 6000

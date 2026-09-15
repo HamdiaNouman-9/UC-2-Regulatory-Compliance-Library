@@ -170,7 +170,7 @@ sources:
     seed_url: "https://www.cbj.gov.jo/EN/List/Instructions_"
     scope: prefix
     strategy: generic
-    source_system: "Instructions"
+    source_system: "Regulations and Instructions"
     drop_sections: ["Legislation", "Regulations"]
     include_pages: never
     doc_path_title: true
@@ -183,59 +183,6 @@ sources:
     max_pages: 1
     max_depth: 1
 
-  # ---- Payment Systems Legislations ---------------------------------------
-  # The largest CBJ source, and it was missed until 2026-09-14: the site's nav
-  # lists FIVE legislation pages and this config covered two.
-  #
-  # MEASURED 2026-09-14 by running the engine against the seed below:
-  #   pages         1
-  #   documents   140   all PDF
-  #   breadcrumb  ['Home', 'Legislations', 'Payment Systems Legislations']
-  #   page text   6,905 characters -- the same site chrome as every other CBJ
-  #               listing, hence `include_pages: never`
-  #   titles      human-readable, e.g.
-  #               "Automated Teller Machine Instructions No. (6/2018)"
-  #               "Circular No. (26/1/7335) dated 21/4/2025 regarding the
-  #                Settlement of ..."
-  #
-  # "Legislations" IS PLURAL HERE, AND THAT MATTERS. Its three siblings drop
-  # "Legislation"; this page's crumb is "Legislations". `drop_sections` matches
-  # on exact lowercase equality (generic_crawler_wrapper.py: `p.strip().lower()
-  # not in self.drop_sections`), so copying the siblings' value would silently
-  # fail to drop it and file this source one level deeper than the other four.
-  #
-  # NO `merge_files_at_same_path`, DELIBERATELY. Its three siblings all need it
-  # -- Laws had 2 instruments published as .pdf and .docx, Instructions at least
-  # 5, Circulars exactly 5. MEASURED here: 140 documents, 140 distinct titles,
-  # ZERO duplicates, and every file is a PDF. There is no pair to fold. Setting
-  # it anyway would be harmless today and wrong the day CBJ publishes two
-  # genuinely different documents under one title, because it would fuse them.
-  #
-  # THE CATEGORY DROPDOWN IS REAL AND IS NOT USED. Every CBJ listing carries
-  # `ddlCategory1` -- Banking Supervision Department, Money Exchange, Financial
-  # Stability, and so on -- which looks like the area tree the manual library
-  # shows. MEASURED 2026-09-14 by driving it in a browser: on Circulars and on
-  # Instructions_ EVERY category returns zero rows, and only this page's two
-  # categories (Circulars, Instructions) return any. So the classification is
-  # unpopulated for the other sources, not merely hard to reach.
-  #
-  # It is not needed here either: the filter and the pager are both DISPLAY
-  # ONLY. The raw markup carries all 140 document links whatever category is
-  # selected and whichever of the six pages is shown -- documents that appear
-  # only under the "Instructions" filter are present in the unfiltered HTML. So
-  # `max_pages: 1` sees everything, the same way it already does for Circulars'
-  # 56 documents across six pages.
-  - name: "Payment Systems Legislations"
-    mode: generic
-    seed_url: "https://www.cbj.gov.jo/EN/List/Payment_Systems_Legislations"
-    scope: prefix
-    strategy: generic
-    source_system: "Payment Systems Legislations"
-    drop_sections: ["Legislations"]
-    include_pages: never
-    doc_path_title: true
-    max_pages: 1
-    max_depth: 1
 
   # ---- Circulars ----------------------------------------------------------
   # The fourth sibling. Same shape as the other three: one listing page whose
@@ -289,5 +236,61 @@ sources:
     # the former, so the 56 links become 51 rows with both files carried in
     # extra_meta.attachment_links and document_url left empty.
     merge_files_at_same_path: true
+    max_pages: 1
+    max_depth: 1
+
+
+
+  # ---- Payment Systems Legislations ---------------------------------------
+  # The largest CBJ source, and it was missed until 2026-09-14: the site's nav
+  # lists FIVE legislation pages and this config covered two.
+  #
+  # MEASURED 2026-09-14 by running the engine against the seed below:
+  #   pages         1
+  #   documents   140   all PDF
+  #   breadcrumb  ['Home', 'Legislations', 'Payment Systems Legislations']
+  #   page text   6,905 characters -- the same site chrome as every other CBJ
+  #               listing, hence `include_pages: never`
+  #   titles      human-readable, e.g.
+  #               "Automated Teller Machine Instructions No. (6/2018)"
+  #               "Circular No. (26/1/7335) dated 21/4/2025 regarding the
+  #                Settlement of ..."
+  #
+  # "Legislations" IS PLURAL HERE, AND THAT MATTERS. Its three siblings drop
+  # "Legislation"; this page's crumb is "Legislations". `drop_sections` matches
+  # on exact lowercase equality (generic_crawler_wrapper.py: `p.strip().lower()
+  # not in self.drop_sections`), so copying the siblings' value would silently
+  # fail to drop it and file this source one level deeper than the other four.
+  #
+  # NO `merge_files_at_same_path`, DELIBERATELY. Its three siblings all need it
+  # -- Laws had 2 instruments published as .pdf and .docx, Instructions at least
+  # 5, Circulars exactly 5. MEASURED here: 140 documents, 140 distinct titles,
+  # ZERO duplicates, and every file is a PDF. There is no pair to fold. Setting
+  # it anyway would be harmless today and wrong the day CBJ publishes two
+  # genuinely different documents under one title, because it would fuse them.
+  #
+  # THE CATEGORY DROPDOWN IS REAL AND IS NOT USED. Every CBJ listing carries
+  # `ddlCategory1` -- Banking Supervision Department, Money Exchange, Financial
+  # Stability, and so on -- which looks like the area tree the manual library
+  # shows. MEASURED 2026-09-14 by driving it in a browser: on Circulars and on
+  # Instructions_ EVERY category returns zero rows, and only this page's two
+  # categories (Circulars, Instructions) return any. So the classification is
+  # unpopulated for the other sources, not merely hard to reach.
+  #
+  # It is not needed here either: the filter and the pager are both DISPLAY
+  # ONLY. The raw markup carries all 140 document links whatever category is
+  # selected and whichever of the six pages is shown -- documents that appear
+  # only under the "Instructions" filter are present in the unfiltered HTML. So
+  # `max_pages: 1` sees everything, the same way it already does for Circulars'
+  # 56 documents across six pages.
+  - name: "Payment Systems Legislations"
+    mode: generic
+    seed_url: "https://www.cbj.gov.jo/EN/List/Payment_Systems_Legislations"
+    scope: prefix
+    strategy: generic
+    source_system: "Payment Systems Legislations"
+    drop_sections: ["Legislations"]
+    include_pages: never
+    doc_path_title: true
     max_pages: 1
     max_depth: 1

@@ -754,13 +754,38 @@ _SIZE_TAIL = re.compile(
     re.I)
 
 
+#: A trailing FORMAT LABEL, and the separator in front of it: "| DOC", "- PDF".
+#:
+#: A listing that shows a format column puts it in the row text, so the context
+#: a title is built from ends "<name> | DOC". MEASURED on the 2026-09-15 CBJ
+#: export, 1 row of 313: "Guidelines for Bank Licensing | DOC".
+#:
+#: THE PIPE IS WHY THIS IS NOT COSMETIC. `doc_path` is a LIST in the library and
+#: is flattened with " | " into the workbook, so a pipe inside a title makes the
+#: flattened trail ambiguous: `promote` splits it back and gets one crumb too
+#: many. That row would land as a FOLDER "Guidelines for Bank Licensing"
+#: holding a document called "DOC". `check` passes it -- the shape is valid --
+#: which is exactly the class of fault ONBOARDING says only a person can see.
+#:
+#: The separator is required, so a title that merely ENDS in a format word
+#: ("Guide to PDF") is untouched; only "<name> | PDF" is.
+#: The separator is a REAL one -- a pipe or a dash, not merely a space. An
+#: earlier version wrote `[\s|\-–—]+` and so matched whitespace alone, which
+#: turned the legitimate title "Guide to PDF" into "Guide to".
+_FORMAT_TAIL = re.compile(
+    r"\s*[|\-–—]\s*(?:doc|docx|pdf|xls|xlsx|ppt|pptx|rtf|zip|txt|csv)\s*$", re.I)
+
+
 def clean_doc_title(s) -> str:
-    """One space between words, and no trailing file size."""
+    """One space between words, no trailing file size, no trailing format label."""
     s = re.sub(r"\s+", " ", (s or "")).strip()
     prev = None
     while prev != s:              # "(1.2 MB)" can leave a bracket behind
         prev = s
         s = _SIZE_TAIL.sub("", s).strip()
+        # After the size, because "<name> | DOC 1.2 MB" hides the label behind
+        # it -- and in the same loop, because removing one can expose the other.
+        s = _FORMAT_TAIL.sub("", s).strip()
     return s.strip(" -|–—")
 
 
