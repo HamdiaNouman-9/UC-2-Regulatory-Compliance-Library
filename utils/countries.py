@@ -18,6 +18,7 @@ tree has duplicates in it.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -120,4 +121,96 @@ def regulators() -> Dict[str, str]:
     return dict(_load())
 
 
-__all__ = ["country_for", "tree_path", "countries", "regulators", "CONFIG"]
+def regulators_for_country(country: str) -> List[str]:
+    """Every regulator filed under one country name (exact, as it appears in
+    countries.yml -- resolve with resolve_country() first if the value might
+    be a code or a different case)."""
+    return [reg for reg, c in _load().items() if c == country]
+
+
+def resolve_country(value: str) -> Optional[str]:
+    """A caller-supplied country filter value -- either the exact name from
+    countries.yml or its alpha-3 code, either case-insensitive -- resolved to
+    the canonical name _load()/regulators_for_country() key on. None if it
+    matches neither, so the caller (an API endpoint) can tell a typo apart
+    from a real, just-empty country."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    for name in countries():
+        if name.casefold() == v.casefold():
+            return name
+    v_upper = v.upper()
+    for name, code in _COUNTRY_CODES.items():
+        if code == v_upper:
+            return name
+    return None
+
+
+# ISO 3166-1 alpha-3, keyed on the exact country names used in
+# config/countries.yml -- for storage/mssql_repo.py::compute_regulation_ref_key.
+# Add the new country's alpha-3 code here in the SAME change that adds it to
+# countries.yml; a country present in one but not the other silently falls
+# back to _UNKNOWN_COUNTRY_CODE below instead of erroring, which is easy to
+# miss -- same failure shape country_for() itself warns about for regulators.
+_COUNTRY_CODES: Dict[str, str] = {
+    "Kingdom of Saudi Arabia": "SAU",
+    "Egypt": "EGY",
+    "Bahrain": "BHR",
+}
+
+# Matches regulator_acronym()'s own "UNK" convention in mssql_repo.py, for a
+# regulator with no entry in countries.yml at all -- e.g. SBP/SECP today,
+# since Pakistan is not yet listed there. Not a country code; a placeholder
+# that says "unlisted", so it reads as obviously wrong rather than as a real
+# code for the wrong country.
+_UNKNOWN_COUNTRY_CODE = "UNK"
+
+
+def country_code_for(regulator: str) -> str:
+    """ISO 3166-1 alpha-3 for the country this regulator files under, or
+    _UNKNOWN_COUNTRY_CODE if the regulator (or its country) isn't in
+    countries.yml / _COUNTRY_CODES yet. Never None -- callers building a
+    ref_key need a segment to put there regardless."""
+    country = country_for(regulator)
+    if not country:
+        return _UNKNOWN_COUNTRY_CODE
+    return _COUNTRY_CODES.get(country, _UNKNOWN_COUNTRY_CODE)
+
+
+# Same shape as _NUMBERED_HEADER_RE-style acronym extraction elsewhere --
+# deliberately a small local copy rather than importing
+# storage.mssql_repo.regulator_acronym: that function lives in the storage
+# layer for ref_key building specifically, and utils/ (lower-level, no DB
+# concerns) importing FROM storage would invert the dependency direction the
+# rest of this codebase keeps everywhere else.
+_ACRONYM_RE = re.compile(r'\(([A-Za-z0-9]+)\)\s*$')
+
+
+def resolve_regulator(value: str) -> Optional[str]:
+    """A caller-supplied regulator filter value -- either the exact full
+    name ("Central Bank of Egypt (CBE)") or just its parenthesized acronym
+    ("CBE"), case-insensitive either way -- resolved to the canonical full
+    name stored in regulations.regulator. None if it matches neither: unlike
+    resolve_country, that is NOT an error here, since countries.yml is not a
+    closed list of every regulator that will ever exist (SBP/SECP, for
+    instance, are real stored values with no entry in it at all) -- the
+    caller should fall back to using the raw value as-is for an exact match
+    rather than rejecting it."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    names = _load()
+    for name in names:
+        if name.casefold() == v.casefold():
+            return name
+    v_upper = v.upper()
+    for name in names:
+        m = _ACRONYM_RE.search(name)
+        if m and m.group(1).upper() == v_upper:
+            return name
+    return None
+
+
+__all__ = ["country_for", "country_code_for", "tree_path", "countries", "regulators",
+          "regulators_for_country", "resolve_country", "resolve_regulator", "CONFIG"]

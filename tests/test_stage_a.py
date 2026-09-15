@@ -110,29 +110,31 @@ def repo_with(cursor) -> MSSQLRepository:
 #  archive_current_analysis                                                   #
 # --------------------------------------------------------------------------- #
 
-def test_a1_copies_before_it_retires():
+def test_a1_copies_before_it_deletes():
     """Order is load-bearing. The archive SELECT is scoped by `is_current = 1`,
-    so retiring first would archive nothing at all — a silent no-op that looks
+    so deleting first would archive nothing at all — a silent no-op that looks
     identical to a successful run."""
     cur = RecordingCursor()
     repo_with(cur).archive_current_analysis(regulation_id=42, version_id=7)
 
-    assert cur.verbs == ["INSERT", "UPDATE"], (
-        f"expected copy-then-retire, got {cur.verbs}")
+    assert cur.verbs == ["INSERT", "DELETE"], (
+        f"expected copy-then-delete, got {cur.verbs}")
 
 
-def test_a1_retire_actually_clears_the_current_flag():
-    """The whole bug was that nothing retired the source rows. Every reader
-    filters `is_current = 1`, so this UPDATE is what makes the old requirement
-    set stop showing as live."""
+def test_a1_delete_actually_removes_the_source_rows():
+    """An earlier version of this fix flagged the source rows off
+    (`is_current = 0`) instead of removing them. Every reader already filters
+    `is_current = 1`, so those flagged-off rows were invisible to every
+    query but never actually went away — the table grew by one full row-set
+    per past version, forever. The row is already safely copied into
+    compliance_analysis_versions by the INSERT above, so deleting the source
+    here loses nothing."""
     cur = RecordingCursor()
     repo_with(cur).archive_current_analysis(regulation_id=42, version_id=7)
 
-    retire = cur.sql(1)
-    assert re.search(r"UPDATE\s+compliance_analysis", retire, re.I)
-    assert "is_current = 0" in retire
-    assert "status = 'inactive'" in retire
-    assert "WHERE regulation_id = ? AND is_current = 1" in retire
+    delete = cur.sql(1)
+    assert re.search(r"DELETE\s+FROM\s+compliance_analysis\b", delete, re.I)
+    assert "WHERE regulation_id = ? AND is_current = 1" in delete
 
 
 def test_a1_archived_rows_are_not_flagged_current():

@@ -82,6 +82,7 @@ class CBBSource:
         source_system: str,
         regulator: str = REGULATOR,
         max_volumes: Optional[int] = None,
+        resume: bool = True,
     ):
         if not mode:
             raise ValueError("CBBSource needs a mode ('1', '2a', ... '5')")
@@ -97,6 +98,14 @@ class CBBSource:
         # in config/sources/cbb.yml to prove the flow, then remove it for the
         # real run. Ignored by every other mode.
         self.max_volumes = max_volumes
+        # Mode 2c ONLY. MEASURED 2026-08-24 and 2026-08-25: the uncapped walk
+        # died mid-"Volume 1—Conventional Banks" both times, 8+ hours in, with
+        # no traceback -- something killed the process, not the crawl. With
+        # resume=True (default) a re-run of this same source skips every
+        # volume `cbb_test_crawlers/cbb_rulebook_crawler.py` already
+        # checkpointed to disk instead of starting over from Common Volume.
+        # Set False in config/sources/cbb.yml for a deliberate clean re-crawl.
+        self.resume = resume
         self.last_result: dict = {}
 
     @property
@@ -112,7 +121,8 @@ class CBBSource:
         from crawler.cbb_crawler import CBBCrawlerV2
 
         docs = CBBCrawlerV2().fetch_documents(
-            mode=self.mode, max_volumes=self.max_volumes) or []
+            mode=self.mode, max_volumes=self.max_volumes,
+            resume=self.resume) or []
 
         # A mode that returns nothing is a FINDING, not a result. Every other
         # crawler in the library says this; CBB never did, which is one reason a

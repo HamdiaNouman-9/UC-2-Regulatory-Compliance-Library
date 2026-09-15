@@ -35,10 +35,12 @@ Output per document (RulebookDoc)
 """
 
 import hashlib
+import json
 import re
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from urllib.parse import urljoin
 
@@ -52,6 +54,35 @@ SIDEBAR_SEED       = f"{BASE_URL}/rulebook/common-volume"
 REQUEST_DELAY      = 1.2
 MAX_RETRIES        = 3
 STOP_BEFORE_VOLUME = "Bahrain Bourse (BHB) Material"   # exclusive
+
+# MEASURED 2026-08-24/25 (logs/cbb_export_full_2026-08-2[45].log): the uncapped
+# walk died mid-"Volume 1—Conventional Banks" both times it was tried, 8+ hours
+# in, with no traceback -- the process was killed (terminal/session/network),
+# not a crawl-level failure. Every volume before it (Common Volume: 153 docs in
+# ~5.5 min) finished fine. Per-volume checkpointing below means a kill like that
+# only costs the volume in progress, not every volume already walked.
+DEFAULT_CHECKPOINT_PATH = Path(__file__).resolve().parent / "rulebook_checkpoint.json"
+
+
+def _load_checkpoint(path: Path) -> Dict[str, List[dict]]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning(f"Could not read checkpoint {path}, starting clean: {e}")
+        return {}
+
+
+def _save_checkpoint(path: Path, data: Dict[str, List[dict]]) -> None:
+    # Write-then-replace so a kill mid-write can't leave a half-written,
+    # unparseable checkpoint behind -- the one failure mode that would be worse
+    # than no checkpoint at all.
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f)
+    tmp.replace(path)
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -394,6 +425,8 @@ def crawl_rulebook_sidebar(
     seed_url: str = SIDEBAR_SEED,
     request_delay: float = REQUEST_DELAY,
     max_volumes: Optional[int] = None,
+    resume: bool = True,
+    checkpoint_path: Optional[Path] = None,
 ) -> List[RulebookDoc]:
     """
     Crawl all CBB Rulebook volumes from the sidebar tree.
@@ -405,7 +438,33 @@ def crawl_rulebook_sidebar(
         seed_url      : Any rulebook page (sidebar is global).
         request_delay : Seconds between HTTP requests.
         max_volumes   : Limit volumes crawled (None = all).
+        resume        : Skip volumes already saved in `checkpoint_path` from a
+                        prior run instead of re-walking them. Pass False to
+                        ignore any existing checkpoint and crawl clean.
+        checkpoint_path: Where per-volume progress is saved
+                        (default: rulebook_checkpoint.json next to this file).
+
+    RESUME, AND WHAT IT DOES NOT COVER. The sidebar tree itself is never
+    cached -- only a completed volume's documents are. After each volume
+    finishes, its documents are written to `checkpoint_path` before the next
+    volume starts, so a run killed between volumes loses nothing already
+    walked. Re-running with the same arguments then skips every volume already
+    on disk. It does NOT resume WITHIN a volume: `visited` dedupes shared nodes
+    inside one run only, and persisting it across runs would let an
+    already-seen FOLDER node's early return skip re-discovering children that
+    were never actually reached last time -- silently dropping documents
+    rather than just re-walking some pages. A volume killed partway restarts
+    from its own beginning, not from where it stopped. That is a real
+    limitation for a volume that itself runs for hours (see the module-level
+    comment on DEFAULT_CHECKPOINT_PATH) but the safe direction: doing
+    redundant work, never silently missing it.
     """
+    checkpoint_path = checkpoint_path or DEFAULT_CHECKPOINT_PATH
+    checkpoint: Dict[str, List[dict]] = _load_checkpoint(checkpoint_path) if resume else {}
+    if checkpoint:
+        log.info(f"Resuming: {len(checkpoint)} volume(s) already in "
+                 f"{checkpoint_path.name}")
+
     log.info("=== CBB Rulebook Sidebar Crawler ===")
     log.info(f"Seed: {seed_url}")
     volumes = _collect_volumes(seed_url)
@@ -418,15 +477,27 @@ def crawl_rulebook_sidebar(
     visited:  set               = set()
 
     for i, vol in enumerate(volumes, 1):
+        if vol.text in checkpoint:
+            cached = [RulebookDoc(**d) for d in checkpoint[vol.text]]
+            all_docs.extend(cached)
+            log.info(f"[{i}/{len(volumes)}] === {vol.text} === "
+                     f"(resumed from checkpoint: {len(cached)} docs)")
+            continue
+
         log.info(f"[{i}/{len(volumes)}] === {vol.text} ===")
+        vol_docs: List[RulebookDoc] = []
         _process(
             node=vol, path=["CBB Rulebook"], depth=0,
-            visited=visited, results=all_docs,
+            visited=visited, results=vol_docs,
             request_delay=request_delay,
         )
+        all_docs.extend(vol_docs)
         folders = sum(1 for d in all_docs if d.is_folder)
         leaves  = sum(1 for d in all_docs if not d.is_folder)
         log.info(f"  Subtotal: {len(all_docs)} docs ({folders} folders, {leaves} leaves)\n")
+
+        checkpoint[vol.text] = [asdict(d) for d in vol_docs]
+        _save_checkpoint(checkpoint_path, checkpoint)
 
     folders = sum(1 for d in all_docs if d.is_folder)
     leaves  = sum(1 for d in all_docs if not d.is_folder)

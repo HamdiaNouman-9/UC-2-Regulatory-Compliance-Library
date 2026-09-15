@@ -45,14 +45,14 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from orchestrator.orchestrator import BaseOrchestrator, MIN_TEXT_LEN
 
 from dynamic_crawler import crawl_absence
-from dynamic_crawler.changesignal import (clean_fields, fields_of,
+from dynamic_crawler.changesignal import (clean_fields, fields_of, files_of,
                                           find_existing as _shared_find_existing,
                                           identity_for as _shared_identity_for,
                                           identity_key)
@@ -203,6 +203,45 @@ class NewOrchestrator(BaseOrchestrator):
         """
         return _shared_find_existing(self.repo, doc, self.identity)
 
+    def _hashless_unchanged(self, existing: dict, doc) -> bool:
+        """Whether nothing OBSERVABLE moved, for when content_hash cannot be
+        compared (missing on the stored row, the crawl, or both).
+
+        `if old_hash and new_hash and old_hash == new_hash` — the rule this
+        replaces one half of — treats an absent hash as "cannot match", which is
+        `modified`. That is exactly the bug in crawler/fingerprint.py's
+        docstring: every un-hashed source got reclassified `modified` on EVERY
+        run, ten MOH documents reaching five versions of identical content
+        before anyone noticed. Stamping hashes at the crawler's exit fixed new
+        crawls; this covers the sources that still cannot produce one (SECP,
+        Saudi Exchange — see fingerprint_fix_2026-08-16.md §3a) and the one-time
+        backfill run every already-stored, not-yet-hashed row goes through.
+
+        Compares title, doc_path and the file set (`files_of`, which already
+        knows the document_url / extra_meta.attachment_links split — a document
+        that gained or dropped a PDF has changed even if its title and primary
+        url did not move). `reference_no` joins the check only when the stored
+        row actually carries the column — `find_by_identity`'s two-column
+        shortcut never selects it, so its ABSENCE there means "not fetched", not
+        "blank", and must not read as a mismatch.
+
+        Deliberately biased toward `modified`, not `unchanged`: with no hash to
+        confirm content, this is the only signal left, and a false `unchanged`
+        hides a real edit for good — nothing ever re-checks a document once it
+        settles there. A false `modified` only costs one redundant version row.
+        """
+        if _text(existing.get("title")) != _text(getattr(doc, "title", "")):
+            return False
+        if self.repo._norm_doc_path(existing.get("doc_path")) != \
+                self.repo._norm_doc_path(getattr(doc, "doc_path", None)):
+            return False
+        if files_of(existing) != files_of(doc):
+            return False
+        if "reference_no" in existing:
+            if _text(existing.get("reference_no")) != _text(getattr(doc, "reference_no", "")):
+                return False
+        return True
+
     @staticmethod
     def _set_status(doc, monitoring_status: str) -> None:
         """Put the monitoring state in `status`, where the schema expects it.
@@ -311,7 +350,16 @@ class NewOrchestrator(BaseOrchestrator):
                 if isinstance(old_meta, dict) else ""
             new_token = str(doc.extra_meta.get("version_token") or "")
 
-            if old_hash and new_hash and old_hash == new_hash:
+            if old_hash and new_hash:
+                hash_says_unchanged = old_hash == new_hash
+            else:
+                # Neither side can prove content moved by hash alone — one or
+                # both are un-fingerprinted. Fall back to what IS observable
+                # rather than defaulting to `modified`, which is the bug
+                # crawler/fingerprint.py's docstring describes.
+                hash_says_unchanged = self._hashless_unchanged(existing, doc)
+
+            if hash_says_unchanged:
                 if old_token and new_token and old_token != new_token:
                     self._set_status(doc, "modified")
                     buckets["modified"].append(doc)
@@ -780,17 +828,23 @@ class NewOrchestrator(BaseOrchestrator):
         return dec.text, dec.content_type
 
     def _safe_pdf_text(self, url: str) -> Optional[str]:
+        """Despite the name (kept to avoid touching the one call site above),
+        this now dispatches by extension via _download_and_extract_file --
+        .pdf still gets the OCR-aware path, .docx/.xlsx/.xls get
+        processor.office_text_extractor, anything else returns None exactly
+        as before."""
         try:
-            return self._download_and_extract_pdf(url)
+            return self._download_and_extract_file(url)
         except Exception as e:                     # never lose a document to a fetch
-            logger.warning("  pdf fetch failed for %s: %s", url[:70], e)
+            logger.warning("  file fetch failed for %s: %s", url[:70], e)
             return None
 
     def _safe_page_text(self, url: str) -> Optional[str]:
         try:
             import requests
             from bs4 import BeautifulSoup
-            r = requests.get(url, timeout=45, headers={"User-Agent": "Mozilla/5.0"})
+            from orchestrator.orchestrator import _FILE_DOWNLOAD_HEADERS
+            r = requests.get(url, timeout=45, headers=_FILE_DOWNLOAD_HEADERS)
             soup = BeautifulSoup(r.text, "html.parser")
             for t in soup(["script", "style", "noscript", "header", "footer", "nav"]):
                 t.decompose()
@@ -846,9 +900,9 @@ class NewOrchestrator(BaseOrchestrator):
             # below, so the retire half was always there. Only the redundant copy
             # is removed.
             old = self.repo.get_regulation_by_id(existing_id) or {}
-            # Read BEFORE retiring — afterwards nothing is active to find. The
-            # analysis being archived describes the OLD content, so it has to be
-            # stamped with the version that held it, not the one replacing it.
+            # Read BEFORE retiring — afterwards nothing is active to find, so
+            # there would be no way to tell "already had a version row" from
+            # "never versioned at all" for the fallback branch just below.
             prev = self.repo.get_active_regulation_version(existing_id) or {}
             old_version_id = prev.get("version_id")
             self.repo.mark_all_versions_inactive(existing_id)
@@ -856,8 +910,7 @@ class NewOrchestrator(BaseOrchestrator):
                 # No active row to retire: a regulation stored before versioning
                 # existed, so its old content has never been snapshotted. Write
                 # the archive row in that case only — otherwise the previous
-                # content would be lost rather than merely uncopied, and
-                # `archive_current_analysis` would have no version to point at.
+                # content is lost rather than merely uncopied.
                 old_version_id = self.repo.insert_regulation_version(
                     regulation_id=existing_id,
                     regulator=getattr(doc, "regulator", "") or "",
@@ -867,15 +920,19 @@ class NewOrchestrator(BaseOrchestrator):
                     content_hash=old.get("content_hash") or "",
                     updated_date=date.today(), status="inactive",
                     change_summary=f"archived {date.today().isoformat()}")
+            # One shared instant for both writes below, so regulations.updated_at
+            # reads exactly the moment this new version was created rather than
+            # whatever moment its own separate UPDATE statement happens to run.
+            modified_at = datetime.now(timezone.utc)
             version_id = self.repo.insert_regulation_version(
                 regulation_id=existing_id,
                 regulator=getattr(doc, "regulator", "") or "",
                 content_text=meta.get("content_text", ""),
                 content_html=getattr(doc, "document_html", "") or "",
                 content_hash=new_hash, updated_date=date.today(), status="active",
-                change_summary="content changed")
-            self.repo.archive_current_analysis(existing_id, old_version_id)
-            self.repo.update_regulation(existing_id, **self._modified_row_fields(doc, new_hash))
+                change_summary="content changed", created_at=modified_at)
+            self.repo.update_regulation(existing_id, updated_at=modified_at,
+                                        **self._modified_row_fields(doc, new_hash))
             regulation_id = existing_id
             # `or ""` is not belt-and-braces. dict.get returns its default only
             # when the key is ABSENT; a row fetched from SQL always has the key,
@@ -909,18 +966,109 @@ class NewOrchestrator(BaseOrchestrator):
 
         if not text:
             return
+
+        # An attachment_links bundle's html/content_text is deliberately just
+        # a thin wrapper (see utils/file_links.py's "combined" mode and
+        # dynamic_crawler/formfill/pipeline.py's docstring: "the files ARE
+        # it") -- never meant to stand in for the real content on its own. If
+        # every attachment this row has was attempted (after retries, inside
+        # _download_and_extract_file/_pdf) and none produced usable text, `text`
+        # above is non-None only because decide() fell back to the html
+        # wrapper -- analysing THAT would produce a plausible-looking but
+        # misleading result, not a smaller-but-honest one. Refuse instead:
+        # skip just the analysis step, not the insert/version work already
+        # done above, so the row stays tracked for a later recrawl to retry.
+        if (meta.get("attachment_links") and dec is not None
+                and dec.attempted_files > 0 and dec.succeeded_files == 0):
+            self._log_step(
+                regulation_id, "requirement_activity_analysis", "FAILED",
+                f"{dec.attempted_files} attachment(s) failed to produce usable text "
+                f"after retries; refusing to analyse the html-only fallback for an "
+                f"attachment-bundle document")
+            return
+
         if not self.analyse:
-            self._log_step(regulation_id, "llm_analysis", "SKIPPED",
+            self._log_step(regulation_id, "requirement_activity_analysis", "SKIPPED",
                            f"analyse=False; would have sent {len(text):,} chars "
                            f"as {content_type}")
             return
 
-        # The other one: roughly four minutes a document.
-        with self._timed(regulation_id, "llm_analysis_total") as t:
-            self._run_llm_analysis(regulation_id=regulation_id, doc=doc,
-                                   text_content=text, content_type=content_type,
-                                   version_id=version_id)
-            t["message"] = f"{len(text):,} chars as {content_type}"
+        # REPLACES the old 4-stage staged_LLM_Analyzer / compliance_analysis
+        # flow (_run_llm_analysis), which this method used to run first and
+        # then run this alongside, additively, while the new tables were
+        # still being proven out. That intermediate step is over: the
+        # Requirement/Activity pipeline is now the only analysis path.
+        # BaseOrchestrator still defines _run_llm_analysis/StagedLLMAnalyzer
+        # for any caller that wants it directly, but the main per-document
+        # flow no longer calls it, and compliance_analysis rows /
+        # requirement_matching stop being written from here.
+        self._run_requirement_activity_analysis(
+            regulation_id=regulation_id, version_id=version_id, doc=doc, dec=dec)
+
+    def _run_requirement_activity_analysis(self, regulation_id, version_id, doc, dec):
+        """New Requirement/Activity pipeline: per-document bundle (html +
+        every attachment, built from the SAME Decision already computed above
+        -- no re-fetching), Stage A/B, then diff-and-write against what's
+        already stored (see processor/requirement_activity_sync.py)."""
+        from processor.requirement_analyzer import (
+            RequirementAnalyzer, ChunkingError)
+        from processor.activity_analyzer import ActivityAnalyzer
+        from processor.llm_client import StructuralLLMError
+        from processor.requirement_activity_sync import sync_requirements_and_activities
+
+        documents = []
+        if dec is not None and dec.html_text and len(dec.html_text.strip()) >= MIN_TEXT_LEN:
+            documents.append({"source_document": "main_body", "text": dec.html_text})
+        for name, file_text in (dec.file_parts if dec is not None else []):
+            documents.append({"source_document": name, "text": file_text})
+        if not documents:
+            self._log_step(regulation_id, "requirement_activity_analysis", "SKIPPED",
+                           "no document produced usable text")
+            return
+
+        try:
+            requirement_types = self.repo.get_requirement_types()
+        except Exception as e:
+            self._log_step(regulation_id, "requirement_activity_analysis", "ERROR",
+                           f"could not fetch requirement type lookup: {e}")
+            return
+
+        with self._timed(regulation_id, "requirement_activity_analysis") as t:
+            try:
+                stage_a = RequirementAnalyzer().extract_and_classify(
+                    documents=documents, document_title=getattr(doc, "title", "") or "",
+                    requirement_types=requirement_types,
+                    regulator=getattr(doc, "regulator", "") or "",
+                    reference=getattr(doc, "reference_no", "") or "",
+                    publication_date=str(getattr(doc, "published_date", "") or ""),
+                )
+                requirements = stage_a["requirements"]
+                activities = []
+                if requirements:
+                    # No activity_types / department_list -- neither is a
+                    # controlled list for Activity any more (2026-09-14). See
+                    # processor/activity_analyzer.py's module docstring.
+                    activities = ActivityAnalyzer().design_activities(
+                        requirements=requirements, chunk_texts=stage_a["chunk_texts"])
+                counts = sync_requirements_and_activities(
+                    self.repo, regulation_id, version_id, requirements, activities)
+                t["message"] = str(counts)
+            except (StructuralLLMError, ChunkingError) as e:
+                # Deliberately NOT caught by a bare except below -- these mean
+                # the whole run should stop being trusted (bad API key/
+                # unreachable endpoint, or a chunker bug), not that this one
+                # document had a content quirk. See processor/llm_client.py
+                # and requirement_analyzer.py for why these two specifically
+                # propagate instead of being swallowed per-chunk.
+                t["status"] = "FAILED"
+                t["message"] = f"{type(e).__name__}: {e}"
+                logger.error(f"  Requirement/Activity analysis stopped for regulation "
+                            f"{regulation_id}: {e}")
+            except Exception as e:
+                t["status"] = "FAILED"
+                t["message"] = str(e)
+                logger.error(f"  Requirement/Activity analysis failed for regulation "
+                            f"{regulation_id}: {e}")
 
     @staticmethod
     def _modified_row_fields(doc, new_hash: str) -> dict:

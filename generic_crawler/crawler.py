@@ -997,6 +997,27 @@ SITE_PROFILES = {
             # removal simply never happened, silently. Verified: the descendant
             # form matches 0, `.hidden.breadcrumbdropdown` matches 1.
             ".hidden.breadcrumbdropdown, "
+            # RESTORED 2026-08-28. Every CBE page ends with a grey line reading
+            # "This page was last updated 13 Aug 2026". It is template furniture,
+            # and leaving it in cost more than a stray sentence:
+            #
+            # GenericSiteCrawler._is_link_wrapper drops a page whose text is only
+            # its own title and a date -- that is how the Risk Appetite Statement
+            # page, which holds nothing but a heading and a download link, is kept
+            # out of the library while its PDF is kept in. The rule measures the
+            # RESIDUE after removing the title and the date stamp, against
+            # WRAPPER_RESIDUE_CHARS = 20.
+            #
+            # With .pagenote stripped the residue is 0. Without it the words
+            # "This page was last updated" survive -- 26 characters, six over the
+            # threshold -- so the page was recorded as a document, the file rule
+            # then pointed it at the same PDF, and `check` rejected the workbook
+            # for two rows sharing one identity (2026-08-28, cbe_clean.xlsx).
+            #
+            # The fix is to remove the furniture, NOT to raise the threshold:
+            # that number is deliberately not a "short pages are junk" rule --
+            # SAMA's "Article 3" is 184 characters of real law.
+            ".pagenote, "
             'section[data-comp-name="breadcrumbs"] .breadcrumbs'
         ),
     },

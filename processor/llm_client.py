@@ -78,6 +78,30 @@ class TruncatedResponseError(RuntimeError):
     """The model hit max_tokens; the payload is incomplete and must not be parsed."""
 
 
+class StructuralLLMError(RuntimeError):
+    """Every one of `attempts` retries failed with the same auth/connectivity-
+    class error -- not a one-off. A bad API key or an unreachable endpoint
+    will fail every subsequent call identically, so a caller processing many
+    chunks/batches should stop rather than spend the rest of the run on calls
+    equally certain to fail. Distinct from every other failure this client
+    raises, which stays a per-call problem a caller can reasonably treat as
+    "this one chunk had an issue" -- see requirement_analyzer.py and
+    activity_analyzer.py, which re-raise this specifically rather than
+    swallowing it like every other exception."""
+
+
+def _is_structural(exc: Exception) -> bool:
+    """Bad credentials or an unreachable endpoint -- conditions where retrying
+    the SAME call again is certain to fail again, unlike a rate limit or a
+    transient 5xx (both already in RETRY_STATUS and retried before this is
+    ever consulted)."""
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        return exc.response.status_code in (401, 403)
+    return False
+
+
 class LLMClient:
     """One OpenRouter caller with retry, truncation detection and a shared
     concurrency bound. Stateless apart from configuration -- safe to share
@@ -201,4 +225,9 @@ class LLMClient:
                                f"(attempt {attempt + 1}/{attempts})")
 
         logger.error(f"{tag}OpenRouter failed after {attempts} attempts: {last_exc}")
+        if last_exc is not None and _is_structural(last_exc):
+            raise StructuralLLMError(
+                f"{tag}every attempt failed the same way (likely a bad API key or "
+                f"unreachable endpoint), not a transient error: {last_exc}"
+            ) from last_exc
         raise last_exc if last_exc else RuntimeError("OpenRouter call failed")

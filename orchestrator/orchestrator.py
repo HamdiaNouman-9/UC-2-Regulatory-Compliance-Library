@@ -2,6 +2,7 @@ import os
 import hashlib
 import logging
 import gc
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from processor.downloader import Downloader
 from storage.mssql_repo import MSSQLRepository
@@ -10,6 +11,21 @@ from typing import List, Optional, Tuple
 from processor.LlmAnalyzer import LLMAnalyzer
 from processor.requirement_matcher import RequirementMatcher
 from processor.Text_Extractor import OCRProcessor
+
+# certifi's static CA bundle cannot always complete a real chain -- mc.gov.sa
+# sends a leaf cert but not the intermediate, which certifi-based verification
+# rejects outright (SSLCertVerificationError: unable to get local issuer
+# certificate) even though the site is genuinely fine. Windows' own trust
+# store does AIA chain-building and resolves it. truststore makes every
+# ssl.SSLContext in this process (so every `requests` call too) use the OS
+# store instead of certifi -- this is its normal, once-at-startup usage
+# pattern, not a verification bypass: certificates are still fully validated,
+# just against a store that can actually complete this chain. Verified
+# directly against a live mc.gov.sa download URL, 2026-09-07: SSLError without
+# this, clean 4.2MB PDF with it.
+import truststore
+truststore.inject_into_ssl()
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -28,6 +44,45 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# A bare User-Agent is not enough for every regulator's WAF. SDAIA's rejects
+# it outright -- HTTP 200, but a text/html "Request Rejected... consult with
+# your administrator" body instead of the PDF -- which _download_and_extract_pdf
+# then handed straight to fitz.open() as if it were a real (if tiny/scanned)
+# PDF, so it silently reported "1 page, 0 chars extracted" rather than the
+# real problem. Adding Accept/Accept-Language (no page-specific Referer
+# needed -- checked directly against a live SDAIA URL, 2026-09-07) is enough
+# to pass. Shared here so every download path uses the same headers rather
+# than each accumulating its own partial fix.
+_FILE_DOWNLOAD_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/120.0.0.0 Safari/537.36"),
+    "Accept": "application/pdf,application/xhtml+xml,text/html;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _get_with_retries(url, *, attempts=3, backoff=1.5, **kwargs):
+    """A download failure IS worth retrying, unlike an OCR failure -- network
+    conditions genuinely vary between attempts (a WAF hiccup, a momentarily
+    slow server), where re-running the same OCR on the same bytes would just
+    get the same result every time. Short backoff (1.5s, 3s), not the LLM
+    client's longer one -- these are cheap, fast requests, not paid API calls
+    worth pacing carefully."""
+    last_exc = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(backoff * attempt)
+        try:
+            resp = requests.get(url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last_exc = e
+            logger.warning(f"    fetch attempt {attempt + 1}/{attempts} failed for "
+                           f"{url[:80]}: {e}")
+    raise last_exc
 
 MIN_TEXT_LEN = 200
 
@@ -52,6 +107,8 @@ class BaseOrchestrator:
       - version_id is NULL on compliance_analysis rows.
       - No archiving, no regulation_versions rows.
     ────────────────────────────────────────────────────────────────────────
+    Ref Key:
+    Regulation:  REG-{regulator}-{source}-{id}
     """
 
     def __init__(self, crawler, repo: MSSQLRepository, downloader: Downloader,
@@ -255,24 +312,49 @@ class BaseOrchestrator:
         tmp_path = None
         try:
             logger.info(f"    PDF: {pdf_url[:80]}")
-            resp = requests.get(
+            resp = _get_with_retries(
                 pdf_url,
-                headers={"User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )},
+                headers=_FILE_DOWNLOAD_HEADERS,
                 timeout=60,
                 stream=True
             )
-            resp.raise_for_status()
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 for chunk in resp.iter_content(chunk_size=8192):
                     tmp.write(chunk)
                 tmp_path = tmp.name
 
+            with open(tmp_path, "rb") as f:
+                head = f.read(5)
+            if head != b"%PDF-":
+                # Not a real PDF -- almost always a WAF/error page served with
+                # a 200 status at a .pdf url. Handing this to fitz used to
+                # "succeed" with a garbage 1-page/near-empty result that read
+                # as a bad scan rather than the real problem: the download
+                # never got the actual file.
+                logger.warning(f"    Not a real PDF (starts with {head!r}) -- "
+                               f"likely blocked/redirected, not extracting")
+                if regulation_id:
+                    self.log(regulation_id, "pdf_extraction", "ERROR",
+                             f"response was not a PDF (starts with {head!r})")
+                return None
+
             text_content, metadata = OCRProcessor.extract_text_from_pdf_smart(pdf_path=tmp_path)
+
+            if metadata.get("low_quality"):
+                # Non-empty, so `if text_content:` alone would call this a
+                # success -- but so few pages survived (see
+                # OCRProcessor._flag_low_quality) that trusting the fragment
+                # would be worse than treating it as a failed extraction.
+                logger.warning(
+                    f"    Extraction quality too low to trust "
+                    f"({metadata.get('good_pages')}/{metadata.get('total_pages')} pages) "
+                    f"-- treating as failed, not returning the fragment")
+                if regulation_id:
+                    self.log(regulation_id, "pdf_extraction", "ERROR",
+                             f"low quality: {metadata.get('good_pages')}/"
+                             f"{metadata.get('total_pages')} pages usable")
+                return None
 
             if text_content:
                 logger.info(
@@ -285,12 +367,69 @@ class BaseOrchestrator:
                 return text_content
             else:
                 logger.warning("    Empty text from PDF")
+                if regulation_id:
+                    self.log(regulation_id, "pdf_extraction", "ERROR", "empty text from PDF")
                 return None
 
         except Exception as e:
             logger.warning(f"    PDF download/extract failed: {e}")
             if regulation_id:
                 self.log(regulation_id, "pdf_extraction", "ERROR", str(e))
+            return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    _OFFICE_EXTS = (".docx", ".xlsx", ".xls")
+
+    def _download_and_extract_file(
+        self,
+        url: str,
+        regulation_id: Optional[int] = None
+    ) -> Optional[str]:
+        """Same download-to-temp-file shape as _download_and_extract_pdf, but
+        dispatches by extension so a .docx/.xlsx/.xls attachment (regulator
+        bundles routinely mix these with PDFs -- a comment-submission form
+        alongside a draft law, an annex spreadsheet alongside a circular) gets
+        real text instead of decide()'s fetch_file_text callback returning
+        None for anything that isn't a PDF. .pdf still goes through the
+        existing OCR-aware path above -- this only adds the formats that
+        never had one."""
+        ext = url.lower().rsplit("?", 1)[0].rsplit("#", 1)[0]
+        ext = "." + ext.rsplit(".", 1)[-1] if "." in ext.rsplit("/", 1)[-1] else ""
+        if ext == ".pdf" or ext not in self._OFFICE_EXTS:
+            return self._download_and_extract_pdf(url, regulation_id)
+
+        from processor.office_text_extractor import extract_office_text
+        import tempfile
+        tmp_path = None
+        try:
+            logger.info(f"    FILE ({ext}): {url[:80]}")
+            resp = _get_with_retries(
+                url,
+                headers=_FILE_DOWNLOAD_HEADERS,
+                timeout=60,
+                stream=True
+            )
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            text_content = extract_office_text(tmp_path, suffix=ext)
+            if text_content:
+                logger.info(f"    Extracted {len(text_content):,} chars ({ext})")
+                if regulation_id:
+                    self.log(regulation_id, "office_extraction", "SUCCESS",
+                             f"{len(text_content):,} chars ({ext})")
+                return text_content
+            logger.warning(f"    Empty/unsupported text from {ext} file")
+            return None
+        except Exception as e:
+            logger.warning(f"    {ext} download/extract failed: {e}")
+            if regulation_id:
+                self.log(regulation_id, "office_extraction", "ERROR", str(e))
             return None
         finally:
             if tmp_path and os.path.exists(tmp_path):

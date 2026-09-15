@@ -290,7 +290,8 @@ def _rulebook_doc_to_regulatory(doc: RulebookDoc) -> RegulatoryDocument:
     )
 
 
-def _crawl_rulebook(max_volumes: Optional[int] = None) -> List[RegulatoryDocument]:
+def _crawl_rulebook(max_volumes: Optional[int] = None,
+                     resume: bool = True) -> List[RegulatoryDocument]:
     """The whole rulebook sidebar, or the first `max_volumes` volumes.
 
     MEASURED 2026-08-20: uncapped, this ran 80 minutes without finishing and
@@ -302,6 +303,13 @@ def _crawl_rulebook(max_volumes: Optional[int] = None) -> List[RegulatoryDocumen
     The cap is not a throughput knob -- the delay stays. It exists so the flow
     can be PROVEN on one volume in minutes before committing to the long run,
     and so a first export produces a workbook instead of nothing.
+
+    `resume=True` (default) means a run killed mid-walk -- MEASURED happening
+    twice, 2026-08-24 and 2026-08-25, both times 8+ hours into
+    "Volume 1—Conventional Banks" with no traceback -- can be restarted with
+    the same call and it will skip every volume `crawl_rulebook_sidebar`
+    already finished and checkpointed, rather than re-walking the whole
+    rulebook from Common Volume again.
     """
     log.info("Mode 2c — CBB Rulebook Volumes (sidebar crawler)%s",
              f", first {max_volumes} volume(s)" if max_volumes else "")
@@ -309,17 +317,20 @@ def _crawl_rulebook(max_volumes: Optional[int] = None) -> List[RegulatoryDocumen
         seed_url      = SIDEBAR_SEED,
         request_delay = REQUEST_DELAY,
         max_volumes   = max_volumes,
+        resume        = resume,
     )
     # LEAVES ONLY. The comment here used to read "Return ALL docs (including
-    # folders) so caller can handle folder insertion" -- no caller ever did, so
-    # 56 of the 153 rulebook rows in the 2026-08-20 export were folders stored as
-    # documents, each carrying nothing but
+    # folders) so caller can handle folder insertion" and filtered on
+    # `row_type` -- a field `RulebookDoc` has never had (it has `is_folder`),
+    # so `getattr(d, "row_type", "R") == "R"` was true for every single row and
+    # filtered nothing. Folders were still being stored as documents, each
+    # carrying nothing but
     #     <div class='folder'><h2>Environmental, Social and Governance
     #     Requirements</h2></div>
     # A folder is a position in the tree, and doc_path already records that;
     # storing it as a regulation gives a person an entry to open with no
-    # instrument behind it. Mode 4 already filtered on row_type for this reason.
-    leaves = [d for d in raw_docs if getattr(d, "row_type", "R") == "R"]
+    # instrument behind it. Filtering on the field that actually exists.
+    leaves = [d for d in raw_docs if not d.is_folder]
     log.info("Mode 2c — %d leaf document(s) from %d node(s)",
              len(leaves), len(raw_docs))
     return [_rulebook_doc_to_regulatory(d) for d in leaves]
@@ -635,12 +646,16 @@ class CBBCrawlerV2(BaseCrawler):
     REGULATOR = REGULATOR
 
     def fetch_documents(self, mode: Optional[str] = None,
-                        max_volumes: Optional[int] = None) -> List[RegulatoryDocument]:
+                        max_volumes: Optional[int] = None,
+                        resume: bool = True) -> List[RegulatoryDocument]:
         """
         Fetch documents from all CBB sources (or a specific mode).
 
         Args:
             mode: "1", "2a", "2b", "2c", "3", "4", "5", or None (all modes).
+            resume: mode "2c" only -- skip rulebook volumes already saved from
+                a prior, killed run instead of re-walking them. See
+                `_crawl_rulebook`. Ignored by every other mode.
 
         Returns:
             List of RegulatoryDocument objects.
@@ -669,7 +684,7 @@ class CBBCrawlerV2(BaseCrawler):
 
         if run_all or mode == "2c":
             log.info("=== Mode 2c: Rulebook Volumes ===")
-            docs = _crawl_rulebook(max_volumes)
+            docs = _crawl_rulebook(max_volumes, resume=resume)
             log.info(f"Mode 2c: {len(docs)} documents")
             all_docs.extend(docs)
 
