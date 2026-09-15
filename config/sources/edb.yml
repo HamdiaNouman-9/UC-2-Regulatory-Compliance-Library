@@ -19,7 +19,7 @@
 # key — which also means change_signals.yml has nothing to keep in step.
 
 regulator: "Bahrain Economic Development Board (EDB)"
-owner: ai.team
+owner: Fakih
 
 # THE FINGERPRINT is the law's visible page text, NFKC-normalised.
 #

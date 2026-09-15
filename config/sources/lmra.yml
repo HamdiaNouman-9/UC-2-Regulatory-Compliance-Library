@@ -18,7 +18,7 @@
 # to keep in step.
 
 regulator: "Labour Market Regulatory Authority (LMRA)"
-owner: ai.team
+owner: Fakih
 
 # THE FINGERPRINT is the instrument's visible text, NFKC-normalised.
 #

@@ -285,7 +285,7 @@ from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E40
                                monitor_cbe, monitor_cheap_probes, monitor_cma,
                                monitor_edb, monitor_lloc, monitor_lmra,
                                monitor_mc, monitor_mlcu, monitor_mlsd,
-                               monitor_nbr,
+                               monitor_justice_canada, monitor_nbr,
                                monitor_rera, monitor_sama, monitor_sio)
 
 DIRECT_JOB_MAPPING = {
@@ -329,6 +329,10 @@ DIRECT_JOB_MAPPING = {
     "monitor_mlsd": monitor_mlsd,
     "monitor_lmra": monitor_lmra,
     "monitor_nbr": monitor_nbr,
+    # Canada's first. Same rule: DISABLED in config/scheduler.yml until a person
+    # has read its workbook. Its signal is a cheap probe, so once it is trusted
+    # the better home is CHEAP_PROBE_SOURCES and this entry goes away.
+    "monitor_justice_canada": monitor_justice_canada,
 }
 
 API_JOB_MAPPING = {
@@ -362,6 +366,7 @@ API_JOB_MAPPING = {
     "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),
     "monitor_lmra": lambda: trigger_monitor_via_api("monitor_lmra"),
     "monitor_nbr": lambda: trigger_monitor_via_api("monitor_nbr"),
+    "monitor_justice_canada": lambda: trigger_monitor_via_api("monitor_justice_canada"),
 }
 
 # Choose which mode to use (set via environment variable or hardcode)

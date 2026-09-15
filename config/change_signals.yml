@@ -993,5 +993,66 @@ sources:
     signal: crawl
     confirm: true
 
+  # JUSTICE CANADA (CANADA) - `stored-inventory`, AND IT IS THE FIRST SOURCE
+  # SINCE ZATCA WHERE A CHEAP PROBE IS GENUINELY THE RIGHT ANSWER. Measured
+  # 2026-09-09 and re-measured 2026-09-13; artefacts in
+  # UC-2-Scratch/JUSTICE_CANADA/cache/.
+  #
+  # EDB, MLSD, LMRA and NBR are all `crawl` because every cheap option failed.
+  # Here one succeeds: `/eng/XML/<CODE>.xml` returns BOTH an ETag and a
+  # Last-Modified, and unlike CMA's they are HONEST — the file is rewritten only
+  # when Justice re-cuts that Act. Proof is the acts that were NOT rewritten:
+  #
+  #     act     the page says       its XML says     its XML file written
+  #     B-3     current to 2026-06-21  2026-06-21    2026-08-20 14:10:00
+  #     C-21    current to 2026-06-21  2026-06-21    2026-08-20 14:10:00
+  #     I-21    current to 2026-06-21  2024-12-08    2025-01-14 15:26:00
+  #     F-27    current to 2026-06-21  2025-03-31    2025-04-29 18:44:48
+  #     P-21    current to 2026-06-21  2026-03-02    2026-03-18 15:59:48
+  #     A-17    current to 2026-07-21  2022-08-08    2022-08-17 17:26:53
+  #     F-3.3   current to 2026-07-21  2019-06-21    2019-09-24 15:23:20
+  #
+  # Every page advertises the same currency date because it is injected at
+  # render time; the FILES tell the truth. The last two rows are the strongest:
+  # F-3.3 advertises 2026-07-21 over a file untouched since SEPTEMBER 2019.
+  #
+  # ONE HEAD PER ACT replaces downloading the Act, and there are FOUR documents,
+  # so the sweep is four requests.
+  #
+  # THE PROBE WAS RE-RUN 2026-09-13, FOUR DAYS AND ONE BANNER ROLL LATER. The
+  # site-wide banner moved 2026-06-21 -> 2026-07-21 in that window. All four
+  # Acts returned byte-identical ETag and Last-Modified to the values recorded
+  # on 2026-09-09 — so the roll did NOT move the files, and the detect half
+  # reported zero changes across it. That is the false-positive control this
+  # signal most needed, and it passed.
+  #
+  # `confirm: true`, AND THE MEASUREMENT IS AMBIGUOUS RATHER THAN ALARMING.
+  # B-3, C-21, C-46 and B-1.01 were all rewritten in one batch at 2026-08-20
+  # 14:10:00, but B-1.01's last amendment was 2026-03-26 — months earlier.
+  # Either its text really changed in the June cycle (its point-in-time index
+  # carries a 2026-06-18 version, which supports that) or the batch re-cut it
+  # and only the currency date moved. The second case is a false `modified`.
+  # Confirming costs one fetch on the documents that actually moved and is
+  # correct under either reading.
+  #
+  # STILL NOT SETTLED as of 2026-09-13, and the 2026-09-13 re-probe does not
+  # settle it. That re-probe shows a BANNER roll does not rewrite the files,
+  # which is a different question: B-1.01 asks whether a FILE rewrite always
+  # means the text changed, and answering it needs a rewrite to happen. None
+  # has since 2026-08-20. Keep `confirm: true` until one does.
+  #
+  # NOTE ON THE ETag: B-3 and C-21 return the SAME ETag ("0ac4b96ad30dd1:0")
+  # despite being 1.1 MB and 146 KB. IIS derives it from the file's write time
+  # and both were written in the same second. Harmless — a token is only ever
+  # compared against that same document's previous token, never across
+  # documents — but startling enough to record.
+  #
+  # NO `sama-feed` EXISTS HERE. Looked for first, as the onboarding directs:
+  # robots.txt, sitemap.xml and every "recently amended" url tried are 404.
+  - regulator: "Department of Justice Canada (JUS)"
+    source_system: "Consolidated Acts"
+    signal: stored-inventory
+    confirm: true
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

@@ -1,0 +1,232 @@
+# Justice Laws Website (Canada) — consolidated federal Acts. CUSTOM, like MOH,
+# MLCU, EDB, MLSD, LMRA and NBR.
+#
+#   Measured 2026-09-09 and 2026-09-13, artefacts cached in
+#   UC-2-Scratch/JUSTICE_CANADA/cache/.
+#   FOUR ENTRIES, ONE ROW EACH — the scope is tab "Act" for the Bankruptcy and
+#   Insolvency Act and the Canadian Payments Act (agreed 2026-09-09), and the
+#   Auditor General Act and Farm Income Protection Act (agreed 2026-09-13).
+#
+# ONE ROW IS ONE ACT, NOT ONE PAGE. `/eng/acts/<CODE>/` is a table of contents
+# linking `page-1.html` … `page-36.html`. Those are PAGINATION: they carry no
+# date, no identifier, and no entry in the Act's version index. A row per page
+# would invent 41 documents out of two. The publisher's unit is the Act — the
+# `Full Document` block, the currency banner, the `lims:fid` and the
+# point-in-time index all attach to the Act and nothing attaches to a page.
+#
+# THE DOCUMENT IS THE XML, NOT THE LANDING PAGE. Each Act is offered as
+# FullText.html, `/eng/XML/<CODE>.xml` and `/PDF/<CODE>.pdf`. The XML is taken:
+# it is the same text, and its root element is a metadata record the publisher
+# maintains — `lims:fid` (a stable identifier that does not rotate the way NBR's
+# S3 upload hashes do), `lims:lastAmendedDate`, `in-force`, and the same three
+# again on every `<Section>`.
+#
+# The `/eng/acts/<CODE>/` landing page is kept on every row as
+# `extra_meta.landing_page` so a reviewer opening the row lands somewhere
+# readable rather than on 1.1 MB of XML.
+
+regulator: "Department of Justice Canada (JUS)"
+owner: Fakih
+
+# ---------------------------------------------------------------------------
+# THE FINGERPRINT, AND THE DATE TRAP THAT DECIDES IT
+# ---------------------------------------------------------------------------
+# The hash is the Act's XML with THREE consolidation-currency fields removed,
+# NFKC-normalised. Everything else is kept INCLUDING attributes, so a provision
+# merely coming into force still moves the hash.
+#
+# NOT the landing page's visible text, which is the onboarding's first
+# preference and is WRONG HERE. Every Act page prints:
+#
+#     Act current to 2026-06-21 and last amended on 2026-06-20.
+#
+# `Act current to` is injected at render time and is IDENTICAL ON EVERY ACT ON
+# THE SITE, amended or not. Measured 2026-09-09:
+#
+#     act     page says "current to"   its XML says   its XML file written
+#     B-3     2026-06-21               2026-06-21     2026-08-20 14:10:00
+#     C-21    2026-06-21               2026-06-21     2026-08-20 14:10:00
+#     I-21    2026-06-21               2024-12-08     2025-01-14 15:26:00
+#     F-27    2026-06-21               2025-03-31     2025-04-29 18:44:48
+#     P-21    2026-06-21               2026-03-02     2026-03-18 15:59:48
+#     A-17    2026-07-21               2022-08-08     2022-08-17 17:26:53
+#     F-3.3   2026-07-21               2019-06-21     2019-09-24 15:23:20
+#
+# The Interpretation Act advertises "current to 2026-06-21" while its file has
+# not been rewritten since JANUARY 2025, and the Farm Income Protection Act
+# advertises 2026-07-21 over a file untouched since SEPTEMBER 2019 — a seven
+# year gap, the widest measured.
+#
+# CONFIRMED BY A REAL ROLL, NOT ONLY THE SIMULATED ONE. Between 2026-09-09 and
+# 2026-09-13 the banner moved 2026-06-21 -> 2026-07-21 site-wide while the XML
+# of B-3 and C-21 kept current-date 2026-06-21 and their files were not
+# rewritten. Re-crawled on 2026-09-13, both reproduced the hash stored in the
+# delivered workbook EXACTLY (7fecdcfb…, 874310d4…). A visible-text hash would
+# have re-versioned both Acts for zero legal change. Hashing the page's visible text would
+# therefore re-version every Act on every consolidation roll — roughly monthly,
+# for Acts nobody touched. That is the CMA `Last-Modified` fault in a different
+# costume.
+#
+# AND IT SURVIVES THE CHECKLIST. Both exports of the two-export test run minutes
+# apart, so both read the same date and both report `unchanged`. The crawler
+# passes every box and starts writing false version rows a month later. This is
+# why the date is excluded BY CONSTRUCTION rather than caught by testing.
+#
+# THE THREE FIELDS STRIPPED, all three saying when the consolidation was cut
+# rather than what it says:
+#
+#   lims:current-date   root attribute, occurs EXACTLY ONCE
+#   lims:pit-date       root attribute, occurs EXACTLY ONCE
+#   <Stages stage="consolidation">…</Stages>
+#                       occurs once, and is the one that HIDES IN VISIBLE TEXT —
+#                       B-3 and C-21 carry 2026-06-22, I-21 carries 2024-12-09.
+#                       Stripping attributes alone does not reach it, so a
+#                       text-only hash would still churn monthly.
+#
+# NOT `lims:lastAmendedDate` ALONE, tempting as a publisher's own change stamp
+# is. It is a FLOOR on change, not a measure of it — two acts disprove it:
+#   - P-21  lastAmendedDate 2025-06-02, but re-cut 2026-03-18 with current-date
+#           2026-03-02. The consolidation changed; the attribute did not move.
+#   - B-1.01 lastAmendedDate 2026-03-26, yet a new point-in-time version at
+#           2026-06-18 and a file rewritten 2026-08-20.
+# In both a real change happened — almost certainly a coming-into-force event —
+# that the attribute did not record. It is kept in `extra_meta` and inside the
+# hashed body, so moving it moves the hash, but it is not the basis.
+#
+# NOT THE RAW LANDING PAGE HTML EITHER. Fetched twice seconds apart it differs
+# by 227 bytes, on a rotating server-farm comment:
+#
+#     - <!-- ELAPSE -->
+#     + <!-- CURATE -->
+#
+# A hash of it changes on EVERY SINGLE FETCH — the NBR csrf-token fault. It sits
+# inside an HTML comment so it never reaches visible text, but it is the reason
+# `document_html` is left None on these rows rather than set to the page.
+# The XML fetched twice was BYTE-IDENTICAL (md5 ffab962e7ffc953be33afee0aacf7b32).
+
+# ---------------------------------------------------------------------------
+# HOST MANNERS
+# ---------------------------------------------------------------------------
+# IIS 10, and unusually relaxed. No rate limiting observed across ~25 unpaced
+# requests, and laws-lois.justice.gc.ca is NOT in skip_hosts. `delay: 1.0` is
+# politeness rather than a measured necessity — this is a two-request crawl per
+# Act, so there is nothing to gain by lowering it.
+#
+# No robots.txt, no sitemap.xml, and no "recently amended" feed was found (all
+# 404). `sama-feed` was looked for first as the onboarding directs; it does not
+# exist here, so the per-document probe in change_signals.yml is the best
+# available.
+
+# ---------------------------------------------------------------------------
+# ONE ENTRY PER ACT, AND WHY IT MUST STAY THAT WAY
+# ---------------------------------------------------------------------------
+# The completeness gate groups on `extra_meta["crawl_source"]` and re-keys per
+# source, so one entry per Act means one baseline of one — which is what a
+# single-document source should be measured against.
+#
+# Each Act also gets its OWN `act_folder`. The folder is what scopes
+# `disappeared`, so two Acts sharing one would propose each other for
+# withdrawal the first time either failed to crawl.
+#
+# The remaining five Canadian Acts on the client list (Financial Administration,
+# Income Tax, …) are ONE MORE ENTRY EACH here, not a rethink — they are the same
+# publisher, the same template and the same crawler. Auditor General and Farm
+# Income Protection were added on 2026-09-13 with NO crawler change at all,
+# which is the evidence for that claim rather than a hope about it.
+#
+# `init_kwargs.regulator` is set even though the top-level `regulator:` exists,
+# because for mode: custom `build_source` passes only init_kwargs
+# (generic_crawler_wrapper.py:654); the top-level key reaches the report label,
+# not the stored rows. That is how CMA's stored name and its change_signals.yml
+# entry came to disagree while both looked right.
+sources:
+  - name: "Bankruptcy and Insolvency Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "B-3"
+      # The doc_path tier between source_system and the document. Its own
+      # folder — see "ONE ENTRY PER ACT" above.
+      act_folder: "Bankruptcy and Insolvency Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/b-3/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/B-3.xml"
+      # A recorded observation of the page's own <h1>, not our chosen title. The
+      # guard asks "has this page moved?", so giving it our own wording would
+      # make it warn on every run about a difference that is permanent.
+      expected_title: "Bankruptcy and Insolvency Act (R.S.C., 1985, c. B-3)"
+      # A FLOOR, NOT THE COUNT. Measured at 565,758 characters on 2026-09-09;
+      # naming that would turn any amendment into a crawl failure. Set well
+      # below it so a truncated or repealed fetch fails loudly rather than
+      # proposing an Act for withdrawal.
+      min_text_chars: 100000
+
+  - name: "Canadian Payments Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "C-21"
+      act_folder: "Canadian Payments Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/C-21/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/C-21.xml"
+      expected_title: "Canadian Payments Act (R.S.C., 1985, c. C-21)"
+      # Measured at 58,606 characters on 2026-09-09. Floor set an order of
+      # magnitude below, for the reason given on B-3.
+      min_text_chars: 10000
+
+  - name: "Auditor General Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "A-17"
+      act_folder: "Auditor General Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/a-17/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/A-17.xml"
+      expected_title: "Auditor General Act (R.S.C., 1985, c. A-17)"
+      # Measured at 30,982 characters on 2026-09-13. Floor set ~6x below, for
+      # the reason given on B-3.
+      min_text_chars: 5000
+
+  - name: "Farm Income Protection Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "F-3.3"
+      act_folder: "Farm Income Protection Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/f-3.3/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/F-3.3.xml"
+      # THE CITATION IS NOT THE URL CODE. This Act is cited S.C. 1991, c. 22;
+      # "F-3.3" is the revised-statutes index code Justice files it under. Both
+      # are correct, and `expected_title` records the page's wording, not ours.
+      expected_title: "Farm Income Protection Act (S.C. 1991, c. 22)"
+      # Measured at 39,324 characters on 2026-09-13.
+      min_text_chars: 6000
+
+# NOT LISTED, DELIBERATELY. Scope agreed 2026-09-09 is tab "Act". Everything
+# below is real material on the same landing pages and each is ONE MORE ENTRY
+# rather than a rethink:
+#
+#   Regulations made under this Act — a separate tab. B-3 has THREE: Bankruptcy
+#     and Insolvency General Rules (C.R.C., c. 368), Eligible Financial Contract
+#     General Rules (SOR/2007-256), Orderly Payment of Debts Regulations
+#     (C.R.C., c. 369). C-21 has its own. They live under /eng/regulations/ and
+#     use the SAME template and the SAME XML scheme, so this crawler reads them
+#     with only a url-shape change.
+#   Previous Versions (PITIndex.html) — the publisher's point-in-time archive.
+#     The library versions documents itself, so importing this as rows would
+#     duplicate the version chain rather than extend it.
+#   Related Provisions (rpdc.html), and the amending statutes under
+#     /eng/AnnualStatutes/ — B-3's page links eight of them.
+#
+#   /fra/* — Justice publishes the whole corpus in French, and in Canada BOTH
+#     language versions are equally authoritative. This crawler stores the
+#     ENGLISH rendering only. That is a known gap, and a larger one here than
+#     the Arabic gap on NBR, because neither version is a translation of the
+#     other in law.

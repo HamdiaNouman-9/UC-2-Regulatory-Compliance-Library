@@ -362,6 +362,27 @@ jobs:
       hour: 16
       minute: 0
 
+  # JUSTICE CANADA - FOUR Acts, and a CHEAP PROBE rather than a crawl: four HEAD
+  # requests against `/eng/XML/<CODE>.xml` to detect, and a crawl of the Act
+  # itself only for the ones whose file moved. Seconds, not minutes.
+  #
+  # WEEKLY IS DELIBERATE AND MATCHES THE PUBLISHER. Justice re-cuts its
+  # consolidation roughly monthly and publishes it weeks later — B-3's June 21
+  # currency date reached the site on August 20. There is nothing daily to catch.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. A detected change crawls
+  # straight to MSSQL, so enabling it before the review would make the first
+  # scheduled run be the ingest. Turn it on after the workbook is approved and
+  # promoted — and at that point prefer moving the source into
+  # CHEAP_PROBE_SOURCES and deleting this slot, so it is swept once, not twice.
+  monitor_justice_canada:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 17
+      minute: 0
+
   # ----------------------------------------------------------
   # NO JOB FOR Saudi Exchange OR SIMAH — deliberately.
   #

@@ -19,7 +19,7 @@
 # reporting an empty listing.
 
 regulator: "National Bureau for Revenue (NBR)"
-owner: ai.team
+owner: Fakih
 
 # THE FINGERPRINT is the ROW's `content_text` - the section's prose followed by
 # every attached PDF's extracted text - NFKC-normalised, with `document_url|title`

@@ -163,6 +163,18 @@ CHEAP_PROBE_SOURCES = [
     ("Ministry of Human Resource and Social Development (MHRSD)",
      "Regulations and procedural guidelines"),
     ("Zakat, Tax and Customs Authority (ZATCA)", "Rules and Regulations"),
+    # JUSTICE CANADA IS NOT HERE YET, AND THAT IS THE POINT. Its signal IS
+    # `stored-inventory` (config/change_signals.yml has the measurements), so
+    # this list is where it belongs once it is trusted — but this job is DAILY
+    # and ENABLED, and a target it finds goes through `_crawl_into_db`, which
+    # writes STRAIGHT TO MSSQL. Adding it before a person has read the workbook
+    # would make the first scheduled run be the ingest.
+    #
+    # It runs as `monitor_justice_canada` below instead: the same sweep, on a
+    # slot that ships `enabled: false`. AFTER the workbook is approved and
+    # promoted, move it here as
+    #     ("Department of Justice Canada (JUS)", "Consolidated Acts"),
+    # and delete that job — do not leave both, or the source gets swept twice.
 ]
 
 #: Regulator -> (crawler name, is_form) for the sources whose crawl IS the
@@ -840,6 +852,42 @@ def _monitor_lmra_impl() -> dict:
     res = _crawl_into_db("lmra", False, timeout=5400)
     logger.info("LMRA: %s", res)
     return res
+
+
+def monitor_justice_canada() -> dict:
+    """WEEKLY, AND OFF. A cheap probe, not a crawl — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: a
+    detected change crawls straight into MSSQL, and this source has never been
+    reviewed. Once it is, this job's job is done — see CHEAP_PROBE_SOURCES.
+    """
+    return _run_exclusive("monitor_justice_canada", _monitor_justice_canada_impl)
+
+
+def _monitor_justice_canada_impl() -> dict:
+    # FOUR requests to detect, because there are four documents and the probe is
+    # one HEAD per stored url against `/eng/XML/<CODE>.xml`. A crawl follows only
+    # for the Acts whose file actually moved, and costs 2 requests per Act (the
+    # landing page, then the XML) — ~1.3 MB for B-3, under 100 KB for A-17 and
+    # F-3.3.
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    regulator = "Department of Justice Canada (JUS)"
+    source = "Consolidated Acts"
+    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
+    rep = _sweep(regulator, source, tf)
+    targets = [l.strip() for l in
+               (tf.read_text(encoding="utf-8").splitlines()
+                if tf.exists() else []) if l.strip()]
+    out = {"counts": rep.get("counts", {}), "targets": len(targets),
+           "seconds": rep.get("_seconds")}
+    # `new` on a detect-only sweep means "first time swept", not a new document,
+    # so it must not pull a crawl — same rule as monitor_cheap_probes.
+    if targets:
+        out["crawl"] = _crawl_into_db("justice_canada", False)
+    logger.info("Justice Canada: %s", out)
+    return out
 
 
 def monitor_nbr() -> dict:

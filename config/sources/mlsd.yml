@@ -39,7 +39,7 @@
 # never on position.
 
 regulator: "Ministry of Labour and Social Development (MLSD)"
-owner: ai.team
+owner: Fakih
 
 # THE FINGERPRINT is the document's extracted text, NFKC-normalised, with
 # `document_url|title` as the floor.
