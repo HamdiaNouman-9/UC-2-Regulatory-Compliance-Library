@@ -958,5 +958,71 @@ sources:
     source_system: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
     confirm: false
 
+  # ---- Jordan ------------------------------------------------------------
+  # CBJ, ALL TEN SOURCES IN ONE ENTRY. config/sources/cbj.yml gives every source
+  # `source_system: "Legislation"` so the library nests them under one parent
+  # folder, and `settings_for` matches on (regulator, source_system) -- so this
+  # single pair names the whole regulator. The cost is recorded in cbj.yml: the
+  # ten listings cannot be gated apart, because `disappeared` and the
+  # completeness gate are scoped on that same pair.
+  #
+  # MEASURED 2026-09-16, all four alternatives:
+  #
+  #   sitemap           NONE, and proven rather than assumed. /sitemap.xml and
+  #                     /sitemap_index.xml answer 404 in 103 bytes. /EN/sitemap.xml
+  #                     answers 200 -- but a control path that cannot exist,
+  #                     /EN/List/zzz_control_does_not_exist, answers 200 at the
+  #                     IDENTICAL 385,447 bytes of `<!DOCTYPE html>`. That is the
+  #                     site's catch-all page, not a sitemap. robots.txt is 404,
+  #                     so it names none either.
+  #   sama-feed         no "what changed" page anywhere in the Legislation menu.
+  #   snapshot-articles wrong shape. It parses one page into labelled articles;
+  #                     CBJ's instruments are 399 separate PDFs, not anchors into
+  #                     a page. It would parse 0 items.
+  #   stored-inventory  AVAILABLE AND HONEST -- and still the wrong nightly
+  #                     signal. See the two reasons below.
+  #
+  # STORED-INVENTORY WORKS HERE, WHICH IS WHY IT IS RULED OUT ON EVIDENCE RATHER
+  # THAN ON AVAILABILITY. Every sampled PDF returns a real IIS ETag and a
+  # plausible, distinct Last-Modified -- not CMA's case, where Last-Modified is
+  # the current time:
+  #
+  #     etag="6e0ed747da9dc1:0"   Sun, 01 Mar 2026 13:15:21 GMT   250,012
+  #     etag="fcf52375516fdc1:0"  Wed, 17 Dec 2025 12:34:16 GMT   345,363
+  #     etag="b5efb9d719ddb1:0"   Tue, 25 Mar 2025 10:31:22 GMT   533,576
+  #
+  # It loses twice over, the same way MOIC's does:
+  #
+  #   1. COST. A probe is one request per document: 376 against TEN page loads
+  #      for the entire regulator, because every source in cbj.yml is
+  #      `max_pages: 1` -- CBJ's pagers and category dropdowns are display-only
+  #      and the unfiltered markup already carries every link. 376 and not 402:
+  #      23 multi-attachment rows leave document_url EMPTY by design and 3 are
+  #      placeholders, so 26 rows cannot be probed by anything.
+  #   2. COVERAGE. InventorySweep is covers_inventory = False -- it re-reads only
+  #      urls already stored and can never see a NEW circular. On this regulator
+  #      that is the main event, not an edge case: the register already holds
+  #      2026 circulars, and dynamic_crawler/MONITORING.md section 3 says it
+  #      outright -- on a list site the listing IS the feed.
+  #
+  # KNOWN GAP, SAME AS PDPA AND MOIC: a pdf silently replaced at the same url
+  # with the same link text is INVISIBLE. A discovered document's content_hash is
+  # hash("<url>|<title>") (generic_crawler/crawler.py, "a document is a file we
+  # have not downloaded here"), so only the url or the title moving can show. The
+  # ETags above are exactly what catches that, so a deliberate
+  # `--signal stored-inventory` run against a slice is worth doing occasionally.
+  # It is the second tier, not the nightly question.
+  #
+  # IDENTITY IS THE DEFAULT, AND THAT IS A RISK WORTH NAMING. CBJ exposes no
+  # stable item id -- nothing like CBE's Sitecore GUID -- so identity falls back
+  # to [document_url, doc_path, title]. If CBJ ever re-issues a circular at a new
+  # storage url, that reads as one new document plus one disappearance, the
+  # failure MONITORING.md section 2 names. There is no field available to fix it
+  # with today; if CBJ starts exposing one, override `identity` here.
+  - regulator: "Central Bank of Jordan (CBJ)"
+    source_system: "Legislation"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

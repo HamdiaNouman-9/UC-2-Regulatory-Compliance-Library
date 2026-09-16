@@ -304,6 +304,34 @@ jobs:
       hour: 12
       minute: 0
 
+  # ---- Jordan, onboarded 2026-09-16 --------------------------------------
+  # CBJ. Sunday 13:00, continuing the one-hour stagger. Every monitor_* job
+  # takes the same `_run_exclusive` lock and an overlap is a SKIP, not a
+  # failure -- a colliding slot silently starves a job rather than erroring.
+  # Taken before this: mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00,
+  # bahrain_bourse 08:00, cbb 09:00, rera 10:00, sio 11:00, lloc 12:00.
+  #
+  # WEEKLY RATHER THAN DAILY, though it could afford daily: ten page loads for
+  # the whole regulator. Weekly keeps the first scheduled runs beside the other
+  # new regulators, where a person is watching. Move it earlier and more often
+  # once it has a run history -- CBJ publishes circulars continuously, and the
+  # crawl is the only signal that can see a new one at all.
+  #
+  # DISABLED, and for the same two reasons MLCU and CBE ship disabled. Turning a
+  # monitor job on is a server decision, not a repo one. And CBJ IS NEW: as of
+  # this commit its workbook has been exported and checked (402 rows, verdict
+  # OK) but NOT yet read, re-exported for stability, or promoted. This path
+  # writes STRAIGHT TO MSSQL, so enabling it before that review would make the
+  # first scheduled run the ingest -- exactly what the workbook gate exists to
+  # prevent.
+  monitor_cbj:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 13
+      minute: 0
+
   # ----------------------------------------------------------
   # NO JOB FOR Saudi Exchange OR SIMAH — deliberately.
   #

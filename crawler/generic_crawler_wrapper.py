@@ -840,6 +840,21 @@ class GenericSiteCrawler:
             if self.category:
                 trail.append(self.category)
             trail = _clean_trail([p for p in trail if p])
+            # THE PLACEHOLDER IS THE LEAF, NOT THE CATEGORY. `_walk_folders`
+            # types the LAST doc_path segment "R" -- the frontend's marker for
+            # "this node is a document, not a folder". Without the title
+            # appended here the trail ended at the CATEGORY, so the category
+            # itself was typed R and the section stopped being a folder.
+            #
+            # MEASURED on the 2026-09-16 CBJ export: seven of ten listings under
+            # "Legislation" came back as folders and three -- Instructions,
+            # Jordanian Constitution, AntiMoney Laundering -- as documents
+            # sitting beside them, each with no children, and each labelled with
+            # the CATEGORY name while the row it stood for carried the longer
+            # placeholder title. Appending the title gives the same shape every
+            # other source gets from `doc_path_title`: the category stays a
+            # folder and the notice is a row inside it.
+            trail = trail + [self.placeholder_when_empty]
             logger.info("  no documents: adding the placeholder row at %s",
                         " > ".join(trail))
             out.append(RegulatoryDocument(

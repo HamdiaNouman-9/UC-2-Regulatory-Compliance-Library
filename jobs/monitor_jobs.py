@@ -265,6 +265,13 @@ CRAWL_AS_SIGNAL = {
     # config/change_signals.yml for the four alternatives and why each was ruled
     # out.
     "Ministry of Industry and Commerce (MOIC)": ("moic", False),
+    # CBJ joined 2026-09-16. Ten sources, all `max_pages: 1`, so the whole
+    # regulator is TEN page loads against 376 probes for a stored-inventory
+    # sweep -- and that sweep could not see a new circular, which on this
+    # regulator is the main event. config/change_signals.yml carries the
+    # measurement for all four alternatives, including why stored-inventory is
+    # ruled out on evidence rather than on availability: it genuinely works here.
+    "Central Bank of Jordan (CBJ)": ("cbj", False),
 }
 
 
@@ -835,6 +842,50 @@ def monitor_moic() -> dict:
     rep = _crawl_into_db("moic", False)
     logger.info("Ministry of Industry and Commerce (MOIC): %s", rep)
     return {"Ministry of Industry and Commerce (MOIC)": rep}
+
+
+def monitor_cbj() -> dict:
+    """WEEKLY. The Central Bank of Jordan, all ten Legislation sources.
+
+    THE CRAWL IS THE SIGNAL, and like PDPA and MOIC it is also the cheapest
+    question available rather than the only one left. Every source in
+    config/sources/cbj.yml is `max_pages: 1`, so the whole regulator is TEN page
+    loads for 402 rows: CBJ's pagers and its `ddlCategory1` dropdowns are
+    DISPLAY ONLY -- the unfiltered markup already carries every document link,
+    measured on the 140-document Payment Systems listing across its six pages.
+
+    WHY NOT stored-inventory, WHICH GENUINELY WORKS HERE. CBJ's tokens are
+    honest: every sampled pdf returns a real IIS ETag and a distinct, plausible
+    Last-Modified (2025-03-25, 2025-12-17, 2026-03-01), not CMA's current-time
+    lie. It loses twice over -- a probe is one request per document, so 376
+    against ten; and InventorySweep is covers_inventory = False, so it re-reads
+    only urls we already hold and can never see a NEW circular. 376 rather than
+    402 because 23 multi-attachment rows carry no document_url by design and 3
+    are placeholders, so 26 rows cannot be probed by anything.
+
+    RULED OUT, measured 2026-09-16: no sitemap (/sitemap.xml and
+    /sitemap_index.xml 404; /EN/sitemap.xml answers 200 at the same 385,447
+    bytes as a control path that cannot exist, so it is the catch-all page;
+    robots.txt is 404); no revision feed anywhere in the Legislation menu;
+    snapshot-articles parses 0 items because these rows are files, not article
+    text.
+
+    ALL TEN SOURCES RUN TOGETHER, and here that is a CONSTRAINT rather than a
+    convenience. `disappeared` is scoped by (regulator, source_system) and
+    cbj.yml gives all ten `source_system: "Legislation"` so the library nests
+    them under one parent folder -- so they share ONE bucket and cannot be gated
+    apart. cbj.yml states that trade where it is made.
+
+    KNOWN GAP: a pdf silently replaced at the same url with the same link text is
+    invisible -- a discovered document's content_hash is hash("<url>|<title>").
+    The honest ETags above are what catches that, so a deliberate
+    `--signal stored-inventory` run against a slice is worth doing occasionally.
+    Expect 3 rows it cannot answer for: the Instructions, Jordanian Constitution
+    and AML/CFT placeholders point at pages that publish no file at all.
+    """
+    rep = _crawl_into_db("cbj", False)
+    logger.info("Central Bank of Jordan (CBJ): %s", rep)
+    return {"Central Bank of Jordan (CBJ)": rep}
 
 
 

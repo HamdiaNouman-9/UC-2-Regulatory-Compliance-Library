@@ -1,0 +1,137 @@
+version: 1
+name: mhrsd.regs
+seed_url: "https://www.hrsd.gov.sa/en/ministry/about-ministry/policies-strategies/regulation-and-procedures"
+shape: list
+scope: host              # documents live under /knowledge-centre/, not the seed path
+                         # (formfill records scope but does not act on it)
+
+row_selector: "div.card.has-shadow"
+detail_link_selector: "a[href]"
+
+# MEASURED 2026-08-12. The pager renders LATE: a probe found
+#   <a class="icon-arrow-right arrow-next" title="Go to next page" rel="next">
+# only at ~16s. At the old default the harvest ran before it existed, so the walk
+# reported "no usable control" and stopped at page 1 — and at 15000 it sat right
+# on the boundary, which is why the same form returned 122 rows on one run and 18
+# on the next. The selector was never wrong.
+#
+# This also governs the PAGINATION settle (max(CLICK_SETTLE_MS, wait_ms)): a page
+# that needs 20s to render cannot re-render a click's worth in 8.
+# The site has 4 pages; max_pages 12 leaves room to observe the pager end.
+wait_ms: 20000
+
+pagination:
+  mode: click
+  next_selector: 'a[title="Go to next page"]'
+  # Must sit ABOVE the real page count (4), so the walk can attempt one more turn
+  # and observe the pager end. Exhausting max_pages is reported as a capped run,
+  # which verify treats as a failure.
+  max_pages: 12
+
+fields:
+  title:
+    from: css
+    selector: "h2.text-lg"
+    attr: text
+  document_url:
+    from: css
+    selector: "a[href]"
+    attr: href
+  published_date:
+    from: css
+    selector: "span.gregorian-date"
+    attr: text
+
+section_path:
+  prefix: ["Regulations and procedural guidelines"]
+
+fetch_details: true
+
+# The stored document_html was the whole Drupal page, and MOST of it was not the
+# instrument. An eight-card "related regulations" view sits inside every detail
+# page and accounts for 68-92% of its text — measured in config/change_signals.yml,
+# which cuts its confirm hash at this same block for exactly that reason.
+#
+# `extract` LIFTS IT OUT rather than deleting it: document_html becomes the
+# instrument, and the block is kept in extra_meta["related_regulations"].
+# Left in, it IS the document as far as any reader or analyser is concerned, and
+# it changes whenever the ministry publishes anything at all.
+content:
+  extract:
+    # THE METADATA SIDEBAR. This is the block that kept turning up inside the
+    # stored document: Authored on / Execution date / Release Date / Resolution
+    # Number / Sector / Beneficiaries. It is real information ABOUT the
+    # instrument, but it is not the instrument, so it belongs in extra_meta.
+    #
+    # Read as DATA, not markup. The site builds it from Drupal field pairs
+    # (.field__label / .field__item), so each row becomes its own extra_meta key:
+    #
+    #   extra_meta["resolution_number"] = "137440"
+    #   extra_meta["release_date"]      = "23-Shawwal-1446-21-April-2025"
+    #   extra_meta["beneficiaries"]     = "Businessmen , Individuals , ..."
+    #
+    # Storing the block's HTML would be no more readable than leaving it in the
+    # document. The class spelling is the site's own: "sidabar".
+    document_metadata:
+      selector: ".saud-content-sidabar"
+      pairs:
+        label: ".field__label"
+        value: ".field__item"
+    # A CLASS, not an id — Drupal gives the block a generated class and the id
+    # sits on the swiper INSIDE it, which would leave the block's wrapper behind.
+    # Attribute-substring match so a suffix change does not silently stop
+    # matching and quietly put the noise back.
+    # Measured on the Tourism localisation guide: 2,423 of the container's 3,639
+    # characters, i.e. 67% of the page text.
+    related_regulations: '[class*="block-views-block-regulations-and-procedures"]' 
+  strip:
+    - ".breadcrumb"
+    - ".social-share"
+
+# The detail page links the actual PDF (its anchor text is the document title),
+# but document_url was storing the PAGE — an Arabic-slug URL — and the file was
+# never recorded. "combined" keeps ONE row per instrument and puts every attached
+# file in document_urls, which is how the manual library models an instrument
+# with several attachments.
+attachment_is_document: "combined"
+
+notes: >
+  63 regulations over 4 pages (18/18/18/9), matching a manual count of the site.
+  The pager is JavaScript — <a href="#" title="Go to next page"> — and ?page=N
+  silently returns page 1, so url_page would crawl page 1 four times and report
+  4x the rows. Hence mode: click, which walks it by clicking and verifies each
+  turn changed the row set. The walk stops on 'no-control' at page 5.
+  published_date comes from span.gregorian-date (the Gregorian half of the
+  dual Hijri date); reference numbers appear on only 3 of 63, so none is declared.
+# Names this source stores under. MUST match config/change_signals.yml,
+# or the change sweep and the ingest path keep separate memories of the
+# same documents.
+library:
+  # The full ministry name, not the acronym — this is the FIRST crumb of
+  # doc_path and the top-level folder in the library, so it has to read the
+  # way a person expects. Changed 2026-08-13; config/change_signals.yml
+  # moved with it, because (regulator, source_system) is how a sweep names
+  # this source and the two must not drift.
+  # The acronym added 2026-08-14 (house style is full name then acronym).
+  # config/change_signals.yml must move with it — see the note there.
+  regulator: "Ministry of Human Resource and Social Development (MHRSD)"
+  source_system: "Regulations and procedural guidelines"
+meta:
+  approved: true
+  approved_by: lead
+  approved_at: '2026-08-13T05:23:39+00:00'
+  form_hash: b914faa655ee
+  verify:
+    verdict: WARN
+    counts:
+    - 62
+    - 62
+    - 62
+    spread_pct: 0.0
+    fill_rates:
+      title: 100.0
+      document_url: 100.0
+      published_date: 100.0
+    verified_at: '2026-08-13T05:23:16+00:00'
+    source: live
+    forced: false
