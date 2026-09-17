@@ -1,0 +1,200 @@
+# NBR — Bahrain's VAT legislation. CUSTOM, like MOH, MLCU, EDB, MLSD and LMRA.
+#
+#   Measured 2026-08-31, cached in UC-2-Scratch/NBR/. ONE entry, THREE ROWS -
+#   the three `<h2>` sections of `/laws_regulations/vat` - carrying SEVEN PDFs
+#   between them. That is the scope agreed for "VAT Law" on 2026-08-31, in the
+#   shape agreed on review 2026-09-01. See "ONE ROW IS ONE SECTION" below.
+#
+# AN INSTRUMENT IS NEVER THE PAGE HERE. Each file is linked as a `/media/<slug>`
+# permalink, and that page is an Adobe PDF-viewer shell whose own visible text is
+# 36 characters — "Download ( PDF , 0.82 MB, 56 Pages )". The document is the PDF
+# it embeds, on S3. The crawler resolves each permalink to the PDF, downloads it
+# and stores its extracted text under the section that publishes it.
+#
+# THE HOST THROTTLES BURSTS. Six unpaced requests in one session returned 403 on
+# everything; one paced request 45 seconds later returned 200. This is a rate
+# limit, not a block, and nbr.gov.bh is NOT in skip_hosts — keeping it that way
+# is why `delay: 3.0` is set here and why the crawler backs off 15s on a 403 and
+# never treats one as an answer. A run that cannot get past it RAISES rather than
+# reporting an empty listing.
+
+regulator: "National Bureau for Revenue (NBR)"
+owner: Fakih
+
+# THE FINGERPRINT is the ROW's `content_text` - the section's prose followed by
+# every attached PDF's extracted text - NFKC-normalised, with `document_url|title`
+# as the floor. An amendment to any attached file moves its section's hash.
+#
+# NOT the raw page HTML: every response carries a fresh `<meta name="csrf-token">`,
+# so a body hash moves on every single fetch. Measured 2026-08-31.
+#
+# NOT the S3 ETag either, though every S3 object here does carry one AND a
+# Last-Modified — which is unusual and tempting. Two reasons it is recorded per
+# row (`s3_etag`, `s3_last_modified`) rather than used:
+#   - it moves when NBR re-saves a byte-identical file, which is a false
+#     `modified` and two version rows for a document nobody touched;
+#   - reaching it needs `document_url` to BE the S3 url, and see below.
+#
+# NFKC IS LOAD-BEARING. Decree-Law 48/2018 extracts 31,691 Arabic PRESENTATION
+# FORM characters (U+FB50-FEFF) and the Executive Regulations 66,571. The letters
+# are right and in logical order but the string is a different string, matching
+# neither its own title nor an Arabic search. NFKC folds them; measured 0 after.
+#
+# TWO OF THE SEVEN ATTACHED PDFs DO NOT DECODE, and this is the finding that
+# matters most
+# on this source. Law 33/2021 and Decision 1/2021 are Arabic-only, and their
+# native text layer is a legacy Arabic font with a broken /ToUnicode map. It
+# extracts as LATIN MOJIBAKE:
+#
+#     native   2021 áæ°ùd (33) obQ ¿ƒfÉb
+#     OCR      قانون رقم (33) لسنة 2021
+#
+# It passes EVERY existing gate. `extract_text_from_pdf_smart` reports
+# `ocr_pages: 0` because a text layer is present; `_is_text_broken` looks for
+# U+FFFD and unprintable characters and mojibake is entirely printable Latin-1;
+# `_is_bad_page` sees 1,521 characters and plenty of words. Without the rule
+# below, 2,380 and 5,160 characters of garbage would be stored, fingerprinted,
+# promoted and analysed AS THE TEXT OF A BAHRAINI TAX LAW, with nothing saying so.
+#
+# MLSD's rule does not transfer. Its guard is "no Arabic -> discard", which is
+# safe only because MLSD publishes in Arabic only; NBR publishes in both and that
+# rule would discard three genuinely English documents.
+#
+# THE RULE USED, and it is a separator rather than a tuned threshold. On a page
+# with NO Arabic at all, measure what share of its Latin letters come from the
+# accented Latin-1 / Latin-Extended ranges. Measured across ALL 237 pages of the
+# seven PDFs on 2026-08-31:
+#
+#     genuine English   59 pages    0.000 - 0.002
+#     mojibake           5 pages    0.411 - 0.457
+#     Arabic-bearing   173 pages    0.000 - 0.077
+#
+# Two populations two orders of magnitude apart. Such a page is re-read by OCR;
+# where OCR has no `ara` model it is DROPPED rather than stored, because storing
+# nothing is recoverable — the row keeps its url for a person to open — and
+# storing mojibake is not.
+#
+# THE OTHER FIVE NEED NO OCR AT ALL (`ocr_pages: 0`, genuine native text), so
+# unlike MLSD this source is not OCR-bound. `ara` still matters for the two: see
+# `pdf_reocr_pages` and `pdf_undecoded_pages_dropped` on every entry of each
+# row's `files` list before sending a workbook on.
+
+# ONE ROW IS ONE SECTION OF THE PAGE, NOT ONE PDF.
+#
+# Corrected 2026-09-01 after review. The first version made a row per PDF link
+# and produced seven; the page's actual unit is the `<h2>` SECTION - a heading,
+# the prose describing an instrument, and the file(s) that instrument publishes:
+#
+#   The Unified Agreement for VAT of the GCC   614 ch prose, 826 ch html, 1 PDF
+#   VAT Law                                    765 ch prose, 1,123 ch html, 3 PDFs
+#   VAT Executive Regulations                  482 ch prose, 1,015 ch html, 3 PDFs
+#
+# A fourth `<h2>`, "VAT Law & Regulations", carries 142 characters and no links.
+# It is the page's introduction, not a document, and is deliberately not stored;
+# the crawler reports it as a run warning rather than dropping it silently.
+#
+# THE ROW CARRIES ITS OWN HTML. `document_html` is the SECTION's markup - the
+# prose NBR publishes around its files. Not the landing page and not the viewer
+# shell, which is the LMRA 10.2 fault.
+#
+# `content_text` is the section prose FOLLOWED BY each attached file's extracted
+# text under a heading naming it. The prose alone would leave the law itself out
+# of the library: the orchestrator writes the version row BEFORE it extracts
+# anything of its own (orch.py:869), so text the crawler does not supply is lost.
+
+# IDENTITY, AND WHY IT DIFFERS BY ROW.
+#
+# `models.RegulatoryDocument` sets the contract and `check` enforces it:
+#
+#     exactly one file  ->  document_url = that file, attachment_links empty
+#     more than one     ->  document_url EMPTY, every file in attachment_links
+#
+# So the GCC row (1 PDF) keeps `document_url` and the default identity, and the
+# two 3-PDF rows leave it empty and DECLARE
+# `identity_fields: [doc_path, extra_meta.attachment_links, title]`. Without that
+# declaration every multi-file row in this folder would share ("", doc_path) and
+# collapse onto one another. `orch` honours the choice per document, so single-
+# and multi-file rows coexist in one run.
+#
+# THE STORED FILE URL IS THE PDF, NOT THE `/media/` PAGE. Corrected 2026-09-01:
+# `/media/<slug>` is an Adobe viewer shell with a download button, so a reviewer
+# opening a stored url got a web page rather than the instrument.
+#
+# THE KNOWN COST, which `models.py` already names. The PDF urls are S3 keys that
+# are Laravel upload hashes, so a re-upload produces a NEW key. Under either
+# identity that reads as one `new` plus one `disappeared` rather than `modified`
+# - "the cost of not letting file order name the row". The `/media/` permalink is
+# stable and is kept beside every file as `media_page`, so nothing is lost and a
+# future change of mind has what it needs.
+
+# DEVELOPMENT-ONLY FLAGS, DELIBERATELY ABSENT: `page_cache_dir` and
+# `pdf_cache_dir`, also read from NBR_PAGE_CACHE_DIR / NBR_PDF_CACHE_DIR. A cache
+# serving production is a stale law reporting `unchanged` after an amendment.
+# This config crawls live, every run.
+
+# ONE ENTRY, BECAUSE NBR PUBLISHES ONE VAT LAWS PAGE. The completeness gate
+# groups on extra_meta["crawl_source"] and re-keys per source, so one entry means
+# one baseline of THREE — which is what it should be measured against. If the
+# other pages are ever brought in scope, add ONE ENTRY EACH rather than widening
+# this one: two sections sharing a folder propose each other's documents as
+# withdrawn.
+#
+# `init_kwargs.regulator` is set even though the top-level `regulator:` exists,
+# because for mode: custom `build_source` passes only init_kwargs
+# (generic_crawler_wrapper.py:654); the top-level key reaches the report label,
+# not the stored rows. That is how CMA's stored name and its change_signals.yml
+# entry came to disagree while both looked right.
+sources:
+  - name: "VAT Law and Executive Regulations"
+    mode: custom
+    crawler_class: "crawler.nbr_crawler.NBRLawsCrawler"
+    init_kwargs:
+      regulator: "National Bureau for Revenue (NBR)"
+      source_system: "Laws and Executive Regulations"
+      listing_url: "https://www.nbr.gov.bh/laws_regulations/vat"
+      # The doc_path tier between source_system and the section heading. Excise
+      # and DMTT become sibling folders here, not siblings of the sections.
+      folder_title: "VAT"
+      # The completeness gate's grouping key. NOT a doc_path crumb - it used to
+      # be, which put "VAT Law and Executive Regulations" directly under
+      # "Laws and Executive Regulations" and restated it.
+      listing_title: "VAT Law and Executive Regulations"
+      # A recorded observation of the page, not our chosen title. The guard asks
+      # "has this page moved?", so giving it our own wording would make it warn
+      # on every run about a difference that is permanent and correct.
+      expected_heading: "VAT Law & Regulations"
+      # A FLOOR, NOT THE COUNT. Three sections carry documents; naming 3 would
+      # turn NBR adding a fourth into a crawl failure. Set at 2 so losing a third
+      # of the page fails loudly rather than proposing law for withdrawal.
+      min_sections: 2
+      # This host throttles bursts - see the note at the top of this file.
+      delay: 3.0
+
+# NOT LISTED, DELIBERATELY. Scope was agreed on 2026-08-31 as "VAT Law", which is
+# this page. Everything below is real NBR material outside it, and each is ONE
+# MORE ENTRY above rather than a rethink:
+#
+#   /decisions            NINE decisions under two headings, FOUR of them under
+#     "VAT Related Decisions". Note `decision1_year2021` is CROSS-LISTED — it is
+#     on the VAT page too, so adding this page stores that instrument twice, in
+#     two folders. Identity is (document_url, doc_path, title) so the two rows do
+#     not collide, but a reviewer would see the same decision in two places and
+#     should be told why.
+#   /public_clarifications  SIX VAT public clarifications, on a DIFFERENT url
+#     shape (`/publications/view/<slug>`) that this crawler does not recognise
+#     today. Adding them needs the href pattern widened, not just an entry.
+#   /guidelines_and_publications  FORTY guides and manuals across VAT, Excise and
+#     DMTT. Guidance, not law, and a different page template with no `.blog-main`.
+#   /laws_regulations/excise   SIX documents, and a warning: THREE of them link
+#     RAW S3 URLS instead of `/media/` permalinks. Those urls carry Laravel upload
+#     hashes, so using them as identity would break the version chain the first
+#     time a file is replaced. Onboarding Excise means solving that first.
+#   /laws_regulations/dmtt     TWO documents, all `/media/` permalinks. The
+#     cleanest of the three to add.
+#
+#   /ar/* — NBR renders the whole site in Arabic and Arabic is the authoritative
+#     text in Bahrain. This crawler READS the Arabic listing (for `title_ar`) but
+#     stores the ENGLISH title and the linked PDF, which for four of the seven is
+#     a bilingual file carrying both. It is not a full Arabic mirror of the
+#     corpus, and that remains a known gap.
+#   /announcements, /releases, /infographics, /videos — news, not instruments.

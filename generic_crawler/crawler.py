@@ -3062,7 +3062,8 @@ def expand_tree(page, max_rounds=40):
 def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
           headless=True, wait_ms=700, nav_timeout=60000, strategy="auto",
           group_headings=False, list_details=True, max_details=None,
-          outer_prefix=None, section_name=None, max_widened=60):
+          outer_prefix=None, section_name=None, max_widened=60,
+          exclude_paths=None):
     """`outer_prefix` / `section_name` / `max_widened` drive --follow-section-links.
 
     They are None by default, which leaves prefix scope byte-identical to what it
@@ -3466,6 +3467,8 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                 href = l["href"]
                 if urlparse(href).scheme in ("http", "https") and is_document_link(href, seed_host):
                     dn = normalize_url(href)
+                    if path_excluded(urlparse(dn).path, exclude_paths):
+                        continue          # its files belong to that source too
                     rec_doc = {
                         "title": best_doc_title(l, dn),   # real title/date, not "Download"
                         "doc_url": dn,
@@ -3664,6 +3667,8 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                     continue
                 if DENY_PATH_PAT.search(pu.path) or pu.path in ("/", f"/{lang_lock}"):  # chrome pages
                     continue
+                if path_excluded(pu.path, exclude_paths):
+                    continue          # a subtree another source owns
                 if scope == "prefix" and not pu.path.startswith(seed_prefix):
                     # WIDENED BRANCH (--follow-section-links). A section's own
                     # content does not always live under the section's path.
@@ -4555,6 +4560,10 @@ def main():
                          "it does not count toward --max-pages; this is the cap "
                          "that does (default 60)")
     ap.add_argument("--out", required=True, help="Output directory")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="url path prefix to skip, repeatable. Skips both the "
+                         "page walk and any document under it -- for a subtree "
+                         "another source already owns, e.g. CBE circulars.")
     ap.add_argument("--max-pages", type=int, default=150)
     ap.add_argument("--max-depth", type=int, default=8)
     ap.add_argument("--scope", choices=["auto", "breadcrumb", "prefix", "host"],
@@ -4596,7 +4605,8 @@ def main():
           list_details=not args.no_details,
           max_details=args.max_details or None,
           scope=args.scope, headless=not args.headful, wait_ms=args.wait_ms,
-          strategy=args.strategy, group_headings=args.group_headings)
+          strategy=args.strategy, group_headings=args.group_headings,
+          exclude_paths=args.exclude)
 
     if declared:
         # Appended to the run's own documents list rather than kept in a second

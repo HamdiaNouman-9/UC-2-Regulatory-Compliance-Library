@@ -37,8 +37,8 @@
       "SAMA Circulars"
     ],
     "section_anchor": "sama circulars",
-    "content_text_len": 2831,
-    "n_links": 414,
+    "content_text_len": 2880,
+    "n_links": 415,
     "n_doc_links": 4,
     "doc_section_paths": [
       "SAMA Rulebook > SAMA Circulars"
@@ -104,8 +104,8 @@
       "Laws"
     ],
     "section_anchor": "laws",
-    "content_text_len": 4229,
-    "n_links": 375,
+    "content_text_len": 4043,
+    "n_links": 377,
     "n_doc_links": 23,
     "doc_section_paths": [
       "Home > Laws"
@@ -136,7 +136,7 @@
     "breadcrumb": [],
     "section_anchor": "",
     "content_text_len": 111,
-    "n_links": 263,
+    "n_links": 265,
     "n_doc_links": 0,
     "doc_section_paths": [],
     "profile": {
@@ -167,8 +167,8 @@
       "Laws & Regulations"
     ],
     "section_anchor": "laws & regulations",
-    "content_text_len": 6649,
-    "n_links": 265,
+    "content_text_len": 6634,
+    "n_links": 180,
     "n_doc_links": 36,
     "doc_section_paths": [
       "Capital Market Authority > Laws & Regulations"
@@ -236,7 +236,7 @@
       "Laws and Regulations"
     ],
     "section_anchor": "laws and regulations",
-    "content_text_len": 3032,
+    "content_text_len": 2742,
     "n_links": 156,
     "n_doc_links": 2,
     "doc_section_paths": [
@@ -260,7 +260,7 @@
       "heading_subtitle": false,
       "heading_selector": "",
       "exclude_document_urls": "",
-      "drop_selectors": ".cbe-accessibility-toolbar, .most-searched, .relatedlinks-section, .Image-Container, .ui-helper-hidden-accessible, .hidden.breadcrumbdropdown, section[data-comp-name=\"breadcrumbs\"] .breadcrumbs"
+      "drop_selectors": ".cbe-accessibility-toolbar, .most-searched, .relatedlinks-section, .Image-Container, .ui-helper-hidden-accessible, .hidden.breadcrumbdropdown, .pagenote, section[data-comp-name=\"breadcrumbs\"] .breadcrumbs"
     }
   },
   "rera_regs": {
@@ -306,8 +306,10 @@
     "section_anchor": "private sectors",
     "content_text_len": 17441,
     "n_links": 132,
-    "n_doc_links": 0,
-    "doc_section_paths": [],
+    "n_doc_links": 1,
+    "doc_section_paths": [
+      "Home > Private Sectors"
+    ],
     "profile": {
       "breadcrumb_current": false,
       "breadcrumb_li": false,

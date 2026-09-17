@@ -283,8 +283,10 @@ def load_scheduler_config():
 # import here cannot stop the existing SBP/SECP jobs from being scheduled.
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
                                monitor_cbe, monitor_cbj, monitor_cheap_probes,
-                               monitor_cma, monitor_lloc, monitor_mc,
-                               monitor_mlcu, monitor_rera, monitor_sama,
+                               monitor_cma, monitor_edb, monitor_lloc,
+                               monitor_lmra, monitor_mc, monitor_mlcu,
+                               monitor_mlsd, monitor_justice_canada,
+                               monitor_nbr, monitor_rera, monitor_sama,
                                monitor_sio)
 
 DIRECT_JOB_MAPPING = {
@@ -326,6 +328,17 @@ DIRECT_JOB_MAPPING = {
     # and checked but not yet read or promoted, and this path writes straight to
     # MSSQL. See config/change_signals.yml for why the crawl is its signal.
     "monitor_cbj": monitor_cbj,
+    # ---- Bahrain, onboarded on feature/crawler-dev-fakih, merged 2026-08-28 ---- #
+    # Same rule as the three above: all three ship DISABLED in
+    # config/scheduler.yml until a person has read their workbook.
+    "monitor_edb": monitor_edb,
+    "monitor_mlsd": monitor_mlsd,
+    "monitor_lmra": monitor_lmra,
+    "monitor_nbr": monitor_nbr,
+    # Canada's first. Same rule: DISABLED in config/scheduler.yml until a person
+    # has read its workbook. Its signal is a cheap probe, so once it is trusted
+    # the better home is CHEAP_PROBE_SOURCES and this entry goes away.
+    "monitor_justice_canada": monitor_justice_canada,
 }
 
 API_JOB_MAPPING = {
@@ -356,6 +369,11 @@ API_JOB_MAPPING = {
     "monitor_sio": lambda: trigger_monitor_via_api("monitor_sio"),
     "monitor_lloc": lambda: trigger_monitor_via_api("monitor_lloc"),
     "monitor_cbj": lambda: trigger_monitor_via_api("monitor_cbj"),
+    "monitor_edb": lambda: trigger_monitor_via_api("monitor_edb"),
+    "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),
+    "monitor_lmra": lambda: trigger_monitor_via_api("monitor_lmra"),
+    "monitor_nbr": lambda: trigger_monitor_via_api("monitor_nbr"),
+    "monitor_justice_canada": lambda: trigger_monitor_via_api("monitor_justice_canada"),
 }
 
 # Choose which mode to use (set via environment variable or hardcode)

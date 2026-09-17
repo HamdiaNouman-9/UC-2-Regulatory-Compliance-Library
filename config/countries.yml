@@ -81,4 +81,18 @@ countries:
     - "Real Estate Regulatory Authority (RERA)"
     - "Social Insurance Organisation (SIO)"
     - "Legislation and Legal Opinion Commission (LLOC)"
+    # NBR onboarded 2026-08-31. Listed at onboarding rather than at promote:
+    # an unlisted regulator keeps its folders at the TREE ROOT, and nothing
+    # else complains because every document is otherwise correct.
+    - "National Bureau for Revenue (NBR)"
+
+  # Canada's first entry, onboarded 2026-09-09.
+  #
+  # ONE REGULATOR, NOT ONE PER ACT. The client list names each Act separately
+  # (Bankruptcy and Insolvency, Canadian Payments, Auditor General, Income Tax,
+  # ...) but all nine of its federal Acts are published by ONE publisher, the
+  # Justice Laws Website. They are one crawler and one regulator, with each Act
+  # its own source entry and its own folder in config/sources/justice_canada.yml.
+  "Canada":
+    - "Department of Justice Canada (JUS)"
 

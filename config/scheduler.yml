@@ -332,6 +332,94 @@ jobs:
       hour: 13
       minute: 0
 
+  # EDB (BAHRAIN) — 72 requests: 8 category pages plus 64 law pages. Every
+  # cheaper signal was measured and ruled out; see the change_signals.yml entry.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. This path writes straight
+  # to MSSQL, so enabling it before the review would make the first scheduled run
+  # be the ingest. Turn it on after the workbook is approved and promoted.
+  #
+  # Moved to 18:00 (was 13:00): that slot collided with monitor_cbj, added
+  # independently on the jordan-regulators branch. Resolved at merge time,
+  # 2026-09-17.
+  monitor_edb:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 18
+      minute: 0
+
+  # MLSD (BAHRAIN) — 31 requests, but most of the wall time is OCR: 28 Arabic
+  # PDFs, seventeen of which need it on some or all pages. Every cheaper signal
+  # was measured and ruled out; see the change_signals.yml entry.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. This path writes straight
+  # to MSSQL, so enabling it before the review would make the first scheduled run
+  # be the ingest. Turn it on after the workbook is approved and promoted.
+  monitor_mlsd:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 14
+      minute: 0
+
+  # LMRA (BAHRAIN) — 97 requests: 6 landing/listing pages, 44 instrument pages
+  # and the 47 article sub-pages that make up LMRA Law. Almost all HTML, so it is
+  # network-bound rather than OCR-bound and runs far quicker than MLSD despite
+  # the larger request count.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. This path writes straight
+  # to MSSQL, so enabling it before the review would make the first scheduled run
+  # be the ingest. Turn it on after the workbook is approved and promoted.
+  monitor_lmra:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 15
+      minute: 0
+
+  # NBR (BAHRAIN) - THREE rows (one per <h2> section of the VAT page, carrying
+  # seven PDFs between them). 18 requests and ~3.9 MB: two language switches, the VAT
+  # listing read in Arabic then English, seven `/media/` permalink pages and
+  # seven PDF downloads. Paced at 3s because this host throttles bursts with 403.
+  # Five pages across two PDFs need OCR because their text layer does not decode,
+  # so it is neither purely network-bound nor OCR-heavy - a few minutes.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. This path writes straight
+  # to MSSQL, so enabling it before the review would make the first scheduled run
+  # be the ingest. Turn it on after the workbook is approved and promoted.
+  monitor_nbr:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 16
+      minute: 0
+
+  # JUSTICE CANADA - FOUR Acts, and a CHEAP PROBE rather than a crawl: four HEAD
+  # requests against `/eng/XML/<CODE>.xml` to detect, and a crawl of the Act
+  # itself only for the ones whose file moved. Seconds, not minutes.
+  #
+  # WEEKLY IS DELIBERATE AND MATCHES THE PUBLISHER. Justice re-cuts its
+  # consolidation roughly monthly and publishes it weeks later — B-3's June 21
+  # currency date reached the site on August 20. There is nothing daily to catch.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. A detected change crawls
+  # straight to MSSQL, so enabling it before the review would make the first
+  # scheduled run be the ingest. Turn it on after the workbook is approved and
+  # promoted — and at that point prefer moving the source into
+  # CHEAP_PROBE_SOURCES and deleting this slot, so it is swept once, not twice.
+  monitor_justice_canada:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 17
+      minute: 0
+
   # ----------------------------------------------------------
   # NO JOB FOR Saudi Exchange OR SIMAH — deliberately.
   #

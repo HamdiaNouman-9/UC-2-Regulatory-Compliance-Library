@@ -73,6 +73,30 @@ MIN_PAGE_TEXT = 200
 # "Chapter 3: Monetary Policy" (10 characters, one child) looks the same.
 MIN_LEAF_TEXT = 50
 
+# A page whose visible text is its own title plus a date stamp and nothing else
+# is a wrapper around the file it links, not a document. See
+# GenericSiteCrawler._is_link_wrapper for the CBE case this was measured on.
+#
+# MEASURED over all 92 CBE HTML pages, 2026-08-20, residue after removing the
+# page's own title and its date stamp:
+#
+#       0   CBE Risk Appetite Statement   <- the wrapper, the only one under 40
+#      47   Laws
+#      94   Governance
+#      98   Payment Acceptance Channels
+#     103   Regulations Book
+#
+# So the real gap is 0 -> 47, not the comfortable one a first look at a single
+# section suggested. 20 sits in the middle of that gap and still catches the
+# target with room to spare; 40 would have left a 7-character margin against a
+# real page, which is not a margin at all.
+#
+# Do NOT raise this to catch "nearly empty" pages. The rule keys on residue
+# precisely so it cannot become a length rule — MIN_LEAF_TEXT exists because
+# SAMA's "Article 3" is 184 characters of actual law, and a generous threshold
+# here would start eating documents like it.
+WRAPPER_RESIDUE_CHARS = 20
+
 
 # ---- reading the listing row -------------------------------------------------
 # A listing row carries what the detail page usually does not repeat:
@@ -88,6 +112,17 @@ _DATE_PATTERNS = [
     re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"),                          # 2026-07-06
     re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"),                      # 06/07/2026
 ]
+# The date the CMS prints under the heading on every page ("13 Aug 2026",
+# "23 Mar 2023", "2026-08-13", "13/08/2026"). Removed before judging residue, so
+# a wrapper is not saved from the rule by the template's own furniture.
+_PAGE_DATE_STAMP_RE = re.compile(
+    rf"\b(?:\d{{1,2}}\s+(?:{_MONTH})\s+\d{{4}}"
+    rf"|(?:{_MONTH})\s+\d{{1,2}},?\s+\d{{4}}"
+    rf"|\d{{4}}-\d{{2}}-\d{{2}}"
+    rf"|\d{{1,2}}/\d{{1,2}}/\d{{4}})\b",
+    re.I,
+)
+
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun",
      "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
@@ -336,6 +371,14 @@ class GenericSiteCrawler:
         max_depth: int = 8,
         out_dir: Optional[str] = None,
         include_pages: str = "auto",      # "auto" | "always" | "never"
+        # URL path prefixes this source must NOT walk or collect files from,
+        # because another source already owns them. CBE's laws-regulations is
+        # the case: it can only be crawled from its parent (the
+        # regulations-book page links to nothing), and the parent's prefix scope
+        # then swallows /regulations/circulars -- 396 documents the API source
+        # already holds with real titles and dates. See
+        # generic_crawler/crawler.py::path_excluded.
+        exclude_paths: Optional[List[str]] = None,
         wait_ms: Optional[int] = None,    # per-site JS settle time
         in_process: bool = False,
         timeout: int = 3600,
@@ -359,6 +402,7 @@ class GenericSiteCrawler:
         self.max_depth = max_depth
         self.out_dir = out_dir
         self.include_pages = include_pages
+        self.exclude_paths = list(exclude_paths or [])
         # How long to let JavaScript settle before reading the page. The engine
         # has always accepted --wait-ms; nothing passed it, so every site got the
         # default. ZATCA's landing page renders its links client-side and read at
@@ -573,7 +617,7 @@ class GenericSiteCrawler:
             kw = {"wait_ms": self.wait_ms} if self.wait_ms else {}
             crawl(self.seed_url, str(out), max_pages=self.max_pages,
                   max_depth=self.max_depth, scope=self.scope,
-                  strategy=self.strategy, **kw)
+                  strategy=self.strategy, exclude_paths=self.exclude_paths, **kw)
         else:
             cmd = [sys.executable, str(ENGINE),
                    "--url", self.seed_url, "--out", str(out),
@@ -581,6 +625,8 @@ class GenericSiteCrawler:
                    "--max-pages", str(self.max_pages),
                    "--max-depth", str(self.max_depth),
                    "--strategy", self.strategy]
+            for ex in (self.exclude_paths or []):
+                cmd += ["--exclude", str(ex)]
             if self.wait_ms:
                 cmd += ["--wait-ms", str(self.wait_ms)]
             proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -778,6 +824,58 @@ class GenericSiteCrawler:
         # the single synthetic page row has no text and must not become a document.
         return any((p.get("text_len") or 0) >= self.min_page_text for p in pages)
 
+    @staticmethod
+    def _is_link_wrapper(r: dict) -> bool:
+        """A page that is only a heading and a download link — not a document.
+
+        MEASURED 2026-08-20 on CBE. `/en/governance/risk-management-information-
+        security/cbe-risk-appetite-statement` is a title, a date stamp and one
+        link, and CBE labelled the link with the SAME words as the heading. So
+        the crawl recorded TWO documents:
+
+            title "CBE Risk Appetite Statement"  url .../cbe-risk-appetite-statement       (the page)
+            title "CBE Risk Appetite Statement"  url .../...-statement-english.pdf         (the file)
+
+        Same title, same doc_path, so `find_existing` merged them onto one row —
+        which has ONE content_hash slot and two documents checking against it.
+        Whichever hash is stored, the other document mismatches, so the row
+        reported `modified` on a run where nothing had changed and wrote a
+        version byte-identical to its predecessor. Left alone that is one false
+        change and one junk version row per run, for ever, in the report a person
+        reads to find REAL changes.
+
+        THE RULE IS RE-EVALUATED EVERY RUN, deliberately, and is not a blocklist.
+        The day CBE puts real prose on that page it stops matching here and is
+        recorded as a document again. A hardcoded url exclusion would make the
+        page invisible for ever, which is a worse failure than the one it fixes.
+
+        NOTHING STOPS BEING CRAWLED. `pages` (everything walked) and `documents`
+        (what is recorded) are separate lists; this only decides whether a page
+        graduates into the second. The page is still opened every run, so a NEW
+        file appearing on it is still found and still recorded — which is the
+        only way the file below was ever discovered.
+
+        Scoped tightly on purpose:
+          * `n_pdfs >= 1` — a page linking no file cannot be a wrapper around one
+          * keys on RESIDUE, never on length. `MIN_LEAF_TEXT` exists because
+            SAMA's "Article 3" is 184 characters of real law; a length rule would
+            throw that away.
+        """
+        if not (r.get("n_pdfs") or 0):
+            return False
+        text = " ".join((r.get("text") or "").split())
+        if not text:
+            return False              # the length rules below already judge this
+        residue = text
+        title = " ".join((r.get("title") or "").split())
+        if title:
+            # `replace`, not a single strip: the CMS prints the heading once and
+            # the link label once, and here they are the same string.
+            residue = residue.replace(title, " ")
+        residue = _PAGE_DATE_STAMP_RE.sub(" ", residue)
+        residue = " ".join(residue.split())
+        return len(residue) < WRAPPER_RESIDUE_CHARS
+
     def _page_is_document(self, r: dict) -> bool:
         """Is this page a document, or just a folder in the site's tree?
 
@@ -785,6 +883,8 @@ class GenericSiteCrawler:
         reported how many children a page has, trust that: a leaf is content, a
         page with children is a folder whose content lives underneath it.
         """
+        if GenericSiteCrawler._is_link_wrapper(r):
+            return False
         text_len = r.get("text_len") or 0
         if text_len >= self.min_page_text:
             return True
@@ -1186,6 +1286,7 @@ def build_source(cfg: dict):
         regulator=cfg["regulator"],
         source_system=cfg["source_system"],
         category=cfg.get("category"),
+        exclude_paths=cfg.get("exclude") or [],
         scope=cfg.get("scope", "auto"),
         max_pages=int(cfg.get("max_pages", 150)),
         max_depth=int(cfg.get("max_depth", 8)),
@@ -1239,6 +1340,21 @@ def build_regulator_crawler(config: dict, only_sources=None):
     if not sources:
         raise ValueError(f"{regulator}: config lists no sources. If that is "
                          f"deliberate, say so in `disabled:`")
+
+    # RUN ONLY SOME OF A REGULATOR'S SOURCES, by `name`.
+    #
+    # LLOC is why: config/sources/lloc.yml holds four sources of very different
+    # cost -- "Latest Legislation" is 144 records in ~40 seconds, while
+    # "Legislation By Classification" is 1,583 documents over 2,838 seconds. A
+    # nightly job wants the first and not the third.
+    #
+    # DANGEROUS WHERE SOURCES SHARE A source_system. `disappeared` is scoped on
+    # (regulator, source_system), so running a subset of sources that share one
+    # leaves the others' stored documents absent from a run that still claims
+    # that bucket -- and only the completeness gate stands between that and a
+    # withdrawal proposal. SIO is exactly that shape (ten sources, two
+    # source_systems) and deliberately does NOT narrow. Use this only where the
+    # narrowed sources own their source_system outright.
     if only_sources:
         wanted = {str(x).strip().lower() for x in only_sources}
         kept = [s for s in sources
@@ -1253,6 +1369,22 @@ def build_regulator_crawler(config: dict, only_sources=None):
                 f"crawl that silently covers less than asked.")
         sources = kept
 
+    # A REGULATOR-LEVEL `exclude:` APPLIES TO EVERY SOURCE, and a source may add
+    # its own. Both lists are used; neither replaces the other.
+    #
+    # MEASURED 2026-08-26 on CBE: the exclude was first written per-source, on
+    # `Laws and Regulations`, because that is where the duplication was reported.
+    # The re-export then leaked 11 circular pdfs through `Payment Systems and
+    # Services` instead -- 9 of them files the Circulars API source already held,
+    # and 3 pairs pointing at ONE file titled after whichever page linked it
+    # ("Payment Cards", "Mobile Wallets", "Introduction").
+    #
+    # A subtree owned by another source is a fact about the REGULATOR, not about
+    # one of its sources: any section page may link into it. Scoping the rule to
+    # the source where the problem was first noticed fixes the example and leaves
+    # the class.
+    regulator_exclude = list(config.get("exclude") or [])
+
     built, options = [], []
     for src in sources:
         merged = dict(src)
@@ -1263,6 +1395,8 @@ def build_regulator_crawler(config: dict, only_sources=None):
             merged.setdefault("exclude_documents", config["exclude_documents"])
         if config.get("doc_path_sections") is not None:
             merged.setdefault("doc_path_sections", config["doc_path_sections"])
+        if regulator_exclude:
+            merged["exclude"] = regulator_exclude + list(merged.get("exclude") or [])
         built.append(build_source(merged))
         options.append(_source_options(src, config))
     return CompositeCrawler(built, options)

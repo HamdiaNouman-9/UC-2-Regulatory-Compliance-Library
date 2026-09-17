@@ -1,0 +1,143 @@
+# EDB — Bahrain's business laws. CUSTOM, like MOH and MLCU.
+#
+# A law here is an HTML PAGE, not a file: no PDFs anywhere on this site, so no
+# OCR and no extractor. The page text IS the instrument, and the crawler stores
+# it because the orchestrator writes the version row before extracting anything.
+#
+#   Measured 2026-08-19, cached in UC-2-Scratch/EDB/edb_cache/. 64 laws across
+#   eight categories: 13/6/11/6/6/9/3/10, which partitions /all-laws/all-laws
+#   exactly — no law in two categories, none orphaned.
+#
+# NO ETag, NO Last-Modified, NO robots.txt or sitemap.xml (both 404), no 304 on a
+# conditional GET, and HEAD returns no Content-Length at all. Every cheap signal
+# was measured and ruled out, so this source is `signal: crawl`. Full
+# measurements on the change_signals.yml entry.
+#
+# IDENTITY IS THE DEFAULT, deliberately. document_url, doc_path and title are all
+# 100% present and unique across the 64 (measured), the slugs carry no version
+# suffix, and nothing here behaves like MLCU's `_v2` filename. So no `identity:`
+# key — which also means change_signals.yml has nothing to keep in step.
+
+regulator: "Bahrain Economic Development Board (EDB)"
+owner: Fakih
+
+# THE FINGERPRINT is the law's visible page text, NFKC-normalised.
+#
+# Both a raw-body hash and a text hash are stable here — three fetches a second
+# apart returned byte-identical bodies, so unlike MLCU there is no per-request
+# token to defeat. Text is still the basis, for the reason the onboarding doc
+# gives: raw HTML moves whenever EDB redeploys a template, which would report all
+# 64 laws modified for a footer change.
+#
+# NFKC folds the U+00A0 no-break spaces this CMS emits (63 of 64 laws contain
+# some) so a template toggling `&nbsp;` cannot move a fingerprint on its own.
+# This is NOT MLCU's Arabic presentation-forms problem — nothing here is
+# mis-encoded, and the fold is cosmetic.
+#
+# Amendments land IN the text: "Treatment of GCC Nationals Law" opens with its own
+# amendment list, so a text hash sees an amendment directly.
+
+# DEVELOPMENT-ONLY FLAG, DELIBERATELY ABSENT: `page_cache_dir`, also read from
+# EDB_PAGE_CACHE_DIR. A cache serving production is a stale law reporting
+# `unchanged` after an amendment. This config crawls live, every run.
+
+# EIGHT ENTRIES, NOT ONE CRAWLER WALKING EIGHT. The completeness gate groups on
+# extra_meta["crawl_source"] and re-keys per source, so eight categories inside
+# one class would share ONE baseline and be measured against another category's
+# count — the ZATCA pathology, which quarantines every run. Eight sources also
+# give each category its own folder, which is what scopes `disappeared`.
+#
+# `init_kwargs.regulator` is set on EVERY entry because for mode: custom
+# build_source passes only init_kwargs; the top-level `regulator:` reaches the
+# report label, not the stored rows. That is how CMA's stored name and its
+# change_signals.yml entry came to disagree while both looked right.
+sources:
+  - name: "Commercial Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "commercial-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/commercial-laws"
+      category_title: "Commercial Laws"
+
+  - name: "Financial Services Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "financial-services-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/financial-services-laws"
+      category_title: "Financial Services Laws"
+
+  - name: "Industrial, Logistic Services, Transportation & Telecommunication Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "industrial-logistic-services-transportation-telecommunication-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/industrial-logistic-services-transportation-telecommunication-laws"
+      category_title: "Industrial, Logistic Services, Transportation & Telecommunication Laws"
+
+  - name: "Real Estate Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "real-estate-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/real-estate-laws"
+      category_title: "Real Estate Laws"
+
+  - name: "Labour Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "labour-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/labour-laws"
+      category_title: "Labour Laws"
+
+  - name: "Intellectual Property Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "intellectual-property-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/intellectual-property-laws"
+      category_title: "Intellectual Property Laws"
+
+  - name: "Digital Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "digital-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/digital-laws"
+      category_title: "Digital Laws"
+
+  - name: "Other Laws"
+    mode: custom
+    crawler_class: "crawler.edb_crawler.EDBCrawler"
+    init_kwargs:
+      regulator: "Bahrain Economic Development Board (EDB)"
+      source_system: "Bahrain Business Laws"
+      category_slug: "other-laws"
+      category_url: "https://bahrainbusinesslaws.com/all-laws/other-laws"
+      category_title: "Other Laws"
+
+# NOT LISTED, DELIBERATELY:
+#   /all-laws/all-laws is the index of all 64 and would duplicate every row in
+#     the eight category folders. It is useful as a DISCOVERY cross-check — one
+#     request naming every law — not as a stored source.
+#   /constitution and /chief-executive-message are not business laws.
+#   /all-laws-ar/* is a COMPLETE ARABIC MIRROR of all eight categories. Arabic is
+#     the authoritative text in Bahrain and English is a translation, so this is a
+#     real gap, not an oversight — it was scoped out on 2026-08-19 and doubles the
+#     corpus to 128. Adding it is eight more entries here, not a rethink.

@@ -42,7 +42,7 @@
 # scopes by regulator and would have found no rows under the short name.
 # Corrected 2026-08-20, before any such run.
 regulator: "Saudi Credit Bureau (SIMAH)"
-owner: ai.team
+owner: Fakih
 
 # Read by build_regulator_crawler, which refuses rather than composing an empty
 # crawl. Delete this key to enable, once both gates at the top of this file are

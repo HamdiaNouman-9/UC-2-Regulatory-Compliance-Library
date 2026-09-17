@@ -21,7 +21,7 @@
 # its scheduler slot is `enabled: false` until a person has read the workbook.
 
 regulator: "Egyptian Anti-Money Laundering and Counter-Terrorism Financing Unit (MLCU)"
-owner: ai.team
+owner: Fakih
 
 # `_v2` IS ALREADY IN THE WILD — 3144 holds `قانون مكافحة الارهاب_v2.pdf`. Under
 # the default identity (document_url, doc_path, title) a `_v3` re-upload changes

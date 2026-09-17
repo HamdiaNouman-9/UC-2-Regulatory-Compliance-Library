@@ -169,6 +169,18 @@ CHEAP_PROBE_SOURCES = [
     # see the entry in config/change_signals.yml for why.
     ("REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013",
      "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"),
+    # JUSTICE CANADA IS NOT HERE YET, AND THAT IS THE POINT. Its signal IS
+    # `stored-inventory` (config/change_signals.yml has the measurements), so
+    # this list is where it belongs once it is trusted — but this job is DAILY
+    # and ENABLED, and a target it finds goes through `_crawl_into_db`, which
+    # writes STRAIGHT TO MSSQL. Adding it before a person has read the workbook
+    # would make the first scheduled run be the ingest.
+    #
+    # It runs as `monitor_justice_canada` below instead: the same sweep, on a
+    # slot that ships `enabled: false`. AFTER the workbook is approved and
+    # promoted, move it here as
+    #     ("Department of Justice Canada (JUS)", "Consolidated Acts"),
+    # and delete that job — do not leave both, or the source gets swept twice.
 ]
 
 #: Regulator -> (crawler name, is_form) for the sources whose crawl IS the
@@ -272,6 +284,30 @@ CRAWL_AS_SIGNAL = {
     # measurement for all four alternatives, including why stored-inventory is
     # ruled out on evidence rather than on availability: it genuinely works here.
     "Central Bank of Jordan (CBJ)": ("cbj", False),
+    #: EDB joined 2026-08-19. Every cheaper signal was measured and ruled out —
+    #: no ETag, no Last-Modified, no sitemap or robots.txt (both 404), no 304 on
+    #: a conditional GET, and a HEAD that returns no Content-Length at all. Full
+    #: measurements on the change_signals.yml entry.
+    "Bahrain Economic Development Board (EDB)": ("edb", False),
+    #: MLSD joined 2026-08-20. No ETag or Last-Modified anywhere, no robots.txt
+    #: or sitemap (both 404). Content-Length IS returned on every PDF, but
+    #: `dynamic_crawler/fingerprint.py` reads only ETag then Last-Modified, so a
+    #: probe would report zero changes forever rather than none. Full
+    #: measurements on the change_signals.yml entry.
+    "Ministry of Labour and Social Development (MLSD)": ("mlsd", False),
+    #: LMRA joined 2026-08-20. No ETag; Last-Modified only on the static files
+    #: under /files/cms/, which back 3 of its 46 documents — not enough to carry
+    #: a probe. No robots.txt or sitemap (both 404), and the listings badge a
+    #: POSTING date, not the instrument's.
+    "Labour Market Regulatory Authority (LMRA)": ("lmra", False),
+    #: NBR joined 2026-08-31, and it is the rare case where a cheap signal EXISTS
+    #: and is still refused. Every S3 object behind its documents carries an ETag
+    #: and a Last-Modified — but reaching them needs document_url to be the S3
+    #: url, whose key is a Laravel upload hash that ROTATES when a file is
+    #: replaced. That breaks the version chain, and the sweep would then go on
+    #: probing the orphaned old key and report `unchanged` forever. Full
+    #: measurements on the change_signals.yml entry.
+    "National Bureau for Revenue (NBR)": ("nbr", False),
 }
 
 
@@ -887,6 +923,178 @@ def monitor_cbj() -> dict:
     logger.info("Central Bank of Jordan (CBJ): %s", rep)
     return {"Central Bank of Jordan (CBJ)": rep}
 
+
+def monitor_edb() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: this
+    path writes straight to MSSQL, and EDB has never been reviewed.
+    """
+    return _run_exclusive("monitor_edb", _monitor_edb_impl)
+
+
+def _monitor_edb_impl() -> dict:
+    # 8 category pages plus 64 law pages. A confirming probe would cost 64 of
+    # those 72 requests and still could not discover a law we do not hold.
+    res = _crawl_into_db("edb", False, timeout=5400)
+
+    # One more request, against the site's own index of all 64. The completeness
+    # gate compares each category to its own last count and so only catches a
+    # LARGE drop; this catches a one-law drop, and also sees a law ADDED, which
+    # no probe over stored rows can. Rows are already written by here, but every
+    # one arrives with status='' and waits for a person.
+    from crawler.edb_crawler import index_slugs, inventory_fingerprint
+    try:
+        index = index_slugs()
+        res["inventory_index"] = len(index)
+        res["inventory_fingerprint"] = inventory_fingerprint(index)
+        res["inventory_verdict"] = "OK" if len(index) == res.get("crawled") else "MISMATCH"
+        if res["inventory_verdict"] == "MISMATCH":
+            logger.error("EDB inventory mismatch: index lists %d law(s), crawl "
+                         "produced %s — review before approving any row",
+                         len(index), res.get("crawled"))
+    except Exception as e:
+        # A failed cross-check must not be reported as a passed one.
+        res["inventory_verdict"] = f"UNCHECKED: {e}"
+        logger.warning("EDB inventory check did not run: %s", e)
+
+    logger.info("EDB: %s", res)
+    return res
+
+
+def monitor_mlsd() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: this
+    path writes straight to MSSQL, and MLSD has never been reviewed.
+    """
+    return _run_exclusive("monitor_mlsd", _monitor_mlsd_impl)
+
+
+def _monitor_mlsd_impl() -> dict:
+    # 31 requests: the listing read twice (Arabic, then English — the order is
+    # load-bearing) plus 29 document fetches. Most of the wall time is OCR, not
+    # network — 28 Arabic PDFs, seventeen of which need it on some or all pages.
+    res = _crawl_into_db("mlsd", False, timeout=5400)
+
+    # WHETHER ARABIC OCR WAS ACTUALLY AVAILABLE, recorded on the run rather than
+    # assumed. Without `ara`, nine of these PDFs return Latin transliteration
+    # noise at zero Arabic characters, which the crawler discards — so the run
+    # would write nine documents with no text and look otherwise normal. This job
+    # reaches OCR through `_repo()`, which loads `.env`, so the languages ARE
+    # configured here; the check is what proves it on the day that changes.
+    try:
+        from processor.Text_Extractor import OCRProcessor
+        langs = OCRProcessor.ocr_langs()
+        res["ocr_langs"] = langs
+        if "ara" not in langs.split("+"):
+            logger.error("MLSD crawled with ocr_langs=%r — 'ara' is missing, so "
+                         "scanned Arabic PDFs stored NO text. Fix the tesseract "
+                         "language setup in .env and re-run before approving any "
+                         "row.", langs)
+    except Exception as e:
+        res["ocr_langs"] = f"UNCHECKED: {e}"
+        logger.warning("MLSD OCR language check did not run: %s", e)
+
+    logger.info("MLSD: %s", res)
+    return res
+
+
+def monitor_lmra() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: this
+    path writes straight to MSSQL, and LMRA has never been reviewed.
+    """
+    return _run_exclusive("monitor_lmra", _monitor_lmra_impl)
+
+
+def _monitor_lmra_impl() -> dict:
+    # 97 requests: 6 landing/listing pages, 44 instrument pages and the 47
+    # article sub-pages that make up LMRA Law, plus 2 PDF downloads. The article
+    # walk is what lets an article amended IN PLACE move the law's fingerprint.
+    res = _crawl_into_db("lmra", False, timeout=5400)
+    logger.info("LMRA: %s", res)
+    return res
+
+
+def monitor_justice_canada() -> dict:
+    """WEEKLY, AND OFF. A cheap probe, not a crawl — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: a
+    detected change crawls straight into MSSQL, and this source has never been
+    reviewed. Once it is, this job's job is done — see CHEAP_PROBE_SOURCES.
+    """
+    return _run_exclusive("monitor_justice_canada", _monitor_justice_canada_impl)
+
+
+def _monitor_justice_canada_impl() -> dict:
+    # FOUR requests to detect, because there are four documents and the probe is
+    # one HEAD per stored url against `/eng/XML/<CODE>.xml`. A crawl follows only
+    # for the Acts whose file actually moved, and costs 2 requests per Act (the
+    # landing page, then the XML) — ~1.3 MB for B-3, under 100 KB for A-17 and
+    # F-3.3.
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    regulator = "Department of Justice Canada (JUS)"
+    source = "Consolidated Acts"
+    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
+    rep = _sweep(regulator, source, tf)
+    targets = [l.strip() for l in
+               (tf.read_text(encoding="utf-8").splitlines()
+                if tf.exists() else []) if l.strip()]
+    out = {"counts": rep.get("counts", {}), "targets": len(targets),
+           "seconds": rep.get("_seconds")}
+    # `new` on a detect-only sweep means "first time swept", not a new document,
+    # so it must not pull a crawl — same rule as monitor_cheap_probes.
+    if targets:
+        out["crawl"] = _crawl_into_db("justice_canada", False)
+    logger.info("Justice Canada: %s", out)
+    return out
+
+
+def monitor_nbr() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: this
+    path writes straight to MSSQL, and NBR has never been reviewed.
+    """
+    return _run_exclusive("monitor_nbr", _monitor_nbr_impl)
+
+
+def _monitor_nbr_impl() -> dict:
+    # 18 requests: two language switches, the listing read twice (Arabic then
+    # English — the order is load-bearing, the language is in the session), seven
+    # `/media/` permalink pages and seven PDF downloads, about 3.9 MB. Paced at
+    # 3s because this host throttles bursts with 403.
+    #
+    # THREE rows, not seven: one per `<h2>` section of the page, each carrying
+    # its own HTML and its attached PDFs. Reshaped on review 2026-09-01.
+    res = _crawl_into_db("nbr", False, timeout=3600)
+
+    # WHETHER ARABIC OCR WAS ACTUALLY AVAILABLE, recorded on the run rather than
+    # assumed. Five pages across two of NBR's PDFs carry a text layer that
+    # decodes to Latin mojibake; the crawler re-reads them by OCR, and without
+    # `ara` it DROPS them instead — so those two instruments would arrive with
+    # most of their text missing and the run would otherwise look normal.
+    try:
+        from processor.Text_Extractor import OCRProcessor
+        langs = OCRProcessor.ocr_langs()
+        res["ocr_langs"] = langs
+        if "ara" not in (langs or "").split("+"):
+            logger.error("NBR: tesseract has no 'ara' model (langs=%r). The two "
+                         "Arabic-only instruments will be stored with their "
+                         "undecodable pages dropped.", langs)
+    except Exception as e:                       # pragma: no cover
+        logger.warning("NBR: could not read OCR languages: %s", e)
+
+    logger.info("NBR: %s", res)
+    return res
 
 
 def _forms_for(regulator: str) -> list:
