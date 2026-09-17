@@ -1,0 +1,61 @@
+# KDIPA — Kuwait Direct Investment Promotion Authority
+#
+# ONE INSTRUMENT, DECLARED RATHER THAN CRAWLED
+# --------------------------------------------
+# The document is a single PDF on kdipa.gov.kw. There is no index worth walking
+# to reach it, so it is named here and fingerprinted at run time rather than
+# rediscovered by a browser on every crawl.
+#
+# ---------------------------------------------------------------------------
+# THE TITLE THIS WAS ONBOARDED WITH DID NOT MATCH THE FILE
+# ---------------------------------------------------------------------------
+# It was handed over as "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME
+# JUNE 2013". VERIFIED 2026-09-07 by downloading and reading it -- 278,990
+# bytes, 30 pages -- page 2 opens:
+#
+#     KDIPA Law
+#     Law No. 116 of 2013
+#     Regarding the Promotion of Direct Investment in the State of Kuwait
+#
+# and the body runs through Article 1 definitions of Capital, Investment
+# Entity, and the Authority. That is direct-investment promotion law, not a
+# collective investment scheme regulation, and the filename (law1162013.pdf)
+# agrees with the document rather than with the handed-over title.
+#
+# RAISED AND OVERRULED, 2026-09-07. The onboarding sheet carries the same
+# pairing -- row 9 names the framework "REGULATION GOVERNING COLLECTIVE
+# INVESTMENT SCHEME JUNE 2013" against this exact url -- so the name below is
+# the sheet's, as instructed, and this note is the record of what the file
+# actually contains.
+#
+# The document TITLE is left as the document's own, because a title is a third
+# of the default identity and it is what a reviewer reads in the `status = ''`
+# queue when deciding whether the library holds the instrument they wanted. Say
+# the word if you want the title aligned to the sheet as well.
+#
+# If a Collective Investment Scheme regulation is a separate instrument, it
+# needs its own url and its own entry.
+#
+# ---------------------------------------------------------------------------
+# THE FINGERPRINT
+# ---------------------------------------------------------------------------
+# MEASURED on the same download: no ETag, but `Last-Modified: Sun, 29 Aug 2021
+# 05:26:19 GMT`. `stamp_declared` hashes on that, which is ONBOARDING's
+# second-preference basis -- a publisher's own change stamp -- so replacing the
+# file on the server WILL be detected. `extra_meta.hash_basis` records which
+# basis was used on each run, so a silent downgrade to url|title is visible.
+# NAME TAKEN FROM THE ONBOARDING SHEET, column "Regulator / Framework",
+# row 9. It names a framework rather than an authority; that is the
+# library's chosen key for this source and is used verbatim.
+regulator: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+owner: lead
+
+sources:
+  - name: "Regulations"
+    mode: declared
+    regulator: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    source_system: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    # <title> :: <url>  -- no section, so doc_path is
+    # [regulator, source_system, title] with no redundant folder crumb.
+    documents:
+      - "Law No. 116 of 2013 Regarding the Promotion of Direct Investment in the State of Kuwait :: https://kdipa.gov.kw/wp-content/uploads/2021/08/law1162013.pdf"

@@ -800,5 +800,229 @@ sources:
   # RECONCILED 2026-08-14 with the form, which now stores the full name and the
   # acronym. Both halves of the pair name the source.
 
+  # PDPA (Bahrain), both sources. MEASURED 2026-08-31, and `crawl` here is not
+  # the fallback it usually is -- it is the CHEAPEST question available, because
+  # each source is ONE page load (both are max_pages: 1 in config/sources/pdpa.yml).
+  #
+  #   sitemap           NONE. /sitemap.xml, /sitemap_index.xml and /en/sitemap.xml
+  #                     all answer 403 in 111 bytes from `server: AmazonS3`, and so
+  #                     does a control path that cannot exist -- which is what S3
+  #                     returns for a missing key when listing is denied. So this
+  #                     is "no sitemap", proven, not a block: /en/regulations.html
+  #                     answers 200 in 163,302 bytes to a plain request with only
+  #                     a User-Agent.
+  #   stored-inventory  Every document DOES return an ETag, opaque but stable, so
+  #                     this is available -- and it is still the wrong signal for
+  #                     either source. See the two notes below.
+  #   snapshot-articles Right shape, wrong plumbing. See "The Law" below.
+  #   sama-feed         No "what changed" page on the site.
+  #
+  - regulator: "Personal Data Protection Authority (PDPA)"
+    source_system: "The Law"
+    signal: crawl
+    confirm: false
+    # 60 of this source's 62 rows are ANCHORS INTO ONE PAGE
+    # (regulations.html#faqOne ... #faqSixty), so they share a single HTTP
+    # object: `#faqOne` and `#faqTwo` return the identical ETag
+    # 35237d1023d5c414d38d47a2c379fbae. `stored-inventory` would therefore call
+    # all 60 articles modified on any edit to that page, including an edit to
+    # something else on it entirely -- which is the exact failure
+    # `snapshot-articles` was written to fix.
+    #
+    # And `snapshot-articles` IS the right shape here: the page parses into 60
+    # labelled articles with 60 distinct hashes. But only with Bootstrap 4 class
+    # names (`card-header` / `card-body`); the module's defaults are Bootstrap 5
+    # (`accordion-button` / `accordion-body`) and parse 0 items on this page, and
+    # `snapshot_sweep()` does not thread those names through. It also reads a
+    # snapshot from formfill's SnapshotStore with a grace period, because it was
+    # built for SIMAH -- a host we are BLOCKED from and cannot crawl.
+    #
+    # We are not blocked from this one. The crawl is a single GET and it already
+    # produces exactly what snapshot-articles would: 62 rows, 62 DISTINCT
+    # content_hash values, one per article, each over the article's extracted
+    # text. There is nothing cheaper to ask and nothing more precise to ask.
+  - regulator: "Personal Data Protection Authority (PDPA)"
+    source_system: "Executive Decisions/Orders"
+    signal: crawl
+    confirm: false
+    # 20 distinct pdfs, each with its own honest ETag, so `stored-inventory`
+    # genuinely works here -- and it CANNOT BE THE ONE SIGNAL, because
+    # InventorySweep sets covers_inventory = False
+    # (dynamic_crawler/inventory_sweep.py:102). It probes only the urls we
+    # already store, so a NEW executive decision appearing on the page is not
+    # something it can observe. New decisions are the main event on this source.
+    #
+    # KNOWN GAP, recorded rather than papered over: a pdf silently REPLACED at
+    # the same url with the same link text is invisible to `crawl`. For a
+    # discovered document the engine stamps
+    # content_hash = hash("<url>|<title>") (generic_crawler/crawler.py:3476) --
+    # the ETag-reading path, stamp_declared(), runs only for --documents entries,
+    # which this config does not use. So the crawl sees additions, removals and
+    # retitles, and not that. Closing it means either declaring these 20 urls or
+    # teaching the engine to stamp discovered documents from a HEAD, and the
+    # second changes every regulator; neither is done here.
+
+  # MOIC (BAHRAIN) — `crawl`, AND HERE THE PROBE IS THE EXPENSIVE OPTION.
+  # MEASURED 2026-09-01, all four alternatives tested rather than assumed:
+  #
+  #   sitemap            DOES NOT EXIST. /sitemap.xml, /sitemap_index.xml and
+  #                      /en/sitemap.xml all answer 404 with a 44 KB soft-404 HTML
+  #                      page -- and so does a control path that cannot exist, so
+  #                      the 404 is the site's catch-all, not a missing file.
+  #                      robots.txt is live (200, 2,027 bytes) and names NO sitemap.
+  #   sama-feed          NO REVISION PAGE. /en/news exists and is press releases:
+  #                      21,578 captured characters, ONE document link on the whole
+  #                      page, and no mention of a decree, resolution, ministerial
+  #                      order or law. It reports events, not document changes.
+  #   snapshot-articles  WRONG SHAPE. 0 items parsed with either Bootstrap 4 or 5
+  #                      accordion classes. MOIC's rows are FILES, not article
+  #                      text -- `with_text` is 0 of 95.
+  #   stored-inventory   GENUINELY AVAILABLE, and still not the right choice. See
+  #                      below; this is the RERA case, not the PDPA one.
+  #
+  # STORED-INVENTORY WOULD WORK. Unlike PDPA, where 60 articles are anchors into
+  # one page and share a single ETag, MOIC's tokens are honest and per-document:
+  # every sampled pdf returns an Apache size-mtime ETag, stable across two reads
+  # (52b2f2-5d1d79f0a9d00, 5dbf7-5d1d799f99dc0, ... 6/6 `etag-opaque`), and 90 of
+  # the 95 rows are distinct pdfs.
+  #
+  # IT LOSES ON COST AND ON DISCOVERY.
+  #   cost       a probe is one request per stored document: 90 requests. The
+  #              crawl is ELEVEN page loads -- Commerce 1, Industry 1, Forms 9.
+  #              The cheap signal is the expensive one here.
+  #   discovery  InventorySweep sets covers_inventory = False
+  #              (dynamic_crawler/inventory_sweep.py:102): it re-reads only urls
+  #              we already hold. A new regulation, a new form, or a NEW FORM
+  #              CATEGORY is invisible to it -- and catching a new category is
+  #              exactly what config/sources/moic.yml's discovering Forms source
+  #              was built for.
+  #
+  # RUN stored-inventory DELIBERATELY NOW AND THEN. It is the only thing that
+  # catches a pdf silently REPLACED at the same url with the same link text: a
+  # discovered document's content_hash is hash("<url>|<title>")
+  # (generic_crawler/crawler.py:3476), so the crawl sees additions, removals and
+  # retitles, and not that. Same standing note as RERA above.
+  #
+  # ONE WRINKLE IF YOU DO. Five Forms rows are placeholders for categories that
+  # publish nothing, and they point at a tag PAGE rather than a file. A tag page's
+  # ETag is `1788244496-gzip` -- a gzip ETag on a dynamic page, which moves when
+  # the rendered bytes move. Those five would report `modified` as noise under a
+  # probe. Under `crawl` they do not: their content_hash is stable by construction.
+  #
+  # THREE ENTRIES, because config/sources/moic.yml stores three source_systems and
+  # a sweep looks a source up by (regulator, source_system). Commerce and Industry
+  # are the site's own `?about[0]` filters; Forms is the one discovering source
+  # that walks the sidebar.
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Commerce"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Industry"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Forms"
+    signal: crawl
+    confirm: false
+
+  # ---- Kuwait ------------------------------------------------------------
+  # NO `signal:` KEY, because stored-inventory is the default and this is the
+  # plain case for it: the site answers an honest version token per document.
+  #
+  # KDIPA publishes one instrument and no index worth walking, so
+  # config/sources/kdipa.yml declares it (`mode: declared`) rather than crawling
+  # for it. The sweep therefore has exactly ONE url to ask about -- one request
+  # per run, which is as cheap as this gets.
+  #
+  # MEASURED 2026-09-08 on that url:
+  #     ETag            absent
+  #     Last-Modified   Sun, 29 Aug 2021 05:26:19 GMT
+  #     Content-Length  278990
+  # so `dynamic_crawler/fingerprint.py::version_token` falls to its second tier
+  # and returns basis `last-modified+length`.
+  #
+  # CONFIRM IS FALSE BECAUSE THE TOKEN DOES NOT LIE. That 2021 date matches the
+  # file's own /2021/08/ upload path and stands still between runs -- it is not
+  # CMA's case, where Last-Modified is the CURRENT TIME and reported 1,134 false
+  # changes until `confirm: true` made it hash the visible text instead. Measure
+  # before changing this: a needless confirm downloads the file every sweep.
+  #
+  # THE TWO STRINGS ARE THE SAME ON PURPOSE. `source_system` was set to the
+  # regulator name so `_clean_trail` folds it out of doc_path and the tree does
+  # not carry a "Regulations" folder holding one document. `settings_for`
+  # matches on BOTH halves, so this still resolves to exactly this source.
+  - regulator: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    source_system: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    confirm: false
+
+  # ---- Jordan ------------------------------------------------------------
+  # CBJ, ALL TEN SOURCES IN ONE ENTRY. config/sources/cbj.yml gives every source
+  # `source_system: "Legislation"` so the library nests them under one parent
+  # folder, and `settings_for` matches on (regulator, source_system) -- so this
+  # single pair names the whole regulator. The cost is recorded in cbj.yml: the
+  # ten listings cannot be gated apart, because `disappeared` and the
+  # completeness gate are scoped on that same pair.
+  #
+  # MEASURED 2026-09-16, all four alternatives:
+  #
+  #   sitemap           NONE, and proven rather than assumed. /sitemap.xml and
+  #                     /sitemap_index.xml answer 404 in 103 bytes. /EN/sitemap.xml
+  #                     answers 200 -- but a control path that cannot exist,
+  #                     /EN/List/zzz_control_does_not_exist, answers 200 at the
+  #                     IDENTICAL 385,447 bytes of `<!DOCTYPE html>`. That is the
+  #                     site's catch-all page, not a sitemap. robots.txt is 404,
+  #                     so it names none either.
+  #   sama-feed         no "what changed" page anywhere in the Legislation menu.
+  #   snapshot-articles wrong shape. It parses one page into labelled articles;
+  #                     CBJ's instruments are 399 separate PDFs, not anchors into
+  #                     a page. It would parse 0 items.
+  #   stored-inventory  AVAILABLE AND HONEST -- and still the wrong nightly
+  #                     signal. See the two reasons below.
+  #
+  # STORED-INVENTORY WORKS HERE, WHICH IS WHY IT IS RULED OUT ON EVIDENCE RATHER
+  # THAN ON AVAILABILITY. Every sampled PDF returns a real IIS ETag and a
+  # plausible, distinct Last-Modified -- not CMA's case, where Last-Modified is
+  # the current time:
+  #
+  #     etag="6e0ed747da9dc1:0"   Sun, 01 Mar 2026 13:15:21 GMT   250,012
+  #     etag="fcf52375516fdc1:0"  Wed, 17 Dec 2025 12:34:16 GMT   345,363
+  #     etag="b5efb9d719ddb1:0"   Tue, 25 Mar 2025 10:31:22 GMT   533,576
+  #
+  # It loses twice over, the same way MOIC's does:
+  #
+  #   1. COST. A probe is one request per document: 376 against TEN page loads
+  #      for the entire regulator, because every source in cbj.yml is
+  #      `max_pages: 1` -- CBJ's pagers and category dropdowns are display-only
+  #      and the unfiltered markup already carries every link. 376 and not 402:
+  #      23 multi-attachment rows leave document_url EMPTY by design and 3 are
+  #      placeholders, so 26 rows cannot be probed by anything.
+  #   2. COVERAGE. InventorySweep is covers_inventory = False -- it re-reads only
+  #      urls already stored and can never see a NEW circular. On this regulator
+  #      that is the main event, not an edge case: the register already holds
+  #      2026 circulars, and dynamic_crawler/MONITORING.md section 3 says it
+  #      outright -- on a list site the listing IS the feed.
+  #
+  # KNOWN GAP, SAME AS PDPA AND MOIC: a pdf silently replaced at the same url
+  # with the same link text is INVISIBLE. A discovered document's content_hash is
+  # hash("<url>|<title>") (generic_crawler/crawler.py, "a document is a file we
+  # have not downloaded here"), so only the url or the title moving can show. The
+  # ETags above are exactly what catches that, so a deliberate
+  # `--signal stored-inventory` run against a slice is worth doing occasionally.
+  # It is the second tier, not the nightly question.
+  #
+  # IDENTITY IS THE DEFAULT, AND THAT IS A RISK WORTH NAMING. CBJ exposes no
+  # stable item id -- nothing like CBE's Sitecore GUID -- so identity falls back
+  # to [document_url, doc_path, title]. If CBJ ever re-issues a circular at a new
+  # storage url, that reads as one new document plus one disappearance, the
+  # failure MONITORING.md section 2 names. There is no field available to fix it
+  # with today; if CBJ starts exposing one, override `identity` here.
+  - regulator: "Central Bank of Jordan (CBJ)"
+    source_system: "Legislation"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

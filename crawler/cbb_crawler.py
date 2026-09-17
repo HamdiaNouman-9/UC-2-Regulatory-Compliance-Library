@@ -268,11 +268,64 @@ def _crawl_corpgov() -> List[RegulatoryDocument]:
 
 
 # ─── Mode 2c: Rulebook Volumes (cbb_rulebook_crawler sidebar) ────────────────
+
+#: Index of the SECTION in a rulebook doc_path
+#: [regulator, "CBB Rulebook", volume, section, ...]. See the note on `category`
+#: in `_rulebook_doc_to_regulatory`.
+#
+# THIS FIXES THE COLUMN, NOT THE FOLDER TREE, and the two were separate faults.
+# The tree misfiles a volume's "Quarterly Updates" section under the Users'
+# Guide subsection of the same name (and Volume 5's "Reporting Requirements"
+# inside a Capital Adequacy module) because
+# `repo.find_folder_in_subtree(title, parent)` matches a title at ANY depth in
+# the subtree. That function is shared by every regulator, so it is deliberately
+# left alone: a depth cap was written, measured to be a no-op on all 20
+# non-CBB workbooks and strictly better on the six CBB volumes, and still
+# reverted 2026-09-16 rather than carry cross-regulator risk for a CBB bug.
+#
+# So an export still needs `scripts/reparent_cbb_quarterly_updates.py` run over
+# its workbooks afterwards. That script is idempotent and reports when there is
+# nothing to move.
+_SECTION_INDEX = 3
+
+
+def _rulebook_category(doc_path: list) -> str:
+    """The volume section a row belongs to.
+
+    Falls back to the source folder where the trail is too short to have a
+    section -- and never returns the row's own title, which is what an
+    unguarded `doc_path[-2]`-style rule would do on a three-part trail.
+    """
+    if not doc_path:
+        return "CBB Rulebook"
+    if _SECTION_INDEX < len(doc_path) - 1:
+        return doc_path[_SECTION_INDEX]
+    return doc_path[1] if len(doc_path) > 1 else "CBB Rulebook"
+
+
 def _rulebook_doc_to_regulatory(doc: RulebookDoc) -> RegulatoryDocument:
     return RegulatoryDocument(
         regulator       = REGULATOR,
         source_system   = "CBB-Rulebook",
-        category        = doc.doc_path[1] if len(doc.doc_path) > 1 else "CBB Rulebook",
+        # THE SECTION, NOT THE SOURCE FOLDER. `doc_path[1]` on the rulebook is
+        # always the literal "CBB Rulebook", so this column used to carry ONE
+        # value for all 8,645 rows of a volume -- while CRAWLING_OVERVIEW.md §2
+        # defines it as "the section it belongs to (from the site's structure)".
+        #
+        # The cost was not cosmetic. A volume's Quarterly Updates -- 63 update
+        # letters -- became unfindable: their `title` is a bare month
+        # ("January 2024"), their source_system is "CBB-Rulebook-Vol-1", and with
+        # category flat the word "Quarterly" survived in `doc_path` and nowhere
+        # else. Filtering the column the schema points at returned nothing.
+        #
+        # doc_path is [regulator, "CBB Rulebook", volume, section, ...], so the
+        # section is index 3. MEASURED 2026-09-16: that gives 4-6 values per
+        # volume -- Part A, Part B, Archived Part A, Ad-hoc Communications,
+        # Quarterly Updates, Archive -- which is what the site divides a volume
+        # into. `doc_path[-2]` was rejected as the alternative: it is the
+        # immediate parent and yields 717-2,013 values per volume, too granular
+        # to filter on.
+        category        = _rulebook_category(doc.doc_path),
         title           = doc.title,
         document_url    = doc.url,
         source_page_url = doc.url,

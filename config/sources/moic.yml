@@ -1,0 +1,269 @@
+# MOIC — Ministry of Industry and Commerce, Bahrain
+#
+# THE REGULATOR STRING WAS CONFIRMED 2026-08-28, AND CORRECTED. It first read
+# "Ministry of Industry, Commerce and Tourism", taken from the page <h1> — which
+# turns out to be the ONE place on the site that still says Tourism. Everything
+# else names it without:
+#
+#   <title>            "Home | Ministry of Industry and Commerce"
+#   logo alt           "Ministry of Industry and Commerce"
+#   sio.gov.bh footer  "Ministry Of Industry And Commerce"
+#   the domain         moic = Ministry Of Industry and Commerce
+#
+# So the <h1> is stale branding and the rest of the site is the current name.
+# Reading one element and stopping is how the wrong name got in; three
+# independent places agreeing is what settled it.
+#
+# NOT THE SAME REGULATOR AS config/sources/mc.yml, which is Ministry of Commerce
+# SAUDI ARABIA (mc.gov.sa). Two ministries of commerce, two countries, and the
+# acronyms are one letter apart — check the seed, not the name.
+#
+# ---------------------------------------------------------------------------
+# 1. TWO PAGES HOLD EVERYTHING. NO API, NO FILTER URLS.
+# ---------------------------------------------------------------------------
+# MEASURED 2026-08-27. Both listings are SERVER-RENDERED (plain requests, no
+# browser needed) and UNPAGED, so one request each sees the whole section:
+#
+#   /en/regulations   79 files   no pager
+#   /en/forms         13 files   no pager
+#
+# THE FILTER URLS ADD NOTHING AND ONE OF THEM LOSES A DOCUMENT. The obvious
+# route is to crawl the facets — ?about[0]=19, ?about[0]=20, ?tag=319..326 —
+# and it is measurably worse:
+#
+#   ?about[0]=19  "Commerce"   75 files   0 not already on the plain page
+#   ?about[0]=20  "Industry"    5 files   0 not already on the plain page
+#   union of both filters      79   ==   the unfiltered page
+#
+#   the 8 form ?tag= values     union 12  of the 13 forms
+#   -> ONE FORM CARRIES NO TAG AT ALL, so a tag-driven crawl drops it silently.
+#
+# AND THERE IS NO API TO PREFER, which was worth checking rather than assuming:
+# /jsonapi, /en/jsonapi, /api, /en/api and /jsonapi/node/regulation all answer
+# 404 — Drupal with JSON:API disabled — and there is no /sitemap.xml either.
+# This is the opposite finding to CBE, whose circulars a crawl saw 18 of 396 of;
+# here a crawl sees 79 of 79.
+#
+# ---------------------------------------------------------------------------
+# 2. `strategy: generic` IS MANDATORY
+# ---------------------------------------------------------------------------
+# MEASURED on the same seed, twice:
+#
+#   auto      shape `list`     status `ok`    78 pages, 78 errors,  0 documents
+#   generic   shape `generic`  status `ok`     1 page,   0 errors, 79 documents
+#
+# Auto-detection reads the accordion as a list, and crawl_list then navigates
+# INTO each of the 78 PDFs as though they were pages — which is why the failing
+# run still reported `ok`. Third site to hit this after CBE's circulars and
+# every SIO section; the engine's own status said `ok` all three times.
+#
+# ---------------------------------------------------------------------------
+# 3. THE STRUCTURE COMES FROM THE HEADINGS, BECAUSE THERE IS NO BREADCRUMB
+# ---------------------------------------------------------------------------
+# JS_BREADCRUMB returns [] on both pages, so before `group_headings` was set for
+# this host in generic_crawler/crawler.py SITE_PROFILES, `section_path` was EMPTY
+# on all 92 documents — every one filed at the root.
+#
+# The listing is an accordion whose <h2> names the topic, and with the flag on
+# those become the folders. Measured after the change:
+#
+#   Regulations, 18 folders   Commercial Companies 14, Consumer Protection 11,
+#                             Commercial Register 7, Trademarks 7, Corporate
+#                             Governance 6, Patents 6, Testing and Metrology 4,
+#                             Intellectual Property 4, AML 3, FTA 3, ...
+#   Forms, 5 folders          Companies Control 4, Testing and Metrology 4,
+#                             Precious Metals Assay Centre 2, Consumer
+#                             Protection 2, Industrial Areas 1
+#
+# That is a better taxonomy than the filters offer: 18 topics against the
+# facet's two-way Commerce/Industry split, and it costs no extra request.
+#
+# `category` is deliberately unset so it takes the last crumb — the topic.
+#
+# ---------------------------------------------------------------------------
+# 4. TITLES
+# ---------------------------------------------------------------------------
+# 73 of the 79 regulation titles ended "... 5.17 MB EN" — the anchor text
+# carries the file size and a language marker. `_SIZE_TAIL` in crawler.py always
+# stripped a trailing size but anchored at the end of the string, so the "EN"
+# blocked it; it now allows a closed list of language markers after the size.
+# That is a general fix rather than a flag: a size followed by EN/AR is a size
+# tail anywhere. Verified 0 of 92 titles still carry one.
+#
+# ---------------------------------------------------------------------------
+# 5. WHY BOTH SOURCES REPORT `incomplete`
+# ---------------------------------------------------------------------------
+# `max_pages: 1` is deliberate: the seed IS the section, and the only links left
+# queued are the facet urls this file explains above. A run that stops at the cap
+# reports `incomplete`, which here means "did not walk the filters", not "did not
+# finish the section". Do not raise the cap to make the word go away — walking
+# the facets would re-collect the same 79 files under different section paths.
+#
+# ---------------------------------------------------------------------------
+# 6. WHAT IS NOT COVERED
+# ---------------------------------------------------------------------------
+# The Arabic side (/ar/...), and everything outside these two listings. Neither
+# has been measured; add a source when one has been.
+
+regulator: "Ministry of Industry and Commerce (MOIC)"
+owner: lead
+
+# ---------------------------------------------------------------------------
+# ONE SITE-WIDE PDF IS EXCLUDED
+# ---------------------------------------------------------------------------
+# /sites/default/files/2030-vision/vision2030-en.pdf is Bahrain's national
+# economic vision, linked from the regulations page and filed by the crawler
+# under whichever topic heading it happened to sit below ("The Common Industrial
+# Law of the GCC"). It is not a regulation MOIC issued.
+#
+# Exactly the case rera.yml already excludes — the chrome rule cannot catch it,
+# because JS_LINKS marks a link `chrome` only inside <header>/<footer> and this
+# one is in the page body. Matched on its directory rather than its filename so a
+# re-upload under a new name is still excluded.
+exclude_documents:
+  - "/2030-vision/"
+
+sources:
+  # ---- Regulations, SPLIT BY THE SITE'S OWN Commerce / Industry FILTER ---- #
+  #
+  # CORRECTED 2026-08-31. This was ONE source seeded at the unfiltered
+  # /en/regulations, on the finding that the `about[0]` filters "add nothing".
+  # That was true of the DOCUMENTS and false of the STRUCTURE, and the structure
+  # is what the library's tree is built on:
+  #
+  #     Ministry of Industry and Commerce (MOIC)
+  #       Commerce
+  #         Commerce Law            > The Law of Commerce No. 7 of 1987
+  #         eCommerce               > Resolution No. (51) of 2024 ...
+  #         Commercial Companies    > ...
+  #       Industry
+  #         Industrial Areas        > DECREE-LAW WITH RESPECT TO ...
+  #
+  # `Commerce` and `Industry` are not headings on the unfiltered page and cannot
+  # be recovered from it — the 17 group headings arrive as one flat list. Only the
+  # filter says which of the two each group belongs to.
+  #
+  # MEASURED, and it is a clean partition rather than two overlapping views:
+  #     plain     78 documents, 17 groups
+  #     ?about=19 74 documents, 14 groups   <- Commerce
+  #     ?about=20  4 documents,  3 groups   <- Industry
+  #     74 + 4 = 78, overlap 0, and 0 documents in plain that are in neither.
+  #
+  # source_system IS "Commerce" / "Industry", not "Regulations", for the reason
+  # pdpa.yml names: the source system becomes a level, and the tree wants
+  # Commerce directly under the regulator with no "Regulations" folder between.
+  # config/change_signals.yml carries one entry per source_system, so both are
+  # listed there — and each filter is a COMPLETE listing of its own half, so the
+  # `disappeared` bucket per source_system is honest.
+  - name: "Regulations — Commerce"
+    mode: generic
+    seed_url: "https://www.moic.gov.bh/en/regulations?about%5B0%5D=19"
+    scope: prefix
+    strategy: generic          # auto reads it as a `list` and returns 0 documents
+    source_system: "Commerce"
+    include_pages: never       # the page is the index, not a document
+    doc_path_title: true       # never promoted, so it can start with the law as the leaf
+    # The page's own <h1> is "Regulations", and group_headings reads it as the
+    # outermost heading, so it arrived as a folder between Commerce and the
+    # 14 groups. It used to be invisible only because source_system WAS
+    # "Regulations" and _clean_trail deduped it.
+    drop_sections: ["Regulations"]
+    max_pages: 1
+    max_depth: 1
+
+  - name: "Regulations — Industry"
+    mode: generic
+    seed_url: "https://www.moic.gov.bh/en/regulations?about%5B0%5D=20"
+    scope: prefix
+    strategy: generic
+    source_system: "Industry"
+    include_pages: never
+    doc_path_title: true
+    drop_sections: ["Regulations"]   # the page <h1>; see the Commerce source
+    max_pages: 1
+    max_depth: 1
+
+  # ---- Forms: ONE SOURCE THAT DISCOVERS ITS OWN CATEGORIES ---------------- #
+  #
+  # REWRITTEN 2026-09-01. This was NINE sources: the unfiltered page plus one per
+  # `?tag=` in the sidebar, each with the label hardcoded in `category`. Two
+  # things were wrong with that, and the second is the serious one.
+  #
+  # 1. IT DUPLICATED. 11 of the 12 forms appear on the unfiltered page AND on
+  #    exactly one tag page, so the tree carried each one twice — once as
+  #    `Forms > Companies Control > X` and once as
+  #    `Forms > Business Services ... > Companies Control > X`.
+  #
+  # 2. IT COULD NOT SEE A NEW CATEGORY. Eight hardcoded tags find exactly eight
+  #    categories forever. The day MOIC adds a ninth, nothing reports it — and
+  #    noticing new material is what this library is for. A hardcoded list turns
+  #    a discovery problem into a silent gap.
+  #
+  # HOW ONE SOURCE COVERS ALL OF IT. Measured on the live page 2026-09-01: the
+  # rail is 8 ordinary `<a href="forms?tag=NNN">` anchors in `div.list-of-tags`,
+  # so a prefix-scoped walk from /en/forms reaches every one of them by following
+  # links — the same way it would reach a ninth.
+  #
+  # The category label exists ONLY in that rail link; the tag page's own headings
+  # are the SUBcategories and its breadcrumb is the unfiltered parent. So
+  # `link_title_is_section` in SITE_PROFILES["www.moic.gov.bh"] makes the anchor
+  # text that reached a page the outer folder for that page's documents:
+  #
+  #     Forms > Business Services & Bahrain Investors Center Services
+  #                > Precious Metals Assay Centre > Assay Application Form
+  #                > Companies Control            > ... 4 forms
+  #                > Testing and Metrology        > ... 4 forms
+  #           > Industrial Development Sector
+  #                > Industrial Areas             > Application Form
+  #
+  # and `prefer_deepest_section` keeps only the deepest trail per file, which is
+  # what removes the duplication: the categorised placement wins over the
+  # unfiltered one.
+  #
+  # WHY THE UNFILTERED PAGE IS STILL THE SEED, and not one of the tag pages: one
+  # form — "Complaint Form.pdf", under Consumer Protection — is on the unfiltered
+  # page and under NO tag. Seeding the index keeps it and still reaches every
+  # category. Measured: unfiltered 12, union of the 8 tags 11, orphans 1,
+  # and 0 forms returned by more than one tag.
+  #
+  # SIX CATEGORIES PUBLISH NOTHING (SMEs, Trademarks and Patents, Consumer
+  # Services, Entrepreneurs and Startups, Bahrain International Investment Park,
+  # eCommerce — all 0 forms, and tag=324/319 return zero characters of content).
+  # `placeholder_when_empty` cannot help here any more: it fires when a SOURCE
+  # yields nothing, and there is now one source that yields plenty. Those six are
+  # a known gap in this shape — see the note at the end of this file.
+  #
+  # max_pages 20 is headroom, not a target: the index plus 8 categories is 9
+  # today. max_depth 2 is the index -> a category page and no further.
+  - name: "Forms"
+    mode: generic
+    seed_url: "https://www.moic.gov.bh/en/forms"
+    scope: prefix
+    strategy: generic          # auto reads it as a `list` and returns 0 documents
+    source_system: "Forms"
+    include_pages: never       # the index and the category pages are not documents
+    doc_path_title: true
+    max_pages: 20
+    max_depth: 2
+    # ONE FORM IS FILED UNDER NOTHING, AND THE MANUAL LIBRARY KNOWS WHERE IT GOES.
+    #
+    # The index carries an <H2> "Consumer Protection" holding "Complaint Form.pdf",
+    # and no ?tag= returns it — measured by sweeping tag=316..330: the 7 ids
+    # outside the rail return nothing, and no tag in the range returns that form.
+    # That <H2> is the same markup as "Companies Control" and "Precious Metals
+    # Assay Centre", which ARE subcategories, so it is a subcategory whose parent
+    # went missing rather than a ninth category.
+    #
+    # The manual library files it under "Consumer Services" — which IS in the
+    # rail, and which the site currently reports as empty. So the site is at
+    # fault and this mapping is the correction, declared rather than inferred.
+    #
+    # IT RETIRES ITSELF. The mapping applies only to rows the crawl could not
+    # place, so the day MOIC tags that form the discovered category wins and this
+    # line stops having any effect — it cannot fight the site, only fill a gap.
+    #
+    # Consumer Services therefore holds a real form, and the "publishes nothing"
+    # placeholder the crawl generated for its empty tag page is pruned, because a
+    # folder cannot both hold a form and say it holds none.
+    uncategorised_parents:
+      "Consumer Protection": "Consumer Services"

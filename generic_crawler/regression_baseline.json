@@ -11,12 +11,23 @@
     ],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "sama_circulars": {
@@ -34,12 +45,23 @@
     ],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "cbb": {
@@ -56,12 +78,23 @@
     ],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "secp_acts": {
@@ -79,12 +112,23 @@
     ],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "sbp_circulars": {
@@ -97,12 +141,23 @@
     "doc_section_paths": [],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "cma_regs": {
@@ -112,7 +167,7 @@
       "Laws & Regulations"
     ],
     "section_anchor": "laws & regulations",
-    "content_text_len": 6634,
+    "content_text_len": 6649,
     "n_links": 265,
     "n_doc_links": 36,
     "doc_section_paths": [
@@ -120,12 +175,23 @@
     ],
     "profile": {
       "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": false,
       "sharepoint_main": false,
       "group_headings": false,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
     }
   },
   "aml_rules": {
@@ -144,12 +210,230 @@
     ],
     "profile": {
       "breadcrumb_current": true,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
       "unwrap_forms": true,
       "sharepoint_main": true,
       "group_headings": true,
-      "drop_selectors": [],
-      "stop_at_headings": [],
-      "fix_lazy_images": false
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ""
+    }
+  },
+  "cbe_lawsreg": {
+    "shape": "generic",
+    "breadcrumb": [
+      "Home",
+      "Laws and Regulations"
+    ],
+    "section_anchor": "laws and regulations",
+    "content_text_len": 3032,
+    "n_links": 156,
+    "n_doc_links": 2,
+    "doc_section_paths": [
+      "Home > Laws and Regulations"
+    ],
+    "profile": {
+      "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": false,
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ".cbe-accessibility-toolbar, .most-searched, .relatedlinks-section, .Image-Container, .ui-helper-hidden-accessible, .hidden.breadcrumbdropdown, section[data-comp-name=\"breadcrumbs\"] .breadcrumbs"
+    }
+  },
+  "rera_regs": {
+    "shape": "generic",
+    "breadcrumb": [
+      "Home",
+      "Regulations"
+    ],
+    "section_anchor": "regulations",
+    "content_text_len": 1479,
+    "n_links": 305,
+    "n_doc_links": 4,
+    "doc_section_paths": [
+      "Home > Regulations"
+    ],
+    "profile": {
+      "breadcrumb_current": true,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": false,
+      "keep_modals": false,
+      "content_selector": "#page-content",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ".sider-bar, .file-size"
+    }
+  },
+  "sio_orders": {
+    "shape": "list",
+    "breadcrumb": [
+      "Home",
+      "Private Sectors"
+    ],
+    "section_anchor": "private sectors",
+    "content_text_len": 17441,
+    "n_links": 132,
+    "n_doc_links": 0,
+    "doc_section_paths": [],
+    "profile": {
+      "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": false,
+      "keep_modals": true,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ".header-menu-banner, footer.footer-sec, .govbh-user-rating, .search-main, .pdf-size, [class*=\"userway\"], [class*=\"uw-s\"], [class*=\"uw-sl\"], .uai, .ulsti"
+    }
+  },
+  "lloc_page": {
+    "shape": "generic",
+    "breadcrumb": [
+      "(current)",
+      "Legislation",
+      "Legal instruments in Bahraini legislation"
+    ],
+    "section_anchor": "legal instruments in bahraini legislation",
+    "content_text_len": 6030,
+    "n_links": 69,
+    "n_doc_links": 2,
+    "doc_section_paths": [
+      "(current) > Legislation > Legal instruments in Bahraini legislation"
+    ],
+    "profile": {
+      "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": false,
+      "keep_modals": false,
+      "content_selector": "div.bodycontent",
+      "heading_is_title": false,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "",
+      "drop_selectors": ".breadcrumbs, .pagemenu"
+    }
+  },
+  "pdpa_law": {
+    "shape": "generic",
+    "breadcrumb": [
+      "Home",
+      "The Law"
+    ],
+    "section_anchor": "the law",
+    "content_text_len": 3618,
+    "n_links": 26,
+    "n_doc_links": 2,
+    "doc_section_paths": [
+      "Home > The Law"
+    ],
+    "profile": {
+      "breadcrumb_current": false,
+      "breadcrumb_li": true,
+      "keep_buttons": true,
+      "unhide_animated": true,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": true,
+      "keep_modals": true,
+      "content_selector": "",
+      "heading_is_title": true,
+      "link_title_is_section": false,
+      "empty_page_placeholder": "",
+      "prefer_deepest_section": false,
+      "page_text_stops_at_children": true,
+      "heading_subtitle": true,
+      "heading_selector": ".executive-decisions-pdf > .block:first-child",
+      "exclude_document_urls": "",
+      "drop_selectors": ".breadcrumb-area"
+    }
+  },
+  "moic_regs": {
+    "shape": "list",
+    "breadcrumb": [],
+    "section_anchor": "",
+    "content_text_len": 21748,
+    "n_links": 233,
+    "n_doc_links": 79,
+    "doc_section_paths": [
+      "Antidumping, Countervailing Measures and Safeguard Measures",
+      "Commerce Law",
+      "Commercial Agency",
+      "Commercial Companies",
+      "Commercial Register",
+      "Consumer Protection",
+      "Corporate Governance",
+      "Industrial Areas"
+    ],
+    "profile": {
+      "breadcrumb_current": false,
+      "breadcrumb_li": false,
+      "keep_buttons": false,
+      "unhide_animated": false,
+      "unwrap_forms": false,
+      "sharepoint_main": false,
+      "group_headings": true,
+      "keep_modals": false,
+      "content_selector": "",
+      "heading_is_title": false,
+      "link_title_is_section": true,
+      "empty_page_placeholder": "No documents published under this category",
+      "prefer_deepest_section": true,
+      "page_text_stops_at_children": false,
+      "heading_subtitle": false,
+      "heading_selector": "",
+      "exclude_document_urls": "/2030-vision/",
+      "drop_selectors": ".Itemlang, .docImg"
     }
   }
 }

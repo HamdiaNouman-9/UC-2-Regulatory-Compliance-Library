@@ -183,6 +183,44 @@ exclude_documents:
 # disappeared. Revisit only alongside a deliberate identity migration.
 doc_path_sections: false
 
+# ---------------------------------------------------------------------------
+# THE SECTION IS A FOLDER, AND THE DOCUMENT IS ITS LEAF
+# ---------------------------------------------------------------------------
+# Added 2026-09-08. Before it, all 128 rows shared ONE doc_path --
+# "Real Estate Regulatory Authority (RERA) | Regulations" -- with 1 folder, 128
+# leaves and 127 duplicate siblings. Measured identically on the 2026-08-25
+# export, so it was long-standing rather than new.
+#
+# Every section name was already here as `category`, but `category` is a COLUMN
+# the folder tree never reads: `_doc_path` builds [regulator, source_system] plus
+# the page's own sections, and `doc_path_sections` is false below (for a good
+# reason -- see its note). So nothing supplied a third crumb.
+#
+#   doc_path_category: true   puts the section name in the trail
+#   doc_path_title:    true   makes the document the leaf inside it
+#
+# giving what the manual library shows:
+#
+#   RERA | Regulations | RERA Law And Decrees | Law No. (27) of 2017 ...
+#   RERA | Regulations | RERA Circulars and Instructions | <circular>
+#
+# BOTH ARE SET PER SOURCE. build_regulator_crawler propagates only
+# `exclude_documents` and `doc_path_sections` from this level; any other key here
+# is read by nothing, so a top-level setting would look applied and do nothing.
+#
+# NOT FIXED HERE, and worth doing in the same operation as any future change,
+# because both are identity fields: all eight sources still declare
+# `source_system: "Regulations"`. `disappeared` and the completeness gate are
+# scoped on (regulator, source_system), so the eight cannot be gated apart --
+# and config/change_signals.yml names "RERA Circulars and Instructions", which no
+# row carries.
+#
+# THE PARTS INSIDE A LAW ARE OUT OF REACH. The manual library also lists
+# "PRELIMINARY PART", "PART I REAL ESTATE REGULATORY AUTHORITY" and so on beneath
+# Law No. (27) of 2017. Those are inside the pdf, not links on the page:
+# `with_text` is 9 of 128 here, so 119 rows are a url and nothing else. Splitting
+# them needs pdf text extraction, which this path does not have.
+
 regulator: "Real Estate Regulatory Authority (RERA)"
 owner: lead
 
@@ -196,6 +234,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "Regulations"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 5
     max_depth: 0
 
@@ -206,6 +246,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "RERA Law And Decrees"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 40
     max_depth: 6
 
@@ -217,6 +259,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "Resolutions"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 40
     max_depth: 6
 
@@ -229,6 +273,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "RERA Circulars and Instructions"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 60
     max_depth: 6
 
@@ -239,6 +285,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "RERA Code of Conduct"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 20
     max_depth: 4
 
@@ -249,6 +297,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "National Real Estate Plan"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 20
     max_depth: 4
 
@@ -261,6 +311,8 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "Real Estate Advertising Guidelines"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 20
     max_depth: 4
 
@@ -271,5 +323,7 @@ sources:
     strategy: generic
     source_system: "Regulations"
     category: "Regulation Templates"
+    doc_path_category: true    # the section becomes a folder
+    doc_path_title: true       # the document becomes its own leaf
     max_pages: 20
     max_depth: 4
