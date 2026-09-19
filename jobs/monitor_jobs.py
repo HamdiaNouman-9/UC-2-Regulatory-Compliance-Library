@@ -231,6 +231,9 @@ CRAWL_AS_SIGNAL = {
     "Real Estate Regulatory Authority (RERA)": ("rera", False),
     "Social Insurance Organisation (SIO)": ("sio", False),
     "Legislation and Legal Opinion Commission (LLOC)": ("lloc", False),
+
+    # ---- Qatar, onboarded 2026-09-17 ----------------------------------- #
+    "Qatar Central Bank (QCB)": ("qcb", False),
 }
 
 
@@ -719,6 +722,103 @@ def monitor_lloc() -> dict:
     rep = _crawl_into_db("lloc", False, only_sources=["Latest Legislation"])
     logger.info("LLOC (Latest Legislation): %s", rep)
     return {"Legislation and Legal Opinion Commission (LLOC)": rep}
+
+
+
+def monitor_qcb() -> dict:
+    """WEEKLY. Qatar Central Bank, all six sources.
+
+    THE CRAWL IS THE SIGNAL BECAUSE IT IS CHEAPER THAN THE PROBE. Measured
+    2026-09-17: the Legislation half is the site's own SharePoint REST chain —
+    6 requests, 1.8 seconds, 85 file rows, every one carrying its own
+    `Modified`. A stored-inventory sweep is one request per stored document and
+    the library holds 463. That is the same reasoning that moved MOH onto this
+    path, against the same shape of API: the probe step would cost more than the
+    thing it exists to avoid.
+
+    THE PAGES COULD NOT BE PROBED ANYWAY. The six .aspx pages carry no ETag and
+    a Last-Modified equal to the current time — three of three moved between two
+    identical calls two seconds apart. config/change_signals.yml holds the full
+    measurement, including why the sitemap and a news feed are both dead ends.
+
+    NO `only_sources`, UNLIKE LLOC. Each of the six sources is its own
+    source_system, so `disappeared` is scoped per source and a narrowed run
+    would be safe — but there is nothing to buy: the whole crawl is roughly
+    twenty requests. Narrowing would only create a second way for the monitored
+    set and the exported set to drift.
+
+    WHAT IT WILL NOT NOTICE. 350 of the 432 Legislation rows are files harvested
+    off a captured page and hashed `url|title`. A file appearing or vanishing
+    moves the page row's hash and is caught; a PDF swapped at the same url is
+    not. See change_signals.yml for the probe that would catch it and why it is
+    not wired.
+    """
+    return _run_exclusive("monitor_qcb", _monitor_qcb_impl)
+
+
+def _monitor_qcb_impl() -> dict:
+    rep = _crawl_into_db("qcb", False)
+    logger.info("Qatar Central Bank (QCB): %s", rep)
+    return {"Qatar Central Bank (QCB)": rep}
+
+
+def monitor_qfcl() -> dict:
+    """DAILY. QFCL's own revision feed: four requests instead of 8,034 probes.
+
+    THE THIRD REGULATOR ON THIS PLATFORM. SAMA and CBB publish the same Thomson
+    Reuters view (see monitor_cbb, which still crawls blind); QFCL is wired to it
+    through dynamic_crawler/tr_feed_signal.py rather than SAMA's module, because
+    QFCRA's entry markup does not match SAMA's regex and its feed already links
+    the url form the library stores — so this sweep costs ONE request per
+    source_system and no per-document resolution at all.
+
+    FOUR SWEEPS, NOT ONE. The feed is regulator-wide but `disappeared` is scoped
+    by (regulator, source_system), so each of the four sections in qfcl.yml is
+    swept separately and the feed's `book-trail` routes each entry to exactly one
+    of them. MEASURED 2026-09-18 over 875 entries: 806 claimed, ZERO claimed
+    twice.
+
+    IT DISCOVERS, AND THAT IS NOT WIRED TO INGEST. An entry matching nothing we
+    hold is reported in `feed.not_in_library` and left there. SAMA answers its
+    own discoveries by running benchmarks/sama_feed_ingest.py; there is no QFCL
+    equivalent and one should not be improvised, because ingesting on a signal's
+    say-so writes rows nobody has read. The number is the alert; a person runs
+    the export.
+
+    IT CANNOT SEE DELETIONS, so `disappeared` still comes from the crawl. Run
+    `tools.workbook export qfcl` occasionally for that — the feed makes the crawl
+    rare, not unnecessary.
+    """
+    return _run_exclusive("monitor_qfcl", _monitor_qfcl_impl)
+
+
+#: The four source_systems in config/sources/qfcl.yml, in the order they are
+#: crawled. Kept beside the job rather than imported so a change to the source
+#: config cannot silently drop a section from monitoring — if these stop
+#: matching, the sweep reports a source with no stored rows, which is visible.
+_QFCL_SOURCES = ("QFC Law", "QFC Regulation", "QFCA Rules", "QFCRA Rules")
+
+
+def _monitor_qfcl_impl() -> dict:
+    regulator = "Qatar Financial Centre Legislation"
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    out, discoveries = {}, 0
+    for source in _QFCL_SOURCES:
+        tf = state / f"QFCL_{source.replace(' ', '-')}.txt"
+        rep = _sweep(regulator, source, tf)
+        feed = rep.get("feed", {})
+        out[source] = {"counts": rep.get("counts", {}), "feed": feed,
+                       "seconds": rep.get("_seconds")}
+        discoveries += int(feed.get("not_in_library") or 0)
+    if discoveries:
+        # Reported, deliberately not acted on. See the docstring.
+        out["discovery"] = {
+            "not_in_library": discoveries,
+            "action": "none taken -- run `python -m tools.workbook export qfcl` "
+                      "and read the workbook before anything is stored"}
+    logger.info("Qatar Financial Centre Legislation: %s", out)
+    return out
 
 
 def _forms_for(regulator: str) -> list:

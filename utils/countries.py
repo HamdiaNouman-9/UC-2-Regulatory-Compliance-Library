@@ -157,6 +157,7 @@ _COUNTRY_CODES: Dict[str, str] = {
     "Kingdom of Saudi Arabia": "SAU",
     "Egypt": "EGY",
     "Bahrain": "BHR",
+    "Qatar": "QAT",
 }
 
 # Matches regulator_acronym()'s own "UNK" convention in mssql_repo.py, for a

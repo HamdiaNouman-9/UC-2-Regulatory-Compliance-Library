@@ -261,6 +261,42 @@ class GenericSiteCrawler:
         # already holds with real titles and dates. See
         # generic_crawler/crawler.py::path_excluded.
         exclude_paths: Optional[List[str]] = None,
+        # Breadcrumb steps this source must NOT turn into a folder, matched
+        # case-insensitively against whole crumbs. For a crumb that names the
+        # CMS or repeats the source_system: QCB's every page sits under
+        # "Home page", and each of its three generic section pages then repeats
+        # its own heading as the crumb below a source_system already called that.
+        #
+        # PER SOURCE, NOT GLOBAL, and absent by default: a crumb that is chrome
+        # on one site is a real folder on another, and _NON_SUBJECT_CRUMBS is
+        # shared by every regulator — adding to it changes doc_path, doc_path is
+        # an identity field, and the next crawl would read the moved rows as
+        # `new` and the stored ones as `disappeared`. Nothing sets this today
+        # except config/sources/qcb.yml, so every other regulator's trail is
+        # byte-identical to before.
+        drop_sections: Optional[List[str]] = None,
+        # END THE FOLDER TRAIL WITH THE DOCUMENT'S OWN TITLE.
+        #
+        # `_walk_folders` types the LAST doc_path segment "R" (a regulation) and
+        # every segment above it "F" (a folder). Without this the trail ends at
+        # the source system, so the SOURCE SYSTEM becomes the regulation node and
+        # the document's real title appears nowhere in the tree.
+        #
+        # MEASURED on the first QCB export, output/workbooks/qcb.xlsx: "Qatar
+        # Central Bank" had 27 children -- one folder (Legislation, whose custom
+        # source builds its own path) and 26 nodes typed R, named "Information
+        # Security" x6, "Fintech and Innovation" x11 and "ESG and Sustainability
+        # Strategy for the Financial Sector" x9, carrying 29 documents between
+        # them. `check` passed it: identity is (document_url, doc_path, title)
+        # and all 29 are distinct on the url.
+        #
+        # OFF BY DEFAULT, and it must stay that way for the regulators already
+        # stored. doc_path is an identity field -- turning this on for a source
+        # that has been promoted re-files every one of its rows, which the next
+        # crawl reads as all-new plus all-disappeared, and `disappeared` feeds
+        # the withdrawal gate. It is free to set only where the database holds no
+        # rows for that source yet.
+        doc_path_title: bool = False,
         wait_ms: Optional[int] = None,    # per-site JS settle time
         in_process: bool = False,
         timeout: int = 3600,
@@ -275,6 +311,17 @@ class GenericSiteCrawler:
         self.out_dir = out_dir
         self.include_pages = include_pages
         self.exclude_paths = list(exclude_paths or [])
+        # NORMALISED WITH `_crumb_key`, THE SAME FORM `_clean_trail` COMPARES BY.
+        # A plain `.strip().lower()` matches the literal string and misses what
+        # a CMS actually serves: QCB's Digital Currency breadcrumb is
+        # "Market&#160;Development and Innovation&#160;Sector" -- non-breaking
+        # spaces where a person sees spaces -- so an entry typed with ordinary
+        # spaces would never fire, and the wrong folder would appear with nothing
+        # in the config looking wrong. `_crumb_key` also folds "&" and "and",
+        # which is the same mercy for a folder spelled two ways.
+        self.drop_sections = {_crumb_key(x) for x in (drop_sections or [])
+                              if _crumb_key(x)}
+        self.doc_path_title = bool(doc_path_title)
         # How long to let JavaScript settle before reading the page. The engine
         # has always accepted --wait-ms; nothing passed it, so every site got the
         # default. ZATCA's landing page renders its links client-side and read at
@@ -327,7 +374,7 @@ class GenericSiteCrawler:
     #  mapping                                                             #
     # ------------------------------------------------------------------ #
 
-    def _doc_path(self, section_path: str) -> List[str]:
+    def _doc_path(self, section_path: str, title: str = "") -> List[str]:
         """Folder trail for the library.
 
         ALWAYS starts with the regulator. _get_or_create_compliance_category()
@@ -335,8 +382,19 @@ class GenericSiteCrawler:
         top-level folder called "Circulars" would otherwise merge into one node
         and tangle their documents together.
         """
-        parts = [self.regulator, self.source_system] + _split_section_path(section_path)
-        return _clean_trail([p for p in parts if p])
+        # `drop_sections` filters HERE and only here. `extra_meta["section_path"]`
+        # is stored raw a few lines below, so the workbook still reports the trail
+        # the site actually shows even where the folder tree does not use it.
+        crumbs = [p for p in _split_section_path(section_path)
+                  if _crumb_key(p) not in self.drop_sections]
+        parts = [self.regulator, self.source_system] + crumbs
+        trail = _clean_trail([p for p in parts if p])
+        # Appended AFTER _clean_trail, and never de-duplicated against it: a
+        # law whose title repeats its folder name is still a document that has
+        # to be its own leaf.
+        if self.doc_path_title and title:
+            trail.append(str(title).strip())
+        return trail
 
     def _category_for(self, section_path: str) -> str:
         if self.category:
@@ -358,7 +416,9 @@ class GenericSiteCrawler:
             published_date=None,          # a link walk cannot read issue dates
             source_page_url=d.get("found_on") or self.seed_url,
             file_type=d.get("type") or None,
-            doc_path=self._doc_path(section_path),
+            doc_path=self._doc_path(
+                section_path,
+                (d.get("title") or "").strip() or url.rsplit("/", 1)[-1]),
             content_hash=d.get("content_hash"),
             extra_meta={
                 # `crawler`, `shape` and `seed_url` removed 2026-08-12: none had
@@ -409,16 +469,37 @@ class GenericSiteCrawler:
             # stored as file_type HTML with no text, which reads as a broken page
             # rather than a PDF nobody has fetched yet.
             file_type=_ext_type(url) if _is_doc(url) else "HTML",
-            doc_path=self._doc_path(section_path),
+            doc_path=self._doc_path(section_path, title),
             document_html=r.get("html") or None,
             content_hash=r.get("content_hash"),
             # extra_meta is stored on every regulation row and read by people, so
             # it holds what a READER needs — not a record of how the crawl ran.
             # Removed as noise: crawler, shape, seed_url, depth, parent_page_url
-            # (duplicates the source_page_url column), section_path (duplicates
-            # doc_path) and row_text (used to parse the date and reference above,
-            # then of no further use). None had a single reader.
+            # (duplicates the source_page_url column) and row_text (used to parse
+            # the date and reference above, then of no further use). None had a
+            # single reader.
+            #
+            # `section_path` CAME BACK, 2026-09-17, BUT ONLY WHERE IT SAYS
+            # SOMETHING doc_path DOES NOT.
+            #
+            # It was dropped here because it duplicated doc_path, and that held
+            # while doc_path was built from the breadcrumb and nothing else.
+            # `drop_sections` ended it: a source that names crumbs to drop is a
+            # source whose tree DELIBERATELY differs from the site's trail, and
+            # the trail was the half being thrown away. MEASURED on QCB: a
+            # section whose only row is its page — Digital Currency is one —
+            # recorded no breadcrumb at all.
+            #
+            # CONDITIONAL, so a source that declares nothing gets exactly the
+            # extra_meta it got before. Restoring it unconditionally would have
+            # added the key to 102 CBE page rows and 2 MISA ones on their next
+            # export: harmless (identity is (document_url, doc_path, title) and
+            # the hash reads document_html, so neither moves) but a diff in
+            # someone else's workbook that nobody asked for.
             extra_meta={
+                # The trail as the site draws it, crumbs this source drops
+                # included. doc_path is the library's tree; this is the site's.
+                **({"section_path": section_path} if self.drop_sections else {}),
                 # KEEP. Tier 1b of the orchestrator's extraction reads this to
                 # avoid re-fetching the page (orchestrator.py:183), and the
                 # versioning path reads it to snapshot previous content
@@ -632,6 +713,42 @@ class CompositeCrawler:
         return docs[:limit] if limit else docs
 
 
+def _doc_path_title_for(cfg: dict) -> bool:
+    """`doc_path_title`, unless this branch can only honour HALF of what the
+    source asked for.
+
+    THE PAIR IS SPLIT ACROSS BRANCHES. `doc_path_title` (end the trail at the
+    document) and `doc_path_sections` (whether the breadcrumb goes into the trail
+    at all) were written together. Only the first landed here; nothing on this
+    branch reads `doc_path_sections`, and three configs merged from
+    abeeraslam-compliance set it -- sio.yml sets BOTH, on all ten of its sources.
+
+    Honouring `doc_path_title` alone there would give SIO
+
+        SIO | <system> | <crumb> ... | <law title>
+
+    when its config asked for `SIO | <system> | <law title>` -- a THIRD shape,
+    neither what is stored today nor what the file requests. doc_path is an
+    identity field, so that is not a cosmetic difference: it re-files every row,
+    and the next crawl reads all of them as `new` plus all the stored ones as
+    `disappeared`, which is what feeds the withdrawal gate.
+
+    So a source asking for both gets NEITHER, keeping its output byte-identical
+    to today, and says so once per build. Delete this function when
+    `doc_path_sections` lands -- it exists only while the pair is half here.
+    """
+    if not cfg.get("doc_path_title"):
+        return False
+    if "doc_path_sections" in cfg:
+        logger.warning(
+            "source %r asks for doc_path_title AND doc_path_sections; this "
+            "branch implements only the first, and applying it alone would "
+            "move every doc_path this source has stored. Both ignored -- port "
+            "doc_path_sections before turning this on.", cfg.get("name"))
+        return False
+    return True
+
+
 def build_source(cfg: dict):
     """Turn ONE source entry from a regulator's YAML into a crawler object.
 
@@ -667,6 +784,8 @@ def build_source(cfg: dict):
         source_system=cfg["source_system"],
         category=cfg.get("category"),
         exclude_paths=cfg.get("exclude") or [],
+        drop_sections=cfg.get("drop_sections"),
+        doc_path_title=_doc_path_title_for(cfg),
         scope=cfg.get("scope", "auto"),
         max_pages=int(cfg.get("max_pages", 150)),
         max_depth=int(cfg.get("max_depth", 8)),

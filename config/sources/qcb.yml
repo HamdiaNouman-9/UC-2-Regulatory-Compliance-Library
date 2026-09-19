@@ -1,0 +1,373 @@
+# QCB — Qatar Central Bank
+#
+# Six seeds, given directly:
+#   https://www.qcb.gov.qa/en/legislation/Pages/LegislationNew.aspx
+#   https://www.qcb.gov.qa/en/Pages/Information-Security.aspx
+#   https://www.qcb.gov.qa/en/Pages/FinancialTechnology.aspx
+#   https://www.qcb.gov.qa/en/FinancialStability/Pages/GreenFinance.aspx
+#   https://www.qcb.gov.qa/en/Pages/MonetaryPolicyTools.aspx
+#   https://www.qcb.gov.qa/en/FinancialInstrumentsAndPaymentSystems/Pages/Digital-Currency.aspx
+#
+# (The two capped test runs are in output/qbc_esg and output/qbc_leg. The host
+# is qcb.gov.qa, so this file and its workbook are `qcb`, not `qbc`.)
+#
+# ---------------------------------------------------------------------------
+# 1. WHAT THE FIRST TWO RUNS ACTUALLY SHOWED
+# ---------------------------------------------------------------------------
+# Both capped runs came back with a 235-byte HTML file and text_len 0, and a
+# doc_path of nothing but "Home page". Neither is a timing problem, and no
+# amount of --wait-ms fixes either:
+#
+#   * THE BLANK CAPTURE. The same GreenFinance run harvested 9 PDF links, and
+#     JS_LINKS reads the LIVE document — so the page had rendered before it was
+#     read. What emptied the file is `<form id="aspnetForm">`: SharePoint wraps
+#     the whole page in one, `form` is on the engine's junk list, and removing
+#     it removes the document. That is the aml.gov.sa failure, and its fix is
+#     the same pair of per-host switches — `unwrap_forms` + `sharepoint_main`.
+#
+#   * THE ONE-STEP BREADCRUMB. The current crumb is an <li>, not an <a>:
+#         <li class="breadcrumb-item"><a ...>Home page</a></li>
+#         <li class="lblCurrentbreadcrumb breadcrumb-item active"
+#             aria-current="page">Sustainability &amp; Financial Inclusion</li>
+#     Reading anchors only returns ["Home page"] for every page on the host.
+#     `breadcrumb_current: True` reads the trail the user sees.
+#
+# All three switches are in generic_crawler/crawler.py::SITE_PROFILES under
+# "www.qcb.gov.qa", keyed on the netloc, so no other regulator's output moves.
+#
+# ---------------------------------------------------------------------------
+# 2. THE TREE, AND WHY THE BREADCRUMB CANNOT BUILD IT
+# ---------------------------------------------------------------------------
+# The target is the manual library's shape:
+#
+#   Qatar                                            <- config/countries.yml
+#     Qatar Central Bank (QCB)                       <- regulator, doc_path[0]
+#       Legislation                                  <- source_system
+#         Laws                                       <- the site's five tabs,
+#         Licensing                                     read from the list that
+#         Supervisory Instructions                      draws them; see
+#         Combating Financial Crimes                    crawler/qcb_source.py
+#         Enforcement of Sanctions
+#       Information Security                         <- source_system
+#       Fintech and Innovation                       <- source_system
+#       ESG and Sustainability Strategy for the Financial Sector
+#       Monetary Policy Tools                        <- source_system
+#         Monetary Policy Goals                      <- the page's three tabs
+#         Monetary Policy Tools
+#         Exchange Rate Policy
+#       Digital Currency                             <- source_system
+#
+# THE LAST TWO NAMES ARE NOT FROM THE MANUAL LIBRARY. The first four were read
+# off its tree; these two came with no reference, so they are the site's own
+# section names. `source_system` is an identity key — free to change while the
+# database holds no rows under it, and expensive afterwards. Rename now or not
+# at all.
+#
+# The site's breadcrumb cannot supply those four names. MEASURED in the first
+# export, rendered rather than raw:
+#
+#   LegislationNew.aspx        Home page                       (1 step only)
+#   Information-Security.aspx  Home page > Information Security
+#   FinancialTechnology.aspx   Home page > Fintech and Innovation
+#   GreenFinance.aspx          Home page > Sustainability & Financial Inclusion
+#
+# The trail never reaches three, and the second step is the page's own heading,
+# not a folder above it. On three of these the second step is the source system
+# WORD FOR WORD, so `_clean_trail` drops it as a repeat with nothing configured;
+# only ESG's differs, because the site calls that section "Sustainability &
+# Financial Inclusion" and the manual library calls it ESG.
+#
+# READ THE RENDERED TRAIL, NOT A PLAIN GET. The server sends these crumbs in
+# Arabic and the English labels are swapped in client-side, so a `requests` GET
+# shows "الخدمات المالية" (Financial Services) on BOTH /en/Pages/ seeds and
+# suggests one crumb covering two sections. It does not. That inference sat in
+# this file until the export disproved it.
+#
+# So the four folders are `source_system`, `drop_sections` removes "Home page"
+# (the bare "home" is in `_NON_SUBJECT_CRUMBS`; "Home page" is not), and
+# `doc_path_title: true` puts the document's own title at the end of the trail.
+#
+# `doc_path_title` IS NOT OPTIONAL POLISH. Without it the trail ends at the
+# source system, and `_walk_folders` types the LAST segment "R" — so the source
+# system becomes the regulation and the document's title appears nowhere. The
+# first export shows exactly that: 26 sibling nodes under "Qatar Central Bank"
+# named after their source, carrying 29 documents, and `check` passed it.
+#
+# `extra_meta.section_path` still stores the RAW trail, and the `breadcrumb`
+# column in the crawl output is untouched — the workbook reports what the site
+# shows, the tree matches the library. Same rule the CBJ Official Holidays
+# source runs under.
+#
+# THE FOUR `source_system` NAMES ARE AN IDENTITY KEY. A rename after the first
+# promote moves stored rows and splits version history. They are free to choose
+# only while the database holds zero rows under them, which is true today.
+#
+# ---------------------------------------------------------------------------
+# 3. WHY max_depth: 0 ON ALL FOUR GENERIC SOURCES
+# ---------------------------------------------------------------------------
+# `scope: prefix` takes the filename and a trailing `/Pages` off the seed
+# (crawler.py::scope_prefix), and for two of these seeds that lands on the whole
+# site:
+#
+#   /en/FinancialStability/Pages/GreenFinance.aspx -> /en/FinancialStability
+#   /en/FinancialInstrumentsAndPaymentSystems/...  -> /en/FinancialInstruments…
+#   /en/Pages/Information-Security.aspx            -> /en   <- EVERY English page
+#   /en/Pages/FinancialTechnology.aspx             -> /en   <- EVERY English page
+#   (MonetaryPolicyTools.aspx is custom now and walks nothing at all)
+#
+# `max_depth: 0` is what actually holds those two sources to their page; the
+# scope is no fence at all. FinancialStability has a fence but the wrong one —
+# the ESG run queued /en/FinancialStability/Pages/Financial-Stability-Sector.aspx,
+# a sibling section this source does not own — so it is pinned at 0 too.
+#
+# Nothing here walks. Legislation does not use the engine at all.
+#
+# ---------------------------------------------------------------------------
+# 4. WHAT THE LEGISLATION LISTS HELD, AND WHAT IS WRONG IN THEM
+# ---------------------------------------------------------------------------
+# MEASURED 2026-09-17 straight off the API, EN/Both rows:
+#
+#   Laws                          19 files / 11 subcategories   (+3 skipped)
+#   Licensing                      2 /  2
+#   Supervisory Instructions      14 /  7   (+2 headings)
+#   Combating Financial Crimes    45 /  1
+#   Enforcement of Sanctions       2 /  1
+#                                 --
+#                                 82
+#
+# THE SUBCATEGORY LIST IS TWO DEEP, in one tab only. Every row carries a
+# `Level`, and Supervisory Instructions is the only tab that uses Level 1:
+#
+#   Instructions To Banks                              <- heading, 0 files
+#     Governance Instructions for Banks                    2
+#     Instructions To Banks                                1
+#     Instructions for Insurance Companies                 3
+#   Instructions to Other Financial Institutions       <- heading, 0 files
+#     Instructions to Financing Companines                 1
+#     Instructions to investment companies                 1
+#     Instructions to Exchange House                       1
+#     Instructions for Financial Technology Companies      5
+#
+# — the indentation the site draws, and the reason "Instructions To Banks"
+# appears twice: it is both the heading and a leaf under it. A heading holds no
+# files BY DESIGN and is not reported as an empty folder.
+#
+# MANUAL-LIBRARY DIVERGENCE: the library's Supervisory Instructions is flat, six
+# children, no headings, and has no "Instructions to Financing Companines" [sic,
+# the site's spelling]. The site is what is mirrored here.
+#
+# Laws holds THREE files under category IDs 76, 77 and 78 that its own
+# subcategory list does not contain, so QCB's sidebar can never display them.
+# THEY ARE SKIPPED: a file the site does not publish is not in the library, and
+# the invented "Uncategorised (category NN)" folder an earlier run put them in
+# was a section name QCB has never used. Every skip is logged with its item and
+# category ID and listed in `last_result["skipped_uncategorised"]`, so they come
+# back on their own if QCB adds the missing rows.
+#
+# A SUBCATEGORY CAN CARRY THE INSTRUMENT'S TEXT. `Description` on the row is the
+# prose the site draws when you open the folder. On the English side exactly one
+# is real content -- QCB Law, 1,533 characters of the Law No. (13) of 2012
+# Issuance Articles -- and because that folder holds a single PDF, the text is
+# stored as that document's `document_html`. It is the only row in the whole
+# Legislation source with any text; everything else is a link to a file this
+# source never downloads. Two more subcategories describe themselves in Arabic
+# only, and Combating Financial Crimes puts its own name in the field, which is
+# dropped rather than stored as content.
+#
+# Four rows are titled "Download full PDF" rather than named — three of them the
+# skipped files, the fourth the whole of the "Commercial law" subcategory, which
+# now takes that folder's name. See `_title_for`.
+#
+# NONE OF THIS IS INVENTED HERE. Decide against the manual library which of the
+# nine subfolders the library should carry, then say so — but decide it with the
+# first export in front of you, not from this comment.
+#
+# ---------------------------------------------------------------------------
+# 5. STILL OPEN — READ BEFORE PROMOTING ANYTHING
+# ---------------------------------------------------------------------------
+#   * FIVE OF THE SIX REPOINTED ROWS ARE ARABIC. Those rows attached an 18-byte
+#     .txt placeholder and put the instrument on a page; the page is now the
+#     document and its content is stored (see qcb_source.py::_read_linked_pages).
+#     QCB publishes no English version of five of them — only Exchange of tax
+#     information links /en/Pages/FATCA.aspx. `extra_meta.page_lang` says which,
+#     and `page_dir` carries `rtl` so the text is not rendered left-to-right.
+#     An Arabic instrument is what QCB published; the 18-byte typo was not.
+#   * READING THOSE PAGES COSTS SIX REQUESTS PER RUN, and puts ONE row over
+#     Excel's cell limit: Instructions To Banks is 26,367 characters of text in
+#     90,254 of markup, so `qcb.fulltext.json` comes back and the workbook must
+#     travel with it. Set `fetch_linked_pages: false` in init_kwargs to skip the
+#     fetches — the rows keep their links and lose their text.
+#   * NO PUBLICATION DATES. `Year` is the page's filter value, not an issue year
+#     (the 2012 QCB Law carries Year 2025), so `published_date` stays None.
+#   * PAGE TITLES ON THE THREE GENERIC SOURCES. LegislationNew.aspx serves
+#     <title>LegislationNew</title> and an empty <h1> — the heading is written by
+#     JavaScript. Check the titles in the first export rather than trusting the
+#     slug.
+#   * ARABIC FILENAMES. Most file URLs are percent-encoded Arabic paths holding
+#     English text. Titles come from the list row, not the filename, so this
+#     should be fine — confirm it in the export.
+#
+# ---------------------------------------------------------------------------
+# 6. HOW TO PROVE IT BEFORE THE LONG RUN
+# ---------------------------------------------------------------------------
+#   python -m tools.workbook export qcb --only "ESG and Sustainability Strategy for the Financial Sector"
+#   python -m tools.workbook check output/workbooks/qcb.xlsx
+#   # read the tree and the captured text against the site, THEN run Legislation
+#   # (uncomment only_tabs in the Legislation source to prove one section first)
+#
+# A capped run under-reports by design and must never be promoted as if it were
+# the section.
+
+regulator: "Qatar Central Bank (QCB)"
+owner: abeeraslam
+
+sources:
+  # THE ONLY CUSTOM SOURCE HERE, and the reason is in crawler/qcb_source.py's
+  # header: the Legislation tab is one URL whose tabs, instrument list and file
+  # rows are all drawn client-side from SharePoint lists. Nothing changes the
+  # URL, so a link-walker has no second page to queue — the capped generic run
+  # in output/qbc_leg found 1 document where the lists hold 85.
+  #
+  # No seeds, no depth, no scope: the source reads the tab list and follows it.
+  - name: "Legislation"
+    mode: custom
+    crawler_class: "crawler.qcb_source.QCBLegislationSource"
+    init_kwargs:
+      source_system: "Legislation"
+      lang: "EN"
+      doc_path_prefix:
+        - "Qatar Central Bank (QCB)"
+        - "Legislation"
+      # Uncomment to prove ONE section before running the lot. A capped run
+      # under-reports by design and must never be promoted as if it were the
+      # section.
+      # only_tabs: ["Licensing"]
+
+  # /en/Pages/ — prefix scope resolves to /en, the entire English site. depth 0
+  # is the fence. See section 3.
+  - name: "Information Security"
+    mode: generic
+    seed_url: "https://www.qcb.gov.qa/en/Pages/Information-Security.aspx"
+    scope: prefix
+    source_system: "Information Security"
+    category: "Information Security"
+    doc_path_title: true
+    # MEASURED in the first export, not inferred. A plain GET of this page serves
+    # its crumbs in Arabic and the second one reads "الخدمات المالية"
+    # (Financial Services) on BOTH this page and FinancialTechnology.aspx, which
+    # looked like one crumb over two sections. It is not: the crawl renders the
+    # page, the client-side labels land, and the trail comes back as
+    #
+    #     Home page > Information Security
+    #
+    # — the crumb IS the source system, so `_clean_trail` drops it as a repeat
+    # without being told to. Only "Home page" needs naming here; it is not in
+    # `_NON_SUBJECT_CRUMBS`, which holds the bare "home".
+    drop_sections: ["Home page"]
+    # The page text is nothing but the list of PDF titles below it, and storing
+    # it costs a duplicate row: `utils/file_links.normalise` sees the page's one
+    # org_pdf_link and repoints document_url at a file that already has its own
+    # row. Measured in the first export, three rows, one per generic source.
+    include_pages: never
+    max_pages: 1
+    max_depth: 0
+
+  - name: "Fintech and Innovation"
+    mode: generic
+    seed_url: "https://www.qcb.gov.qa/en/Pages/FinancialTechnology.aspx"
+    scope: prefix
+    source_system: "Fintech and Innovation"
+    category: "Fintech and Innovation"
+    doc_path_title: true
+    # Same as above: the rendered crumb is "Fintech and Innovation", the source
+    # system said again, and `_clean_trail` drops it.
+    drop_sections: ["Home page"]
+    include_pages: never
+    max_pages: 1
+    max_depth: 0
+
+  # 9 PDFs measured on the seed page itself. The one queued link was a sibling
+  # section (Financial-Stability-Sector.aspx), which is why this is depth 0 too.
+  - name: "ESG and Sustainability Strategy for the Financial Sector"
+    mode: generic
+    seed_url: "https://www.qcb.gov.qa/en/FinancialStability/Pages/GreenFinance.aspx"
+    scope: prefix
+    source_system: "ESG and Sustainability Strategy for the Financial Sector"
+    category: "ESG and Sustainability Strategy for the Financial Sector"
+    doc_path_title: true
+    # The ONLY one of the three whose second crumb is not its own source system:
+    # the site calls this section "Sustainability & Financial Inclusion" and the
+    # manual library calls it ESG. Measured in the first export — without this
+    # the site's name becomes a folder between the two.
+    drop_sections:
+      - "Home page"
+      - "Sustainability & Financial Inclusion"
+    # KEPT ON PURPOSE, where the others say `never`. This page carries 4,485
+    # characters of real Department Overview prose that exists nowhere else in
+    # the library — it is the one page row here worth storing. It arrives with
+    # the page's own title and a document_url normalise() repointed at the first
+    # PDF on the page; check that row in the export and decide whether the prose
+    # is worth the duplicate link before promoting.
+    include_pages: auto
+    max_pages: 1
+    max_depth: 0
+
+  # THREE INSTRUMENTS AT ONE URL, so this is custom rather than generic. The page
+  # has no files: it is three Bootstrap tab panes of prose — Monetary Policy
+  # Goals, Monetary Policy Tools, Exchange Rate Policy — all server-rendered and
+  # all in the DOM at once, and nothing about switching tabs changes the URL.
+  #
+  # ON THE GENERIC ENGINE IT WAS ONE ROW OF 12,078 CHARACTERS holding all three,
+  # under a single title. The engine picks ONE content container per HOST, not per
+  # source, so three generic sources aimed at this URL would each capture the
+  # whole page; splitting has to happen where the panes are known.
+  #
+  # MEASURED, and the reason the workbook no longer needs a sidecar:
+  #   Monetary Policy Goals  #nav-plans        2,283 html / 1,924 text
+  #   Monetary Policy Tools  #nav-investment   1,914 / 1,219
+  #   Exchange Rate Policy   #nav-exhangerate 25,961 / 2,169
+  # — every one inside Excel's 32,767-character cell, where the combined capture
+  # was 38,134 and overflowed into qcb.fulltext.json.
+  #
+  # Each row's url is `<page>#<pane id>`, the form the engine already uses for a
+  # panel with no url of its own (see `keep_modals`). Identity does not rest on
+  # it: each pane has its own doc_path.
+  - name: "Monetary Policy Tools"
+    mode: custom
+    crawler_class: "crawler.qcb_source.QCBTabbedPageSource"
+    init_kwargs:
+      seed_url: "https://www.qcb.gov.qa/en/Pages/MonetaryPolicyTools.aspx"
+      source_system: "Monetary Policy Tools"
+      doc_path_prefix:
+        - "Qatar Central Bank (QCB)"
+        - "Monetary Policy Tools"
+
+  # ONE STATEMENT AND AN FAQ. The page is a paragraph defining a CBDC followed by
+  # 21 <details>/<summary> question-and-answer blocks. The Q&A is the site
+  # explaining itself, not an instrument, and it is dropped by `drop_selectors:
+  # "details"` in the qcb.gov.qa profile — 7,531 characters of captured text down
+  # to the 376 that are the actual statement. See that profile for why naming the
+  # element is safe on this host.
+  - name: "Digital Currency"
+    mode: generic
+    seed_url: "https://www.qcb.gov.qa/en/FinancialInstrumentsAndPaymentSystems/Pages/Digital-Currency.aspx"
+    scope: prefix
+    source_system: "Digital Currency"
+    category: "Digital Currency"
+    doc_path_title: true
+    # THE BREADCRUMB NEVER NAMES THIS PAGE. It reads
+    #   Home > Sectors > Market Development and Innovation Sector
+    # — where the page sits in QCB's org chart, not what it is. All three are
+    # dropped and the section is named by `source_system`.
+    #
+    # The last two arrive with NON-BREAKING SPACES in them
+    # ("Market&#160;Development and Innovation&#160;Sector"). They are written
+    # here with ordinary spaces and still match, because `drop_sections` compares
+    # on `_crumb_key`; that was changed for this entry. Do not "fix" the spacing.
+    drop_sections:
+      - "Home page"
+      - "Sectors"
+      - "Market Development and Innovation Sector"
+    include_pages: always
+    max_pages: 1
+    max_depth: 0

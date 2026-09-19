@@ -315,3 +315,57 @@ jobs:
   # The `until` dates there are REVIEW dates, not expiries: a person retests by
   # hand and deletes the entry. Nothing unblocks itself.
   # ----------------------------------------------------------
+
+  # ---- Qatar, onboarded 2026-09-17 ---------------------------------------- #
+  # Sunday 13:00, continuing the one-hour stagger. Every monitor_* job takes the
+  # same `_run_exclusive` lock and an overlap is a SKIP, not a failure, so a
+  # colliding slot silently starves a job rather than erroring. Taken before
+  # this: mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00, bahrain_bourse 08:00,
+  # cbb 09:00, rera 10:00, sio 11:00, lloc 12:00.
+  #
+  # WEEKLY, not daily, although the crawl is cheap enough to run daily — roughly
+  # twenty requests, the Legislation half measured at 6 requests in 1.8 seconds.
+  # Legislation does not move daily, and a weekly slot keeps it beside the
+  # others under one lock.
+  #
+  # DISABLED. Two things are still outstanding: ONBOARDING Step 7 (the second
+  # export, compared row by row) has not been run, and nobody has promoted the
+  # workbook. This path writes straight to MSSQL, so enabling it now would make
+  # the first scheduled run the ingest — the thing the workbook step exists to
+  # prevent.
+  monitor_qcb:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 13
+      minute: 0
+
+  # QFCL — THE REGULATOR'S OWN REVISION FEED, not a crawl and not a probe.
+  #
+  # Four requests a run, one per source_system in qfcl.yml, against
+  # qfcra-en.thomsonreuters.com/view-revision-updates. The alternative is a
+  # stored-inventory sweep of 8,034 documents. MEASURED 2026-09-18: a 60-day
+  # window returned ONE entry, so the expensive sweep would spend 8,034 requests
+  # to learn that nothing happened.
+  #
+  # DAILY IS AFFORDABLE HERE AND WEEKLY IS NOT ENOUGH. Unlike monitor_qcb below,
+  # which crawls, this costs four requests — so it can run at the cadence the
+  # feed is useful at. 04:00 keeps it clear of monitor_sama at 03:15, which hits
+  # the same Thomson Reuters platform on a different host.
+  #
+  # DISABLED, for the same reason as every other Qatar job and one more:
+  #   1. Nobody has promoted qfcl.xlsx. The sweep reads the stored inventory
+  #      with --with-db, so until then every feed entry reports as a document
+  #      the library does not hold — 8,034 phantom discoveries on the first run.
+  #   2. ONBOARDING's second sweep has not been run. The checklist calls it one
+  #      of the two steps people skip, because run 1 looks identical whether the
+  #      signal is right or wrong.
+  # Enable it after the promote, and only once a second sweep reports zero
+  # changes.
+  monitor_qfcl:
+    enabled: false
+    trigger: cron
+    schedule:
+      hour: 4
+      minute: 0

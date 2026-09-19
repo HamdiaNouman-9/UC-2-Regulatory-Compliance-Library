@@ -241,6 +241,44 @@ def sama_feed_sweep(source_system: str, *, regulator: str, since=None, until=Non
     return report
 
 
+def tr_feed_sweep(source_system: str, *, regulator: str, since=None, until=None,
+                  repo=None, workbook=None, run_workbook=None, config_path=None,
+                  state_root=None, days: int = 30, base_url=None,
+                  dry_run: bool = False) -> dict:
+    """The Thomson Reuters revision feed, for QFCL.
+
+    SEPARATE FROM `sama_feed_sweep` ON PURPOSE. Same endpoint, different
+    deployment: QFCRA's entry markup does not match SAMA's regex (0 of 240 live
+    entries), and its feed links `/rulebook/<slug>` — the form `source_page_url`
+    already holds — so the per-document node resolution that makes SAMA's sweep
+    cost 1 + n is not needed and is not done. This sweep is ONE request.
+
+    ONE FEED, FOUR SOURCE_SYSTEMS. The feed is regulator-wide, so each sweep
+    keeps only the entries whose `book-trail` names its own section. See
+    `tr_feed_signal.QFCL_SECTIONS` for why that map is not simply the
+    source_system name.
+    """
+    from dynamic_crawler.tr_feed_signal import (QFCL_SECTIONS, QFCRA_BASE,
+                                                TRFeedSweep, default_window)
+    config = load_config(config_path)
+    settings = settings_for(config, regulator, source_system)
+    lo, hi = default_window(days)
+    signal = TRFeedSweep(
+        f"{regulator}/{source_system}",
+        _tracked_urls(regulator, source_system, repo=repo, workbook=workbook,
+                      run_workbook=run_workbook),
+        since=since or lo, until=until or hi,
+        base_url=base_url or QFCRA_BASE,
+        timeout=float(settings.get("timeout") or 45),
+        sections=QFCL_SECTIONS.get(source_system))
+    report = _run(signal, f"{regulator}/{source_system}", state_root, dry_run)
+    # Same as the SAMA path: what the feed itself saw, kept beside the verdicts,
+    # because an entry matching nothing in the library is a DISCOVERY and a
+    # probe cannot produce one.
+    report["feed"] = signal.stats
+    return report
+
+
 def gosi_sweep(seed: str, *, regulator: str = "GOSI", config_path=None,
                state_root=None, workers=None, probe_documents: bool = True,
                dry_run: bool = False) -> dict:
@@ -387,8 +425,22 @@ def main() -> int:
     if a.signal == "sama-feed":
         if not (a.workbook or a.with_db or a.run_workbook):
             raise SystemExit("pass --with-db, --workbook or --run-workbook: the "
-                             "feed says what SAMA changed, and the stored "
-                             "inventory is what says whether we already hold it")
+                             "feed says what the regulator changed, and the "
+                             "stored inventory is what says whether we hold it")
+        # THE SIGNAL NAME IS SHARED, THE DEPLOYMENT IS NOT. `sama-feed` names a
+        # KIND of signal — the regulator's own revision view — and three
+        # regulators on this platform publish one. QFCL's markup and url shape
+        # differ enough to need their own reader (see tr_feed_sweep), so the
+        # regulator, not the signal name, picks the implementation. SAMA keeps
+        # the path it has always taken.
+        if a.regulator.startswith("Qatar Financial Centre"):
+            report = tr_feed_sweep(a.source_system, regulator=a.regulator,
+                                   repo=_repo(a), workbook=a.workbook,
+                                   run_workbook=a.run_workbook,
+                                   config_path=a.config, state_root=a.state_root,
+                                   days=a.feed_days, since=a.since,
+                                   until=a.until, dry_run=a.dry_run)
+            return _emit(report, a.json_out, a.targets_out)
         report = sama_feed_sweep(a.source_system, regulator=a.regulator,
                                  repo=_repo(a), workbook=a.workbook,
                                  run_workbook=a.run_workbook,

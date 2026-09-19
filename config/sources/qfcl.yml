@@ -1,0 +1,277 @@
+# QFCL — Qatar Financial Centre Legislation
+#
+# Scope sheet, row 1:
+#   Regulator / Framework : Qatar Financial Centre Legislation
+#   Tabs / Sections       : QFC, QFC Regulation, QFCA Rules, QFCRA Rules
+#   Source URL            : https://www.qfc.qa/en/laws-and-regulations/
+#
+# THE SCOPE URL IS A REFERENCE, NOT A SEED. qfc.qa is the landing page; the text
+# itself lives on Thomson Reuters, and the four seeds below are the four tabs,
+# given directly so each section is its own source. Nothing here fetches qfc.qa.
+#
+# ---------------------------------------------------------------------------
+# 1. WHY THIS IS NOT ON THE GENERIC ENGINE
+# ---------------------------------------------------------------------------
+# `generic_crawler/crawler.py` walks listing pages and harvests file links. This
+# site has neither: the structure is a collapsible sidebar and the instrument IS
+# the page, down to "Article 1 - Citation". There is no PDF per article to
+# collect and no breadcrumb trail to read the folders from.
+#
+# That is the same shape CBB hit, which is why `cbb_test_crawlers/
+# cbb_rulebook_crawler.py` was written by hand. `crawler/tr_rulebook.py` is that
+# walker with its hardcoded constants lifted into arguments — a COPY, not a
+# refactor, so CBB's 1,464 documents and its on-disk checkpoint are untouched by
+# this onboarding. See that module's header for when the duplication should be
+# paid off.
+#
+# ---------------------------------------------------------------------------
+# 2. WHY FOUR SOURCES AND NOT ONE
+# ---------------------------------------------------------------------------
+# One source per tab, so each keeps its own baseline, its own completeness gate
+# and its own change signal. A tab that silently returns nothing is then visible
+# rather than absorbed into a bigger total. ONBOARDING's rule; cbe.yml is split
+# the same way and it is what caught Governance returning 5 documents where 17
+# exist.
+#
+# The four `source_system` names are FINAL. It is an identity key: a rename moves
+# stored rows and splits a document's version history in two. It is free to
+# choose only while the database holds zero rows under it, which is true today
+# (this regulator has never run) and will not be true after the first promote.
+#
+# SETTLED 2026-09-17, while it was still free. They are the bare section names —
+# "QFC Law", "QFC Regulation", "QFCA Rules", "QFCRA Rules". For the last three
+# that makes `source_system`, `section` and `name` identical. Source 1 is the one
+# exception and deliberately so: `name` and `section` stay "QFC" because that is
+# what the scope sheet's tab is called, while `source_system` is "QFC Law".
+#
+# The earlier draft prefixed three of them "QFCL-". That prefix bought nothing:
+# `source_system` is NEVER read alone. `disappeared` is scoped by (regulator,
+# source_system) — jobs/monitor_jobs.py:681 — change_signals.yml is matched on
+# both halves, and dynamic_crawler/inventory_sweep.py:52 says why in as many
+# words: "`source_system` is not unique across regulators, so matching on it
+# alone would hand one regulator another's confirm tier." The library relies on
+# that already: EIGHT regulators use "Regulations" and five use "Public Sectors".
+# The two places the bare string does surface — the checkpoint filename
+# `qfcl_<source_system>.json` and the `QFCLSource[...]` log line — are each
+# already stamped with the regulator, so the prefix only said it twice.
+#
+# Source 1 is "QFC Law", not the tab's bare "QFC", because "QFC" names the whole
+# Centre and all four sections are QFC things, while this one holds only the
+# Laws — which is what its own doc_path (QFC > QFC Law) already says.
+#
+# RENAMING LATER COSTS MORE THAN THE DATABASE. The checkpoint is named after
+# `source_system`, so a rename orphans it and re-crawls the section from zero —
+# 19 MB and five hours for QFCRA Rules. Both existing checkpoints were renamed
+# alongside this edit; a future rename must do the same.
+#
+# ---------------------------------------------------------------------------
+# 3. `root_mode: node` — THE ONE SETTING THAT COULD QUADRUPLE THE LIBRARY
+# ---------------------------------------------------------------------------
+# MEASURED 2026-09-17, one request to /rulebook/qfc-law-no-7-year-2005: this site
+# publishes ONE book, not four. There is a single `nav#book-block-menu-1` rooted
+# at "Qatar Financial Centre Legislation" with ~26 direct children. The four
+# sections in scope are four of those children; the rest — archives, forms,
+# guidance, consultation papers, Gazette — are NOT in scope.
+#
+# So a source here is a BRANCH of one tree, not a book. `root_mode: node` walks
+# the sidebar node that IS the seed, at whatever depth it sits, and nothing
+# outside it.
+#
+# THIS WAS CAUGHT THE EXPENSIVE WAY. The first run used `root_mode: seed`, which
+# looks for a book whose ROOT is the seed. It found none, found exactly one book
+# on the page, and logged:
+#
+#   Book: 'Qatar Financial Centre Legislation' — seed did not match the root
+#   url, but this page carries exactly one book
+#
+# — then began walking the entire framework under one source_system. With all
+# four sources enabled that is the same documents stored four times under four
+# names, each source's completeness gate scoped onto rows belonging to another:
+# the MHRSD failure change_signals.yml records. `root_mode: node` raises if the
+# seed appears nowhere in the sidebar rather than falling back to anything.
+#
+# ---------------------------------------------------------------------------
+# 4. WHAT IS MEASURED AND WHAT IS STILL OPEN
+# ---------------------------------------------------------------------------
+# MEASURED (2026-09-17, two requests, no crawl):
+#   - the platform markup is CBB's: one nav#book-block-menu-*,
+#     li.menu-item--collapsed/--expanded, div.field--name-body. The selectors in
+#     tr_rulebook.py hold.
+#   - QFC Law No. (7) of Year 2005 has 19 Articles + 6 Schedules as direct
+#     children; SCHEDULE 3 is itself a folder. That is the whole of source 1.
+#
+#   - the other three laws the manual library shows under QFC Law were NOT
+#     missing from the site, only from the crawl: they are published as files on
+#     the law's own folder page, which the walk used to skip. Law No. (2) of
+#     2009, Law No. (14) of 2009, Law No. (16) of 2024 and the consolidated text
+#     are now rows, each one entry carrying its PDF, Word and Arabic files.
+#
+# MEASURED 2026-09-17 from the QFCRA Rules workbook (5,063 rows), with two
+# defects found and fixed BEFORE any promote, because both touch `doc_path`:
+#   - all 20 rulebooks present, IBANK 907 rows down to TOKN 10. No folder was
+#     emitted as a document and no folder came back empty.
+#   - 9 leaves carry no text at all. VERIFIED against the live sidebar: those
+#     pages really are empty headers with no children. Faithful, not a miss.
+#   - 262 titles held a raw TAB between the clause number and its heading
+#     ("BANK 4.2.1\tPrinciple 1: ..."). `a.get_text(strip=True)` strips the ends
+#     and leaves the middle, so it reached the tree as well — 573 rows. Fixed in
+#     tr_rulebook.py::_clean_title, which now collapses whitespace first. Source
+#     1 is untouched by that change: 0 of its 31 titles move.
+#   - IBANK 5.2.1 has THREE children all titled "IBANK 5.2.1 Guidance", at
+#     /ibank-521-guidance, -0 and -1, all with the same text. VERIFIED on the
+#     live sidebar — the site repeats itself, the crawl did not. Three rows on
+#     one doc_path is an identity collision, so qfcl_source.py::_drop_republished
+#     keeps the first and records the others in extra_meta.republished_at. It
+#     fires ONLY on an identical content_hash, so a real same-title-different-text
+#     pair still surfaces rather than being swallowed.
+#
+# STILL OPEN:
+#   - the site points "Law as amended" and "Law No. (16) of 2024" at the SAME
+#     three files. Reproduced as published and kept apart by title; deciding
+#     they are one instrument is a judgement about the law, not the crawl.
+#   - node counts for QFC Regulation and QFCA Rules. Neither has been crawled,
+#     so the 5,063 rows above are QFCRA Rules (5,032) plus QFC Law (31) only.
+#
+# ---------------------------------------------------------------------------
+# 5. HOW TO PROVE IT BEFORE THE LONG RUN
+# ---------------------------------------------------------------------------
+# `export` takes NO per-source switch — it runs every source in this file. To
+# prove one section, comment the others out:
+#
+#   python -u -m tools.workbook export qfcl
+#   python -m tools.workbook check output/workbooks/qfcl.xlsx
+#   # read the tree against the manual library, THEN enable the next section
+#
+# Add `max_books: 1` to an init_kwargs block to cap a section. A capped run
+# under-reports by design and must never be promoted as if it were the section.
+#
+# AND DELETE THE SECTION'S CHECKPOINT whenever extraction logic changes —
+# crawler/_checkpoints/qfcl_<source_system>.json caches finished books, so a
+# fix to what is extracted is silently replayed away without it.
+#
+# ONE EXCEPTION, and it saved five hours on 2026-09-17. The checkpoint stores
+# _process()'s output, so when a fix is a PURE STRING TRANSFORM over a field it
+# already holds — the _clean_title whitespace fix was — the cache can be
+# rewritten in place instead of refetched, because patching and re-crawling then
+# converge on the same rows. That equivalence is the whole licence, so prove it:
+# apply the transform, assert every network-derived field (url, content_text,
+# content_hash, extra_meta) is byte-identical, and assert the result is a fixed
+# point. If the fix changes WHAT IS READ from a page, this does not apply and
+# the checkpoint goes.
+#
+# ---------------------------------------------------------------------------
+# 6. THE TREE
+# ---------------------------------------------------------------------------
+# `doc_path` starts at the regulator, and utils/countries.py prepends the
+# country, giving the manual library's shape:
+#
+#   Qatar                                   <- config/countries.yml
+#     Qatar Financial Centre Legislation    <- regulator, doc_path[0]
+#       QFC                                 <- doc_path_prefix, NOT on the site
+#         QFC Law                           <- doc_path_prefix, NOT on the site
+#           QFC Law No. (7) of Year 2005    <- the seed node's own title
+#             Article 1 – Definitions
+#
+# The two middle folders are the manual library's grouping. The site hangs the
+# law straight off its root, so they cannot come from the crawl — they are
+# `doc_path_prefix`, which is why that setting is per source.
+#
+# "Qatar Financial Centre Legislation" is spelled identically here, in
+# config/countries.yml and in crawler/qfcl_source.py::REGULATOR. country_for()
+# matches the exact string; a mismatch leaves every document correct and the
+# whole tree at the ROOT, which nothing else complains about.
+#
+# `doc_path_prefix` is settable per source if the first export shows the site's
+# own titles need another level above them — a tree fix without a code change.
+
+regulator: "Qatar Financial Centre Legislation"
+owner: abeeraslam
+
+sources:
+  # QFC > QFC Law > QFC Law No. (7) of Year 2005 > Article 1 ... Schedule 6.
+  #
+  # `doc_path_prefix` carries TWO folders the site does not have. The sidebar
+  # hangs this law directly off the framework root; the manual library groups it
+  # under QFC > QFC Law, and that grouping is what is being matched. The law's
+  # own title comes from the SITE ("QFC Law No. (7) of Year 2005"), not from the
+  # manual library's shorter "Law No. (7) of Year 2005" — titles follow the
+  # source, folders follow the library.
+  #
+  # `root_mode: node` is load-bearing here. See section 3.
+  - name: "QFC"
+    mode: custom
+    crawler_class: "crawler.qfcl_source.QFCLSource"
+    init_kwargs:
+      seed_url: "https://qfcra-en.thomsonreuters.com/rulebook/qfc-law-no-7-year-2005"
+      source_system: "QFC Law"
+      section: "QFC"
+      root_mode: "node"
+      doc_path_prefix:
+        - "Qatar Financial Centre Legislation"
+        - "QFC"
+        - "QFC Law"
+
+  # THE NEXT THREE DIFFER FROM "QFC" IN ONE WAY, AND IT MATTERS.
+  #
+  # Their folder EXISTS on the site — "QFC Regulations", "QFCA Rules" and
+  # "QFCRA Rules" are three of the framework root's own children, spelled almost
+  # exactly as the manual library spells them. So `doc_path_prefix` stops at the
+  # regulator and the site supplies the section name itself. Only "QFC" needs
+  # invented folders, because the site has no QFC or QFC Law node at all.
+  #
+  # `root_mode: node` on every one of them. With `seed` the walk finds no book
+  # whose ROOT is the seed, falls back to the single book on the page — the
+  # framework root — and crawls all ~26 branches under this one source_system.
+  # MEASURED 2026-09-17 12:07: that is exactly what happened when this source ran
+  # with `seed`, and it is the failure section 3 describes.
+  #
+  # SIZE. `export` has no per-source switch, so enabling one of these runs it
+  # with everything else uncommented. QFC Regulations alone holds ~25 regulation
+  # books, each with Parts and Articles — thousands of sequential requests at
+  # 1.2s. QFCRA Rules measured 2.21 s/document end to end (1.20s delay + 0.54s
+  # network + ~0.47s parse) and took an evening for 5,032 rows. Run it with
+  # `python -u` and leave it overnight.
+  #
+  # RUNNING ALL FOUR AT ONCE IS SAFE, and is cheaper than it looks: a section
+  # whose checkpoint is complete replays from disk without touching the network,
+  # so the two finished sections cost minutes while the two new ones crawl.
+  #
+  # A kill costs only the UNIT in progress, not the book. Checkpoint units are
+  # split one level below each root — "QFCRA Rules :: Banking Business
+  # Prudential Rules 2014 (BANK)" is one unit — precisely so that a single root
+  # is not one unit written only at the very end, which is how a kill used to
+  # lose the whole evening. Only COMPLETED units are cached; the sidebar tree
+  # itself never is, so every run re-reads it and picks up new nodes.
+
+  - name: "QFC Regulation"
+    mode: custom
+    crawler_class: "crawler.qfcl_source.QFCLSource"
+    init_kwargs:
+      seed_url: "https://qfcra-en.thomsonreuters.com/rulebook/qfc-regulations"
+      source_system: "QFC Regulation"
+      section: "QFC Regulation"
+      root_mode: "node"
+      doc_path_prefix:
+        - "Qatar Financial Centre Legislation"
+
+  - name: "QFCA Rules"
+    mode: custom
+    crawler_class: "crawler.qfcl_source.QFCLSource"
+    init_kwargs:
+      seed_url: "https://qfcra-en.thomsonreuters.com/rulebook/qfca-rules"
+      source_system: "QFCA Rules"
+      section: "QFCA Rules"
+      root_mode: "node"
+      doc_path_prefix:
+        - "Qatar Financial Centre Legislation"
+
+  - name: "QFCRA Rules"
+    mode: custom
+    crawler_class: "crawler.qfcl_source.QFCLSource"
+    init_kwargs:
+      seed_url: "https://qfcra-en.thomsonreuters.com/rulebook/qfcra-rules"
+      source_system: "QFCRA Rules"
+      section: "QFCRA Rules"
+      root_mode: "node"
+      doc_path_prefix:
+        - "Qatar Financial Centre Legislation"

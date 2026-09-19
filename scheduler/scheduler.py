@@ -284,7 +284,8 @@ def load_scheduler_config():
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
                                monitor_cbe, monitor_cheap_probes, monitor_cma,
                                monitor_lloc, monitor_mc, monitor_mlcu,
-                               monitor_rera, monitor_sama, monitor_sio)
+                               monitor_qcb, monitor_qfcl, monitor_rera,
+                               monitor_sama, monitor_sio)
 
 DIRECT_JOB_MAPPING = {
     "sbp_pipeline": run_sbp_pipeline,
@@ -319,6 +320,13 @@ DIRECT_JOB_MAPPING = {
     "monitor_rera": monitor_rera,
     "monitor_sio": monitor_sio,
     "monitor_lloc": monitor_lloc,
+
+    # ---- Qatar, onboarded 2026-09-17 ------------------------------------ #
+    # Ships DISABLED in config/scheduler.yml, for the reason the Bahrain
+    # three above ship disabled: this path writes straight to MSSQL, and a
+    # new regulator goes to a workbook for a person to read first.
+    "monitor_qcb": monitor_qcb,
+    "monitor_qfcl": monitor_qfcl,
 }
 
 API_JOB_MAPPING = {
@@ -348,6 +356,8 @@ API_JOB_MAPPING = {
     "monitor_rera": lambda: trigger_monitor_via_api("monitor_rera"),
     "monitor_sio": lambda: trigger_monitor_via_api("monitor_sio"),
     "monitor_lloc": lambda: trigger_monitor_via_api("monitor_lloc"),
+    "monitor_qcb": lambda: trigger_monitor_via_api("monitor_qcb"),
+    "monitor_qfcl": lambda: trigger_monitor_via_api("monitor_qfcl"),
 }
 
 # Choose which mode to use (set via environment variable or hardcode)

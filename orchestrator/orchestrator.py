@@ -117,9 +117,30 @@ class BaseOrchestrator:
         self.repo = repo
         self.downloader = downloader
         self.ocr_engine = ocr_engine
-        self.llm_analyzer = LLMAnalyzer()
-        self.staged_analyzer = StagedLLMAnalyzer()
-        self.requirement_matcher = RequirementMatcher()
+        # self.llm_analyzer = LLMAnalyzer()
+        # self.staged_analyzer = StagedLLMAnalyzer()
+        # self.requirement_matcher = RequirementMatcher()
+        self._llm_analyzer = llm_analyzer
+        self._staged_analyzer = None
+        self._requirement_matcher = None
+
+        @property
+        def llm_analyzer(self) -> LLMAnalyzer:
+            if self._llm_analyzer is None:
+                self._llm_analyzer = LLMAnalyzer()
+            return self._llm_analyzer
+
+        @property
+        def staged_analyzer(self) -> StagedLLMAnalyzer:
+            if self._staged_analyzer is None:
+                self._staged_analyzer = StagedLLMAnalyzer()
+            return self._staged_analyzer
+
+        @property
+        def requirement_matcher(self) -> RequirementMatcher:
+            if self._requirement_matcher is None:
+                self._requirement_matcher = RequirementMatcher()
+            return self._requirement_matcher
 
     # ================================================================== #
     #  HELPERS                                                             #
