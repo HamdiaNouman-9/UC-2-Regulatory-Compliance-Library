@@ -144,13 +144,7 @@ def main():
 
     # Not a dry run: the orchestrator calls fetch_documents() itself.
     orch = build_orchestrator(crawler)
-    if regulator.upper() == "SIMAH":
-        # SIMAH's path also versions amended documents; run_for_regulator drops
-        # them. Needs the repo on the crawler to compare hashes.
-        setattr(crawler, "repo", orch.repo)
-        orch.run_for_simah()
-    else:
-        orch.run_for_regulator(regulator)
+    orch.run_for_regulator(regulator)
     logger.info("%s pipeline finished", regulator)
     return 0
 

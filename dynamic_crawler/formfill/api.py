@@ -48,6 +48,7 @@ from typing import Dict, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 logging.basicConfig(level=logging.INFO,
@@ -63,6 +64,17 @@ app = FastAPI(
     title="Formfill orchestrator (Excel-backed)",
     description=__doc__,
     version="1.0",
+)
+
+# Same permissive policy as apis/pipeline_api.py -- this is a local dev tool
+# that writes no further than an Excel file, so an open CORS policy carries
+# none of the risk it would on a database-backed API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 _runs: Dict[str, dict] = {}
@@ -156,12 +168,49 @@ def download_excel(run_id: str):
     return FileResponse(r["excel"], filename=Path(r["excel"]).name)
 
 
+def _seed_repo_from_production_db(repo, regulator: str) -> int:
+    """READ-ONLY baseline: copy this regulator's rows as they exist RIGHT NOW
+    in the real `regulations` table into the (otherwise empty) ExcelRepo, so
+    change detection compares against the actual library instead of an empty
+    workbook. Without this, every run of a regulator that's already fully
+    onboarded (MISA, etc.) reports its entire inventory as "new" every single
+    time -- the workbook has no memory of the database ever having seen them.
+
+    SELECT only -- this never writes to MSSQL. The run itself still only
+    ever writes to the local Excel workbook, same guarantee as before.
+    """
+    from dynamic_crawler.formfill.excel_repo import _flat
+    from dynamic_crawler.formfill.promote import _build_repo
+
+    prod = _build_repo()
+    with prod._get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, ref_key, regulator, source_system, category, title,
+                   document_url, doc_path, published_date, reference_no,
+                   department, [year], source_page_url, extra_meta,
+                   content_hash, compliancecategory_id
+            FROM regulations WHERE regulator = ?
+        """, (regulator,))
+        columns = [c[0] for c in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    for r in rows:
+        repo.t["regulations"].append({k: _flat(v) for k, v in r.items()})
+    if rows:
+        max_id = max((r.get("id") or 0) for r in rows)
+        repo._next["regulations"] = max(repo._next["regulations"], max_id)
+    return len(rows)
+
+
 @app.post("/trigger/{form}", tags=["run"])
 def trigger(form: str,
             limit: Optional[int] = 5,
             analyse: bool = False,
             reuse_last: bool = True,
-            workbook: Optional[str] = None):
+            workbook: Optional[str] = None,
+            headed: bool = False,
+            check_against_db: bool = True):
     """Run the new orchestrator for one form.
 
     - **limit** — documents to process. `0` or omit for all. Start small.
@@ -169,6 +218,15 @@ def trigger(form: str,
     - **reuse_last** — use the crawl already on disk instead of re-crawling.
     - **workbook** — append to an existing workbook to see change detection on a
       second run. Omit for a fresh one.
+    - **headed** — pop a real, visible browser window on this machine for the
+      crawl instead of running invisibly. Only has any effect when
+      `reuse_last=false`, since reusing skips the crawl (and the browser)
+      entirely.
+    - **check_against_db** — default TRUE. Seed the (empty) workbook with this
+      regulator's CURRENT rows from the real database (read-only) before
+      classifying, so "new" means "not already in the library", not "not in
+      this particular local file". Set false to see the raw empty-workbook
+      behaviour (everything comes back "new", the historical default).
     """
     forms = _forms()
     if form not in forms:
@@ -179,7 +237,7 @@ def trigger(form: str,
                                  "the regulator or source_system")
 
     from dynamic_crawler.formfill.excel_repo import ExcelRepo
-    from dynamic_crawler.formfill.orch import NewOrchestrator
+    from orchestrator.orchestrator import Orchestrator
     from dynamic_crawler.formfill.pipeline import FormfillCrawler
 
     started = datetime.now()
@@ -200,8 +258,18 @@ def trigger(form: str,
             reuse_from = cands[0]
 
         repo = ExcelRepo(out_xlsx)
+        seeded_from_db = 0
         if workbook and out_xlsx.exists():
+            # A workbook from an earlier run already reflects everything this
+            # regulator had at that point (itself seeded from the DB the
+            # first time round) -- load THAT, not a fresh DB seed, or a
+            # document this workbook already marked "modified" would lose
+            # that and quietly re-classify off the DB's older content_hash.
             _load_workbook_into(repo, out_xlsx)
+        elif check_against_db:
+            seeded_from_db = _seed_repo_from_production_db(repo, info["regulator"])
+            logger.info("seeded %d existing regulation(s) from production DB for %s",
+                       seeded_from_db, info["regulator"])
 
         crawler = FormfillCrawler(
             str(REPO_ROOT / info["path"]),
@@ -209,13 +277,14 @@ def trigger(form: str,
             source_system=info["source_system"],
             require_approved=False,          # a preview run may use a stale form
             out_dir=str(crawl_dir / "api_run") if not reuse_last else None,
+            headed=headed,
         )
         if reuse_from:
             crawler._run_crawl = lambda p=reuse_from: json.loads(
                 p.read_text(encoding="utf-8"))
             logger.info("reusing crawl %s", reuse_from)
 
-        orch = NewOrchestrator(
+        orch = Orchestrator(
             crawler=crawler, repo=repo, downloader=None,
             source_name=form, analyse=analyse,
             limit=(limit or None),
@@ -233,6 +302,7 @@ def trigger(form: str,
         "run_id": run_id,
         "form": form,
         "crawl_reused": str(reuse_from) if reuse_from else None,
+        "seeded_from_production_db": seeded_from_db,
         "seconds": round((datetime.now() - started).total_seconds(), 1),
         "excel": str(excel),
         "excel_download": f"/runs/{run_id}/excel",
@@ -304,7 +374,8 @@ def approve(run_id: str, dry_run: bool = True, confirm: bool = False,
 def trigger_source(regulator: str,
                    limit: Optional[int] = 5,
                    analyse: bool = False,
-                   workbook: Optional[str] = None):
+                   workbook: Optional[str] = None,
+                   check_against_db: bool = True):
     """Run the new orchestrator for one GENERIC-CRAWLER regulator.
 
     The sibling of `/trigger/{form}`. Same orchestrator, same Excel repo, same
@@ -317,6 +388,9 @@ def trigger_source(regulator: str,
     - **analyse** — run the 4-stage LLM analysis. Costs money; off by default.
     - **workbook** — append to an existing workbook to see change detection on a
       second run. Omit for a fresh one.
+    - **check_against_db** — default TRUE, same as `/trigger/{form}`: seed the
+      (empty) workbook with this regulator's current rows from the real
+      database (read-only) so "new" means "not already in the library".
 
     There is no `reuse_last` here. The generic wrapper runs its engine as a
     subprocess and owns its own output directory, so there is no crawl-on-disk
@@ -332,7 +406,7 @@ def trigger_source(regulator: str,
     reg_name = cfg.get("regulator", regulator.upper())
 
     from dynamic_crawler.formfill.excel_repo import ExcelRepo
-    from dynamic_crawler.formfill.orch import NewOrchestrator
+    from orchestrator.orchestrator import Orchestrator
     from crawler.generic_crawler_wrapper import build_regulator_crawler
 
     started = datetime.now()
@@ -346,10 +420,15 @@ def trigger_source(regulator: str,
             raise HTTPException(400, f"{reg_name}: {e}")
 
         repo = ExcelRepo(out_xlsx)
+        seeded_from_db = 0
         if workbook and out_xlsx.exists():
             _load_workbook_into(repo, out_xlsx)
+        elif check_against_db:
+            seeded_from_db = _seed_repo_from_production_db(repo, reg_name)
+            logger.info("seeded %d existing regulation(s) from production DB for %s",
+                       seeded_from_db, reg_name)
 
-        orch = NewOrchestrator(
+        orch = Orchestrator(
             crawler=crawler, repo=repo, downloader=None,
             source_name=f"source:{reg_name}", analyse=analyse,
             limit=(limit or None),
@@ -372,6 +451,7 @@ def trigger_source(regulator: str,
         "regulator": reg_name,
         "config": str(cfg_path.relative_to(REPO_ROOT)),
         "engines": [s.get("mode", "generic") for s in (cfg.get("sources") or [])],
+        "seeded_from_production_db": seeded_from_db,
         "seconds": round((datetime.now() - started).total_seconds(), 1),
         "excel": str(excel),
         "excel_download": f"/runs/{run_id}/excel",

@@ -27,7 +27,10 @@ crawl pays for.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 from playwright.sync_api import sync_playwright
@@ -36,6 +39,7 @@ from models.models import RegulatoryDocument
 from site_runners import cma_laws
 from dynamic_crawler.formfill.runner import stable_url
 from crawler.fingerprint import stamp_content_hashes
+from utils.event_loop import proactor_event_loop
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,10 @@ def _scrub_urls(doc):
                 meta[k] = " | ".join(stable_url(x.strip())
                                      for x in v.split("|") if x.strip())
     return doc
+
+
+# Shared with the SIMAH / Saudi Exchange replay; see utils/event_loop.py for why.
+_proactor_event_loop = proactor_event_loop
 
 
 def _as_doc_list(tab_docs) -> List[dict]:
@@ -161,11 +169,13 @@ class CMACrawler:
         per_tab_counts: Dict[str, int] = {}
         warnings: List[str] = []
         failed_tabs: List[str] = []
+        coverage_gaps: List[dict] = []
+        cma_laws.GAPS.clear()
 
         cma_laws.PACE["detail_ms"] = self.delay_ms
         cma_laws.PACE["page_ms"] = self.delay_ms // 2
 
-        with sync_playwright() as pw:
+        with _proactor_event_loop(), sync_playwright() as pw:
             browser = pw.chromium.launch(
                 headless=self.headless,
                 args=["--disable-dev-shm-usage", "--disable-gpu"])
@@ -190,6 +200,26 @@ class CMACrawler:
                         failed_tabs.append(label)
                         per_tab_counts[label] = 0
                         continue
+
+                    # A COVERAGE GAP IS A FAILED RUN, NOT A LOG LINE.
+                    #
+                    # The runner reports it when a tab returns fewer rows than the
+                    # site's own list says it holds (Prospectuses: 81 of 266, with
+                    # every paged tab stopping after one chunk on 2026-09-18) --
+                    # but it only PRINTED it, so the run was called trustworthy and
+                    # the missing 186 documents were reported as `disappeared`. The
+                    # gate reads run.warnings, and matches "coverage gap" there, so
+                    # this is what makes the run untrusted: new and modified rows
+                    # are still ingested, but absences are not acted on and the
+                    # short count is never remembered as a baseline.
+                    for g in [g for g in cma_laws.GAPS if g.get("tab") == label]:
+                        coverage_gaps.append(g)
+                        got, want = g.get("rows"), g.get("source_list_count")
+                        detail = (f"read {got} of {want}" if got is not None and want
+                                  else g.get("why", "incomplete"))
+                        warnings.append(f"coverage gap: {label!r} {detail} "
+                                        f"({g.get('why', '')})")
+                        logger.error("  %-44s COVERAGE GAP  %s", label, detail)
 
                     before = len(docs)
                     for d in _as_doc_list(tab_docs):
@@ -256,6 +286,7 @@ class CMACrawler:
             "run": {"blocked_pages": 0, "warnings": warnings},
             "by_source": per_tab_counts,
             "failed_tabs": failed_tabs,
+            "coverage_gaps": coverage_gaps,
         }
 
         # EVERY tab failing is a broken crawler, not a regulator with no

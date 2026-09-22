@@ -1203,7 +1203,14 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
         # scheduled headless run would quietly harvest nothing. A form can
         # declare that, and it OVERRIDES the caller — the site's requirement is
         # a fact about the site, not a preference of whoever launched the run.
-        if hints.get("requires_headed") and headless:
+        #
+        # NOT ON A REPLAY. A snapshot run loads the saved page from disk and
+        # never contacts the site, so there is nothing to fingerprint -- and
+        # forcing a visible window there makes a scheduled, zero-traffic job
+        # demand a display it has no use for (a headless server has none).
+        # Saudi Exchange is why: it is the one form that declares this AND is
+        # replayed on a schedule. Only capture() ever needs a real window.
+        if hints.get("requires_headed") and headless and snapshot is None:
             headless = False
             print(json.dumps({"event": "note",
                               "message": "requires_headed: forcing a visible browser "

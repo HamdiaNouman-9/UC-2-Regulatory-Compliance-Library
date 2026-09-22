@@ -1052,6 +1052,33 @@ class CompositeCrawler:
         return [self._label(i) for i in range(len(self.crawlers))]
 
     @property
+    def last_result(self) -> dict:
+        """What the completeness gate reads (`check_run_trustworthy` looks for
+        `crawler.last_result["run"]["warnings"]`).
+
+        A composite had no `last_result` at all, so the gate read `{}` for every
+        regulator built from a config and NEVER saw a source's own warnings --
+        CMA reported "coverage_gap: Prospectuses 81 of 266" to stdout, and the run
+        was still called trustworthy.
+
+        DELIBERATELY NARROW. Only coverage-gap warnings from a source that
+        declares `coverage_gaps` are forwarded. The generic engine's own result
+        has a different shape (top-level `blocked_pages`, no `run`), and passing
+        everything through would change trust decisions for every regulator at
+        once -- CBJ, RERA, SIO and the rest -- as a side effect of fixing CMA.
+        """
+        warnings, gaps = [], []
+        for c in self.crawlers:
+            r = getattr(c, "last_result", None) or {}
+            if not r.get("coverage_gaps"):
+                continue
+            gaps.extend(r["coverage_gaps"])
+            warnings.extend(w for w in ((r.get("run") or {}).get("warnings") or [])
+                            if "coverage gap" in str(w).lower())
+        return {"run": {"blocked_pages": 0, "warnings": warnings},
+                "coverage_gaps": gaps}
+
+    @property
     def source_systems(self) -> List[str]:
         """Every source_system these sources write under. The completeness gate
         needs all of them: one composite can hold several."""
@@ -1065,6 +1092,7 @@ class CompositeCrawler:
 
     def fetch_documents(self, limit: Optional[int] = None) -> List[RegulatoryDocument]:
         docs: List[RegulatoryDocument] = []
+        failures: List[tuple] = []
         for i, c in enumerate(self.crawlers):
             label, opts = self._label(i), self.options[i]
             try:
@@ -1101,6 +1129,24 @@ class CompositeCrawler:
                 logger.info("  source ok: %s -> %d documents", label, len(got))
             except Exception as e:
                 logger.error("  source FAILED: %s -> %s", label, e, exc_info=True)
+                failures.append((label, e))
+
+        # EVERY SOURCE FAILING IS A BROKEN RUN, NOT A REGULATOR WITH NOTHING TO SAY.
+        #
+        # One source failing among several is tolerated on purpose (a small source
+        # dying must not lose the rest; the per-source count check catches it). But
+        # when EVERY source raised, the loop above returned [] and the run reported
+        # `crawled: 0` with run_trustworthy True and baseline PASS. Measured
+        # 2026-09-21 on Saudi Exchange, whose only source raised "has no snapshot":
+        # the job "finished", disappeared: 19, PASS. The same shape as CMA's zero-
+        # document run on 2026-09-18 and the defects in PIPELINE_DEFECTS_2026-09-15.
+        # A source that ran and found nothing does not raise, so this cannot fire
+        # for a genuinely empty one.
+        if failures and len(failures) == len(self.crawlers):
+            detail = "; ".join(f"{lbl}: {str(err)[:200]}" for lbl, err in failures[:3])
+            raise RuntimeError(
+                f"every source failed ({len(failures)}/{len(self.crawlers)}), so this "
+                f"is a failed run and not an empty regulator. {detail}")
         return docs[:limit] if limit else docs
 
 

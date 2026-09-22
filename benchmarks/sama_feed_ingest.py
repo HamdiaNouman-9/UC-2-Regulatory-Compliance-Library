@@ -1,9 +1,21 @@
 """Bring in the documents SAMA's revision feed found that the library does not hold.
 
-`--signal sama-feed` reports them; this fetches them and writes a workbook that
-`promote` inserts. It is the DISCOVERY half of monitoring — a stored-inventory
+`--signal sama-feed` reports them; this fetches them and writes them STRAIGHT TO
+MSSQL through the same Orchestrator -> MSSQLRepository path every other
+monitor_* job uses. It is the DISCOVERY half of monitoring — a stored-inventory
 probe can only ever re-read rows we already have, so without this the feed can
 say "there are 4 documents you are missing" and nothing acts on it.
+
+DIRECT-TO-DB, NOT A WORKBOOK. This used to write an ExcelRepo workbook that a
+person had to run `dynamic_crawler.formfill.promote` against by hand before a
+discovered document reached the database at all. That was the one holdout from
+the lead's 2026-08-16 decision ("data should drop directly in db no excel
+needed... keep the repo but dont use it in actual orch path", see
+jobs/monitor_jobs.py's module docstring) which every other monitor_* job
+already follows — SAMA's own SIGNAL half (monitor_sama) writes straight to
+MSSQL, but its DISCOVERY half quietly did not. Fixed 2026-09-18. Like every
+other monitor_* job, `status` is left EMPTY for a person to set active/reject
+afterward — this removes the workbook gate, not the review gate.
 
 THE FOLDER PATH COMES FROM THE PAGE, NOT FROM THE FEED
 
@@ -20,7 +32,6 @@ Filing by the trail would have put these documents in folders that do not exist
 in the library's tree.
 
     venv/Scripts/python.exe benchmarks/sama_feed_ingest.py --since 2026-01-01
-    venv/Scripts/python.exe -m dynamic_crawler.formfill.promote <the workbook>
 """
 from __future__ import annotations
 
@@ -31,6 +42,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+
+# Same reason as dynamic_crawler/cli/sweep.py: this runs as its own process
+# (monitor_sama launches it) and fetches the feed with `requests` BEFORE the
+# orchestrator -- the only other place truststore is injected -- is imported.
+import truststore  # noqa: E402
+
+truststore.inject_into_ssl()
 
 from crawler.sama_rulebook_crawler import (SAMAFullRulebookCrawler,  # noqa: E402
                                            SAMA_REGULATOR)
@@ -115,9 +133,6 @@ def main() -> int:
     lo, hi = default_window(30)
     ap.add_argument("--since", default=lo)
     ap.add_argument("--until", default=hi)
-    ap.add_argument("--out", default=str(
-        REPO_ROOT / "output" / "formfill" / "_orch_runs" / "crawl" /
-        "SAMA-discoveries.xlsx"))
     a = ap.parse_args()
 
     entries = fetch_entries(a.since, a.until)
@@ -143,11 +158,21 @@ def main() -> int:
         logger.info("nothing to write")
         return 0
 
-    from dynamic_crawler.formfill.excel_repo import ExcelRepo
-    from dynamic_crawler.formfill.orch import NewOrchestrator
+    # STRAIGHT TO MSSQL, same as every other monitor_* job's _crawl_into_db.
+    import os
+    from dotenv import load_dotenv
+    load_dotenv(REPO_ROOT / ".env", override=True)
+    from storage.mssql_repo import MSSQLRepository
+    from processor.downloader import Downloader
+    from orchestrator.orchestrator import Orchestrator
 
-    out = Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    repo = MSSQLRepository({
+        "server": os.getenv("MSSQL_SERVER"),
+        "database": os.getenv("MSSQL_DATABASE"),
+        "username": os.getenv("MSSQL_USERNAME"),
+        "password": os.getenv("MSSQL_PASSWORD"),
+        "driver": os.getenv("MSSQL_DRIVER", "{ODBC Driver 17 for SQL Server}"),
+    })
 
     class _Shim:
         """The orchestrator crawls; here the documents are already in hand."""
@@ -157,8 +182,8 @@ def main() -> int:
         def fetch_documents(self, limit=None):
             return docs[:limit] if limit else docs
 
-    repo = ExcelRepo(str(out))
-    orch = NewOrchestrator(_Shim(), repo=repo, analyse=False,
+    orch = Orchestrator(_Shim(), repo=repo, downloader=Downloader(),
+                           analyse=False,
                            source_name=f"{SAMA_REGULATOR}/{SOURCE_SYSTEM}")
     # run_for_regulator is the entry point: it fetches, classifies each document
     # new/modified/unchanged against the repo, and versions what changed.
@@ -166,13 +191,6 @@ def main() -> int:
     logger.info("orchestrator: %s", {k: v for k, v in (result or {}).items()
                                      if k in ("new", "modified", "unchanged",
                                               "total", "stored")})
-    # ExcelRepo BUFFERS: nothing reaches disk until save() is called. Without
-    # this the orchestrator ran all four documents — fetch, OCR, classify — and
-    # the run reported a workbook path that did not exist.
-    repo.save()
-    logger.info("workbook: %s", out)
-    logger.info("promote with:  venv/Scripts/python.exe -m "
-                "dynamic_crawler.formfill.promote %s", out)
     return 0
 
 

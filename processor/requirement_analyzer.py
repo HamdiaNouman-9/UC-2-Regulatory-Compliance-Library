@@ -113,6 +113,14 @@ _CLASSIFY_BATCH_SIZE = 12
 # decided purely from the actor/nature prompt 1 already recorded.
 _DISPOSITIONS = ("OBL", "COND", "REG", "DEF", "INFO")
 
+# The DB's CK_Requirement_Nature check constraint accepts exactly these six
+# (lowercase) values and nothing else -- an LLM typo/synonym that reaches
+# insert_requirement raises pyodbc.IntegrityError and aborts the WHOLE
+# sync, discarding every requirement and activity already extracted in the
+# same run, not just the one bad row. See _coerce_nature.
+_NATURES = ("mandatory", "prohibition", "conditional", "discretionary",
+           "definition", "informational")
+
 # A chunk over this many times _CHUNK_MAX_CHARS is worth knowing about, but
 # NOT a reason to stop -- _chunk_document deliberately lets one unsplittable
 # giant article become its own oversized chunk rather than cutting it
@@ -714,6 +722,8 @@ Schema: {{"r":[{{"t":"","s":"","a":"","n":"","c":"","x":[],"p":""}}]}}
             coerced += was_coerced
             disposition, disp_coerced = self._coerce_disposition(d.get("d"))
             coerced += disp_coerced
+            nature, nature_coerced = self._coerce_nature(src.get("n"))
+            coerced += nature_coerced
 
             rows.append({
                 "requirement_local_id": rid,
@@ -726,12 +736,12 @@ Schema: {{"r":[{{"t":"","s":"","a":"","n":"","c":"","x":[],"p":""}}]}}
                 "title": d.get("h") or src.get("p", ""),
                 "requirement_type": rtype,
                 "actor": src.get("a", ""),
-                "nature": src.get("n", ""),
+                "nature": nature,
                 "condition": src.get("c", ""),
                 "cross_references": src.get("x") or [],
                 "disposition": disposition,
                 "disposition_reason": d.get("w", "") if disposition != "OBL" else "",
-                "needs_manual_review": bool(was_coerced) or bool(disp_coerced),
+                "needs_manual_review": bool(was_coerced) or bool(disp_coerced) or bool(nature_coerced),
             })
 
         # Same bug class as activity_analyzer.py's total-call-failure gap: if
@@ -746,6 +756,7 @@ Schema: {{"r":[{{"t":"","s":"","a":"","n":"","c":"","x":[],"p":""}}]}}
             if rid in seen:
                 continue
             logger.warning(f"Requirement {rid} missing from classification response")
+            nature, _ = self._coerce_nature(src.get("n"))
             rows.append({
                 "requirement_local_id": rid,
                 "chunk_id": src.get("chunk_id"),
@@ -757,7 +768,7 @@ Schema: {{"r":[{{"t":"","s":"","a":"","n":"","c":"","x":[],"p":""}}]}}
                 "title": src.get("p", ""),
                 "requirement_type": (requirement_types[0] if requirement_types else ""),
                 "actor": src.get("a", ""),
-                "nature": src.get("n", ""),
+                "nature": nature,
                 "condition": src.get("c", ""),
                 "cross_references": src.get("x") or [],
                 "disposition": "",
@@ -1054,6 +1065,17 @@ Schema: {{"r":[{{"i":"","y":"","h":"","d":"","w":""}}]}}
         if isinstance(value, str) and value.strip().upper() in _DISPOSITIONS:
             return value.strip().upper(), 0
         return "INFO", 1
+
+    @staticmethod
+    def _coerce_nature(value) -> tuple:
+        """(valid_value, was_coerced). Same reasoning as _coerce_disposition:
+        nature is DB CHECK-constrained (CK_Requirement_Nature), not free
+        text, so an unrecognised value must never reach the INSERT. Falls
+        back to "informational" -- the safest, most conservative bucket --
+        rather than guessing "mandatory"."""
+        if isinstance(value, str) and value.strip().casefold() in _NATURES:
+            return value.strip().casefold(), 0
+        return "informational", 1
 
     # ------------------------------------------------------------------ #
     #  JSON PARSING                                                        #

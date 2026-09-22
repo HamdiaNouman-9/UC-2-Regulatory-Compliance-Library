@@ -421,12 +421,30 @@ def _process(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _select_volume(volumes: List[_Node], name: str) -> List[_Node]:
+    want = name.strip().lower()
+    hits = []
+    for v in volumes:
+        t = (v.text or "").strip().lower()
+        # Whole-word match ANYWHERE in the title: the live sidebar reads
+        # "Central Bank of Bahrain Volume 1—Conventional Banks", so "Volume 1" is not a
+        # prefix -- and must not match "Volume 10".
+        if re.search(rf"(?<![a-z0-9]){re.escape(want)}(?![a-z0-9])", t):
+            hits.append(v)
+    if len(hits) != 1:
+        raise ValueError(f"volume {name!r} matched {len(hits)} sidebar entries "
+                         f"({[v.text for v in hits]}); expected exactly one. "
+                         f"Sidebar has: {[v.text for v in volumes]}")
+    return hits
+
+
 def crawl_rulebook_sidebar(
     seed_url: str = SIDEBAR_SEED,
     request_delay: float = REQUEST_DELAY,
     max_volumes: Optional[int] = None,
     resume: bool = True,
     checkpoint_path: Optional[Path] = None,
+    volume: Optional[str] = None,
 ) -> List[RulebookDoc]:
     """
     Crawl all CBB Rulebook volumes from the sidebar tree.
@@ -438,6 +456,9 @@ def crawl_rulebook_sidebar(
         seed_url      : Any rulebook page (sidebar is global).
         request_delay : Seconds between HTTP requests.
         max_volumes   : Limit volumes crawled (None = all).
+        volume        : Crawl ONE volume, named by its sidebar title and matched
+                        case-insensitively ("Volume 1" matches "Volume 1—Conventional
+                        Banks", not "Volume 10"). Raises unless exactly one matches.
         resume        : Skip volumes already saved in `checkpoint_path` from a
                         prior run instead of re-walking them. Pass False to
                         ignore any existing checkpoint and crawl clean.
@@ -468,6 +489,9 @@ def crawl_rulebook_sidebar(
     log.info("=== CBB Rulebook Sidebar Crawler ===")
     log.info(f"Seed: {seed_url}")
     volumes = _collect_volumes(seed_url)
+
+    if volume:
+        volumes = _select_volume(volumes, volume)
 
     if max_volumes is not None:
         volumes = volumes[:max_volumes]

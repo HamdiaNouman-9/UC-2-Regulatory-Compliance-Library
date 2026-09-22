@@ -46,34 +46,16 @@ jobs:
       minute: 46
 
   # --------------------------------------------------------
-  # CBB Monitoring — RETIRED 2026-08-20, superseded by monitor_cbb
+  # Staleness check
   # --------------------------------------------------------
-  # This ran crawler/cbb_monitoring_crawler.py straight into MSSQL: no workbook
-  # step, no human review, no completeness gate. It was the only monitoring job
-  # in the repo left `enabled: true`.
-  #
-  # MEASURED 2026-08-20, the day it was turned off:
-  #     regulations WHERE regulator LIKE '%Bahrain%'   ->  0 rows
-  #     source_system LIKE 'CBB%'                      ->  0 rows
-  #     run_history for CBB                            ->  0 rows
-  #
-  # A daily job, enabled, that has never produced a row — and nothing about its
-  # output said so. That is the same failure shape as a change signal that never
-  # fires: indistinguishable from a regulator with nothing to report.
-  #
-  # CBB now goes through config/sources/cbb.yml like every other regulator, so it
-  # gets the workbook gate and a per-source completeness gate. See monitor_cbb in
-  # jobs/monitor_jobs.py.
-  #
-  # DO NOT re-enable this to "have something running". Turning monitor_cbb on is
-  # the supported path, and it needs the EXECUTION_MODE question settled first —
-  # every monitor job lives in DIRECT_JOB_MAPPING while the scheduler defaults to
-  # API_JOB_MAPPING, where none of them exist.
-  cbb_monitoring:
-    enabled: false
+  # Flags regulators with no update for longer than their interval
+  # (config/staleness.yml). Result is logged at ERROR in scheduler.log; the same
+  # data is at GET /monitoring/staleness.
+  staleness_check:
+    enabled: true
     trigger: cron
     schedule:
-      hour: 5
+      hour: 8
       minute: 0
 
   # --------------------------------------------------------
@@ -144,8 +126,12 @@ jobs:
   # CHEAP_PROBE_SOURCES in jobs/monitor_jobs.py, so adding a pair there is the
   # whole change. It contributes ONE request -- its source declares a single
   # instrument rather than crawling for it.
+  # ENABLED 2026-09-17 -- KSA workbooks reviewed by the lead; cron scheduling
+  # turned on to match. See apis/pipeline_api.py's REGULATOR_REGISTRY for the
+  # on-demand equivalent (POST /trigger/regulators), which was already able to
+  # fire this regardless of `enabled` here -- this flag only governs cron.
   monitor_cheap_probes:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       hour: 3
@@ -153,8 +139,9 @@ jobs:
 
   # SAMA's own "what changed" page: ~3 seconds instead of 6,101 probes. This is
   # also the only signal that DISCOVERS documents missing from the library.
+  # ENABLED 2026-09-17 -- workbook reviewed by the lead.
   monitor_sama:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       hour: 3
@@ -162,8 +149,9 @@ jobs:
 
   # mc.gov.sa refuses plain HTTP clients, so no probe can answer and the crawl
   # IS the signal. ~16 minutes, so weekly rather than daily.
+  # ENABLED 2026-09-17 -- workbook reviewed by the lead.
   monitor_mc:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -175,8 +163,9 @@ jobs:
   # window — a full walk measured 2h49m and still returned 300 of the 1,053
   # announcements we hold, which would rule the other 753 `disappeared`.
   # CMA_SINCE_DAYS controls that window.
+  # ENABLED 2026-09-17 -- workbook reviewed by the lead.
   monitor_cma:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -420,19 +409,103 @@ jobs:
       hour: 17
       minute: 0
 
+  # MOIC and PDPA (BAHRAIN) — found during the 2026-09-17 regulator-
+  # reachability audit: both monitor_moic and monitor_pdpa were fully
+  # implemented in jobs/monitor_jobs.py but had no entry here at all, so
+  # neither could ever run, scheduled or on demand. Sunday 19:00 / 19:30,
+  # continuing the one-hour(-ish) stagger; every monitor_* job takes the same
+  # `_run_exclusive` lock and an overlap is a SKIP, not a failure. Taken
+  # before these: mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00, bahrain_bourse
+  # 08:00, cbb 09:00, rera 10:00, sio 11:00, lloc 12:00, cbj 13:00, mlsd
+  # 14:00, lmra 15:00, nbr 16:00, justice_canada 17:00, edb 18:00.
+  #
+  # DISABLED, same rule as every other new regulator here: nobody has read
+  # their workbook yet, and this path writes straight to MSSQL.
+  monitor_moic:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 19
+      minute: 0
+
+  monitor_pdpa:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 19
+      minute: 30
+
   # ----------------------------------------------------------
-  # NO JOB FOR Saudi Exchange OR SIMAH — deliberately.
+  # SIMAH AND SAUDI EXCHANGE -- jobs that read a SAVED PAGE.
   #
-  # Both hosts block us, and both blocks were caused by automated access from
-  # this one address: saudiexchange.sa went from crawling cleanly at 18:27 to
-  # Akamai 403 within two hours on 2026-08-15, and simah.com's note records its
-  # Cloudflare block as "triggered by repeated iteration, not volume".
+  # Both hosts block us, and both blocks were caused by automated access from one
+  # address: saudiexchange.sa went from crawling cleanly at 18:27 to Akamai 403
+  # within two hours on 2026-08-15, and simah.com's note records its Cloudflare
+  # block as "triggered by repeated iteration, not volume".
   #
-  # A scheduled retry is therefore not a way out of either block — it is the
-  # thing that made them, and it would deepen them. config/change_signals.yml
-  # `skip_hosts` already stops a sweep touching the hosts; giving them no job
-  # means nothing can schedule its way past that either.
+  # THE CRON INTERVAL HERE DOES NOT DECIDE WHEN EITHER SITE IS VISITED. A run reads
+  # output/snapshots/<name>.html and touches no network. The saved page's own
+  # clock decides when a live visit is allowed: one navigation, no retry, backing
+  # off 6h / 24h / 72h / 7d / 14d after a block -- and only if `allow_live: true`
+  # in config/sources/<name>.yml, which ships FALSE. So a shorter interval here
+  # cannot make either site see more traffic, and a longer one only delays noticing
+  # that the saved page has gone stale.
   #
-  # The `until` dates there are REVIEW dates, not expiries: a person retests by
-  # hand and deletes the entry. Nothing unblocks itself.
+  # `until` in config/change_signals.yml skip_hosts is unchanged: it stops a SWEEP
+  # touching either host. That is a different mechanism from these jobs.
+  #
+  # Sunday 20:00 / 20:30, continuing the stagger (edb 18:00, moic 19:00,
+  # pdpa 19:30). Same `_run_exclusive` lock as every monitor job.
   # ----------------------------------------------------------
+
+  # DISABLED UNTIL THE FORM IS RE-APPROVED. Zero traffic and a snapshot exists
+  # (captured 2026-08-05), but dynamic_crawler/hints/simah.rules.yml was edited
+  # on 2026-08-17 (the Law and its Implementing Regulations became separate
+  # entries, `combined`/`strip` rules were added) after its 2026-08-13 approval,
+  # so the approval gate refuses it: "APPROVED BUT SINCE EDITED". A job that fails
+  # every week teaches people to ignore failures.
+  #
+  # ALSO REVIEW WHAT A FIRST RUN WOULD DO. Measured 2026-09-21, read-only: the
+  # replay yields 2 documents against the 1 stored row (id 172), which would
+  # insert 1 new row and version 1 -- the form's rework, not a bug, but it is the
+  # thing re-approval exists to look at.
+  #
+  #     python -m dynamic_crawler.formfill verify dynamic_crawler/hints/simah.rules.yml --snapshot
+  #     python -m dynamic_crawler.formfill approve dynamic_crawler/hints/simah.rules.yml --by <name>
+  #
+  # (`verify --snapshot` was run 2026-09-21: 2 rows on 3/3 runs, 0% spread, 100%
+  # fill -- WARN only because a snapshot check cannot approve a form.) Enable this
+  # AFTER approve. Once enabled it reads "aging" past 30 days and RAISES past 90
+  # (about 2026-11-03) unless refreshed -- that failure is the alert.
+  monitor_simah:
+    enabled: false
+    trigger: cron
+    schedule:
+      # MONTHLY (day 1), by decision 2026-09-21. The run only READS the saved page;
+      # a live visit needs allow_live AND a copy older than max_age_days (25 in
+      # its source config, so a monthly run always finds it due). Trade-off: if a
+      # visit is blocked, the retry waits for next month's run rather than the
+      # backoff clock (6h/24h/72h/7d/14d) -- slower to recover, never more traffic.
+      day: 1
+      hour: 20
+      minute: 0
+
+  # DISABLED UNTIL A SNAPSHOT EXISTS. output/snapshots/ is not part of the code, so
+  # a new machine has none, and until one is captured by hand every run raises
+  # "has no snapshot". A job that fails every week teaches people to ignore
+  # failures. Steps: config/sources/saudi_exchange.yml. Enable this AFTER the first
+  # capture reports `ok`.
+  monitor_saudi_exchange:
+    enabled: false
+    trigger: cron
+    schedule:
+      # MONTHLY (day 1), by decision 2026-09-21. The run only READS the saved page;
+      # a live visit needs allow_live AND a copy older than max_age_days (25 in
+      # its source config, so a monthly run always finds it due). Trade-off: if a
+      # visit is blocked, the retry waits for next month's run rather than the
+      # backoff clock (6h/24h/72h/7d/14d) -- slower to recover, never more traffic.
+      day: 1
+      hour: 20
+      minute: 30

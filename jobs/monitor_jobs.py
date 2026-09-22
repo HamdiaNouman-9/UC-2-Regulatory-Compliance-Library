@@ -4,7 +4,7 @@ FIVE JOBS, NOT TWELVE. Regulators are grouped by what their site will actually
 answer, because that — not the regulator's importance — is what decides how often
 and how expensively it can be checked.
 
-    monitor_cheap_probes   daily    MOE, SDAIA, AML, MHRSD, ZATCA, KDIPA — ask each
+    monitor_cheap_probes   daily    MOE, SDAIA, AML, MHRSD, ZATCA, KDIPA, MISA — ask each
                                     stored url for its version token, crawl only
                                     what moved. MOH rides along in the same job
                                     but skips the probe: its crawl already IS a
@@ -64,10 +64,10 @@ person, so "what arrived overnight and nobody has judged" is exactly
 Nothing here writes `active`. A pipeline that approves its own output is not an
 approval.
 
-WHY THE BLOCKED SITES HAVE NO JOB AT ALL
+SIMAH AND SAUDI EXCHANGE: A SCHEDULE THAT CANNOT VISIT THE SITE
 
-Saudi Exchange and SIMAH are deliberately absent, and this is the important part:
-they are not merely skipped, they must not be RETRIED BY A MACHINE.
+Both were blocked by automated access from one address, so they used to have no
+job at all -- and they must still never be RETRIED BY A MACHINE:
 
     saudiexchange.sa   Akamai 403 to everything, headless browser included, so
                        it is the IP being judged and not the User-Agent. It was
@@ -78,13 +78,18 @@ they are not merely skipped, they must not be RETRIED BY A MACHINE.
                        config/change_signals.yml records that it was "triggered
                        by repeated iteration, not volume".
 
-Both blocks were caused by automated access from one address. A scheduled retry
-is therefore not a way out of them — it is the thing that made them, and it would
-deepen them. `skip_hosts` in config/change_signals.yml already stops a sweep
-touching either host; this file additionally gives them no job, so nothing can
-schedule its way past that. Each entry carries an `until` date, and that date is
-when a PERSON may retest by hand — it is a review date, not an expiry. Nothing
-here unblocks itself.
+What caused those blocks was ITERATION, and the fix is a job that structurally
+cannot iterate: monitor_simah and monitor_saudi_exchange read a SAVED page. A
+schedule only replays it; the saved page's own clock (dynamic_crawler/formfill/
+snapshot.py) decides when a live visit is allowed -- at most one, no retry, backing
+off 6h/24h/72h/7d/14d after a block -- and only when `allow_live` is true, which
+ships false. `skip_hosts` in config/change_signals.yml still stops a SWEEP touching
+either host; that is a separate mechanism and stays.
+
+Each entry there carries an `until` date, and that date is when a PERSON may
+retest by hand -- a review date, not an expiry. Nothing here unblocks itself.
+Turning `allow_live` on is that person's decision, made after one deliberate manual
+visit; the order is in config/sources/simah.yml and saudi_exchange.yml.
 
 RUNNING THIS
 
@@ -169,6 +174,14 @@ CHEAP_PROBE_SOURCES = [
     # see the entry in config/change_signals.yml for why.
     ("REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013",
      "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"),
+    # MISA, added 2026-09-21. It was simply never listed: 89 rows stored, an
+    # approved form (dynamic_crawler/hints/misa.laws.yml, which `_forms_for`
+    # finds by its library.regulator), a probe entry in config/change_signals.yml
+    # and a line in benchmarks/monitor_all.py -- everything except this pair.
+    # Expect ~21 `unknown` on every sweep and do not chase them: 16 point at
+    # laws.boe.gov.sa (TCP 443 times out) and 5 at mc.gov.sa (drops plain HTTP
+    # clients). Measured 2026-08-15, see the MISA entry in change_signals.yml.
+    ("Ministry of Investment (MISA)", "Laws"),
     # JUSTICE CANADA IS NOT HERE YET, AND THAT IS THE POINT. Its signal IS
     # `stored-inventory` (config/change_signals.yml has the measurements), so
     # this list is where it belongs once it is trusted — but this job is DAILY
@@ -415,6 +428,16 @@ def _crawl_into_db(name: str, is_form: bool, only_urls=None, timeout=14400,
     The orchestrator classifies each document new / modified / unchanged against
     the stored rows, versions what changed, and builds the folder tree. `status`
     is left empty by `_set_status` — a person decides that.
+
+    analyse=True: every new/modified document with usable text is also run through
+    the requirement/activity LLM analyzers in this same call, so a monitoring
+    trigger produces analysed requirements without a second POST /analysis/trigger
+    call. This is a deliberate cost/latency trade: a run with many new or modified
+    documents now also pays the LLM time and token cost of analysing all of them,
+    with no review gate in between. If that trade stops being wanted, flip this
+    back to False and drive analysis from POST /analysis/trigger/run/{run_id}
+    (or /analysis/trigger) instead -- the orchestrator does not otherwise care
+    which path calls it.
     """
     from processor.downloader import Downloader
     from orchestrator.orchestrator import Orchestrator
@@ -422,7 +445,7 @@ def _crawl_into_db(name: str, is_form: bool, only_urls=None, timeout=14400,
     crawler, regulator = build_crawler(name, is_form, only_urls,
                                        only_sources=only_sources)
     orch = Orchestrator(crawler=crawler, repo=_repo(), downloader=Downloader(),
-                        source_name=regulator)
+                        source_name=regulator, analyse=True)
     t0 = time.time()
     result = orch.run_for_regulator(regulator) or {}
     result["_seconds"] = round(time.time() - t0, 1)
@@ -480,7 +503,22 @@ def _monitor_cheap_probes_impl() -> dict:
                     f: _crawl_into_db(f, True, only_urls=targets) for f in forms
                 }
             else:
-                entry["crawl"] = {"skipped": "no crawler mapped"}
+                # KDIPA (joined 2026-09-08) is not a dynamic_crawler/hints form
+                # at all -- it is a config/sources/kdipa.yml regulator, declared
+                # as its single instrument rather than crawled for. `_forms_for`
+                # only ever finds hints-based crawlers, so before this branch a
+                # detected KDIPA change fell straight to "no crawler mapped" and
+                # was never re-crawled. `_config_source_for` is the equivalent
+                # lookup for that other crawler kind.
+                src = _config_source_for(regulator)
+                if src:
+                    # only_urls is not forwarded to the generic config-source
+                    # crawler (see build_crawler) -- harmless here since KDIPA's
+                    # source is already a single instrument, so a full re-crawl
+                    # of it IS the targeted re-crawl.
+                    entry["crawl"] = {src: _crawl_into_db(src, False)}
+                else:
+                    entry["crawl"] = {"skipped": "no crawler mapped"}
         out[regulator] = entry
         logger.info("%s: %s", regulator, entry)
 
@@ -695,11 +733,86 @@ def monitor_cbb() -> dict:
     return _run_exclusive("monitor_cbb", _monitor_cbb_impl)
 
 
+def _cbb_db_state():
+    """(regulator, [(source name, source_system)], {source_system: last write date}).
+    Raises if the database cannot be read."""
+    import yaml
+    cfg = yaml.safe_load((REPO_ROOT / "config" / "sources" / "cbb.yml").read_text(encoding="utf-8"))
+    declared = [(s["name"], s["init_kwargs"]["source_system"]) for s in cfg.get("sources") or []]
+    conn = _repo()._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT source_system, CONVERT(varchar(10), MAX(updated_at), 23) "
+                    "FROM regulations WHERE regulator = ? GROUP BY source_system",
+                    cfg["regulator"])
+        latest = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    return cfg["regulator"], declared, latest
+
+
+def _seed_cbb_feed_state(feed) -> dict:
+    """Start the feed gate from what the database already holds, so a database that
+    already has CBB does not need a multi-hour crawl just to learn a date.
+
+    The date is the EARLIEST last-write across the configured sources that HAVE rows --
+    the oldest one sets how far back the feed must be read. It is a lower bound: a crawl
+    that changed nothing writes nothing, so the true crawl date can only be later.
+    Sources with no rows are not part of the date; the job crawls those on their own
+    (see _monitor_cbb_impl). With no rows at all nothing is seeded and the first run
+    crawls everything.
+    """
+    try:
+        _, declared, latest = _cbb_db_state()
+    except Exception as e:
+        logger.warning("CBB feed state not seeded from the database: %s", e)
+        return {}
+    have = [latest[ss] for _, ss in declared if latest.get(ss)]
+    if not have:
+        logger.info("CBB feed state not seeded: the database holds no CBB rows")
+        return {}
+    st = {"last_full_crawl": min(have), "seeded_from": "database"}
+    feed.save_state(st)
+    logger.info("CBB feed state seeded from the database: last full crawl %s", st["last_full_crawl"])
+    return st
+
+
 def _monitor_cbb_impl() -> dict:
     # 10800s = 3 hours, matching CBE. Mode 2c walks the whole rulebook sidebar and
     # mode 1 fetches Thomson Reuters resolution pages one at a time; neither is
     # quick, and a killed run reads downstream as a source that returned nothing.
+    # The revision feed decides WHETHER the crawl runs (dynamic_crawler/
+    # cbb_feed_signal.py): revisions since the last full crawl, or a full crawl
+    # older than 30 days -> crawl. A feed that cannot be read is reported as
+    # 'unavailable' and nothing is crawled. Otherwise skip.
+    from dynamic_crawler import cbb_feed_signal as feed
+    state = feed.load_state()
+    if not state.get("last_full_crawl"):
+        state = _seed_cbb_feed_state(feed) or state
+    verdict = feed.decide(state)
+    logger.info("Central Bank of Bahrain feed: %s", verdict)
+    if not verdict["crawl"]:
+        # The feed only speaks for sources already in the database. One that has never
+        # been crawled (a newly enabled source) is crawled on its own, whatever the
+        # feed says; a full crawl is not repeated for it.
+        try:
+            _, declared, latest = _cbb_db_state()
+            fresh = [name for name, ss in declared if not latest.get(ss)]
+        except Exception as e:
+            logger.warning("CBB: could not check for sources with no rows: %s", e)
+            fresh = []
+        if fresh:
+            logger.info("Central Bank of Bahrain: crawling only sources with no rows: %s", fresh)
+            res = _crawl_into_db("cbb", False, timeout=10800, only_sources=fresh)
+            res["feed"] = verdict
+            res["crawled_only"] = fresh
+            return res
+        return {"crawled": False, "feed": verdict}
     res = _crawl_into_db("cbb", False, timeout=10800)
+    # Recorded only for a run the gate trusted; otherwise the next run crawls again.
+    if res.get("run_trustworthy"):
+        feed.record_full_crawl()
+    res["feed"] = verdict
     logger.info("Central Bank of Bahrain: %s", res)
     return res
 
@@ -761,6 +874,10 @@ def monitor_sio() -> dict:
     from a run that still claims the sector, and only the completeness gate
     between that and a withdrawal proposal. Hence no `only_sources` here.
     """
+    return _run_exclusive("monitor_sio", _monitor_sio_impl)
+
+
+def _monitor_sio_impl() -> dict:
     rep = _crawl_into_db("sio", False)
     logger.info("Social Insurance Organisation (SIO): %s", rep)
     return {"Social Insurance Organisation (SIO)": rep}
@@ -793,6 +910,10 @@ def monitor_lloc() -> dict:
     IIS 404 that parses as an empty page; crawler/lloc_crawler.py holds the retry
     budget for it. Do not schedule this alongside another lloc job.
     """
+    return _run_exclusive("monitor_lloc", _monitor_lloc_impl)
+
+
+def _monitor_lloc_impl() -> dict:
     rep = _crawl_into_db("lloc", False, only_sources=["Latest Legislation"])
     logger.info("LLOC (Latest Legislation): %s", rep)
     return {"Legislation and Legal Opinion Commission (LLOC)": rep}
@@ -839,6 +960,10 @@ def monitor_pdpa() -> dict:
     (generic_crawler/crawler.py:3476); the ETag-reading stamp_declared() path runs
     only for --documents entries. See config/change_signals.yml.
     """
+    return _run_exclusive("monitor_pdpa", _monitor_pdpa_impl)
+
+
+def _monitor_pdpa_impl() -> dict:
     rep = _crawl_into_db("pdpa", False)
     logger.info("Personal Data Protection Authority (PDPA): %s", rep)
     return {"Personal Data Protection Authority (PDPA)": rep}
@@ -875,6 +1000,10 @@ def monitor_moic() -> dict:
     it is worth doing occasionally. Expect 5 false `modified` on the Forms
     placeholders if you do: they point at tag pages whose gzip ETag moves.
     """
+    return _run_exclusive("monitor_moic", _monitor_moic_impl)
+
+
+def _monitor_moic_impl() -> dict:
     rep = _crawl_into_db("moic", False)
     logger.info("Ministry of Industry and Commerce (MOIC): %s", rep)
     return {"Ministry of Industry and Commerce (MOIC)": rep}
@@ -919,6 +1048,10 @@ def monitor_cbj() -> dict:
     Expect 3 rows it cannot answer for: the Instructions, Jordanian Constitution
     and AML/CFT placeholders point at pages that publish no file at all.
     """
+    return _run_exclusive("monitor_cbj", _monitor_cbj_impl)
+
+
+def _monitor_cbj_impl() -> dict:
     rep = _crawl_into_db("cbj", False)
     logger.info("Central Bank of Jordan (CBJ): %s", rep)
     return {"Central Bank of Jordan (CBJ)": rep}
@@ -1097,6 +1230,109 @@ def _monitor_nbr_impl() -> dict:
     return res
 
 
+def snapshot_report(name: str, source: str = None) -> dict:
+    """The state of one saved page, for a run's result and for the API.
+
+    Makes no request: it reads output/snapshots/<name>.manifest.json and asks the
+    store whether a live visit would be allowed right now. `state` is what a
+    caller acts on -- fresh | aging | stale | missing.
+    """
+    from dynamic_crawler.formfill.snapshot import SnapshotStore
+    store = SnapshotStore(name, REPO_ROOT / "output" / "snapshots")
+    m = store.manifest()
+    allowed, why = store.may_attempt()
+    age = store.age_days()
+
+    # `allowed` above is only the saved page's BACKOFF CLOCK. Whether the job may
+    # visit at all is decided by `allow_live` in the source's config, which ships
+    # false -- so on its own `allowed: true` reads as "the site can be visited"
+    # when the job is in fact incapable of it. `next_run_will_visit` is the answer
+    # a person actually wants: would the next scheduled run touch the site?
+    allow_live = False
+    if source:
+        try:
+            import yaml
+            cfg = yaml.safe_load((REPO_ROOT / "config" / "sources" / f"{source}.yml")
+                                 .read_text(encoding="utf-8")) or {}
+            kw = ((cfg.get("sources") or [{}])[0].get("init_kwargs") or {})
+            allow_live = bool(kw.get("allow_live", True))
+        except Exception:
+            allow_live = False               # unreadable config: assume the safe answer
+    state = store.state()
+    return {
+        "snapshot": name,
+        "state": state,
+        "age_days": None if age is None else round(age, 1),
+        "captured_at": m.get("captured_at"),
+        "last_attempt_result": m.get("last_attempt_result"),
+        "consecutive_blocks": m.get("consecutive_blocks", 0),
+        "next_attempt_after": m.get("next_attempt_after"),
+        "allow_live": allow_live,
+        "backoff_allows_visit": allowed,
+        "next_run_will_visit": bool(allow_live and allowed and state != "fresh"),
+        "why": why,
+    }
+
+
+def monitor_simah() -> dict:
+    """WEEKLY. SIMAH under the snapshot-first policy: it reads a SAVED page.
+
+    THE SCHEDULE DOES NOT DECIDE WHEN SIMAH IS VISITED; THE SAVED PAGE'S CLOCK
+    DOES. Every run reads output/snapshots/simah.rules.html and touches no
+    network. A live visit happens only when config/sources/simah.yml has
+    `allow_live: true` AND the saved page is older than max_age_days AND the
+    backoff allows it -- one navigation, no retry, 6h/24h/72h/7d/14d after a
+    block. So the cron interval can be anything, including too often, and the
+    site still sees at most one request per 30 days (or per backoff step).
+
+    `allow_live` SHIPS false. simah.com is Cloudflare-blocked (see
+    config/change_signals.yml skip_hosts); flipping it is the decision that the
+    block is over, and it follows a deliberate manual visit, not a schedule.
+    The order is in config/sources/simah.yml.
+
+    A saved page cannot show a change that happened after it was saved, and past
+    grace_days without a successful refresh this RAISES instead of publishing a
+    stale page as current -- that failure is the alert.
+    """
+    return _run_exclusive("monitor_simah", _monitor_simah_impl)
+
+
+def _monitor_simah_impl() -> dict:
+    res = _crawl_into_db("simah", False, timeout=3600)
+    res["snapshot"] = snapshot_report("simah.rules", "simah")
+    logger.info("SIMAH: %s", res)
+    return {"Saudi Credit Bureau (SIMAH)": res}
+
+
+def monitor_saudi_exchange() -> dict:
+    """WEEKLY, AND OFF UNTIL A SNAPSHOT EXISTS. Saudi Exchange, same policy.
+
+    Identical to monitor_simah in what a run may do (see there). The differences:
+
+      * There is no snapshot on a new machine -- output/snapshots/ is not part of
+        the code -- so until someone takes the first visit BY HAND every run
+        raises "has no snapshot". Loud on purpose, and the reason its slot in
+        config/scheduler.yml ships disabled: a job that fails every week teaches
+        people to ignore failures.
+      * Akamai refuses headless Chromium, so that one manual capture needs a real
+        window (Xvfb on a Linux server). A scheduled REPLAY does not: it reads the
+        file, and runner.py no longer forces a window for a replay.
+      * `allow_live` ships false for the same reason as SIMAH's, plus one more:
+        whether THIS machine's address is accepted is unknown until the first
+        visit says so.
+
+    The steps, in order, are in config/sources/saudi_exchange.yml.
+    """
+    return _run_exclusive("monitor_saudi_exchange", _monitor_saudi_exchange_impl)
+
+
+def _monitor_saudi_exchange_impl() -> dict:
+    res = _crawl_into_db("saudi_exchange", False, timeout=3600)
+    res["snapshot"] = snapshot_report("tadawul.rules", "saudi_exchange")
+    logger.info("Saudi Exchange: %s", res)
+    return {"Saudi Exchange": res}
+
+
 def _forms_for(regulator: str) -> list:
     """Every hints form that crawls this regulator, sorted for determinism.
 
@@ -1121,5 +1357,29 @@ def _forms_for(regulator: str) -> list:
     return forms
 
 
+def _config_source_for(regulator: str):
+    """The config/sources/<name>.yml stem whose `regulator:` field matches --
+    the equivalent of `_forms_for`, but for a regulator crawled through the
+    generic config path (crawler/generic_crawler_wrapper.py) rather than a
+    dynamic_crawler/hints form. Needed because `_forms_for` alone cannot see
+    KDIPA, which config/sources/kdipa.yml declares directly with no hints
+    file at all.
+    """
+    import yaml
+    src_dir = REPO_ROOT / "config" / "sources"
+    for p in sorted(src_dir.glob("*.yml")):
+        try:
+            cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if cfg.get("regulator") == regulator:
+            return p.stem
+    return None
+
+
 __all__ = ["monitor_cheap_probes", "monitor_sama", "monitor_mc", "monitor_cma",
-           "monitor_cbe", "monitor_bahrain_bourse"]
+           "monitor_mlcu", "monitor_cbe", "monitor_bahrain_bourse", "monitor_cbb",
+           "monitor_rera", "monitor_sio", "monitor_lloc", "monitor_pdpa",
+           "monitor_moic", "monitor_cbj", "monitor_edb", "monitor_mlsd",
+           "monitor_lmra", "monitor_justice_canada", "monitor_nbr",
+           "monitor_simah", "monitor_saudi_exchange"]

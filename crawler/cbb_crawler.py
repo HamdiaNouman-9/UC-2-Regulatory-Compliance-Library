@@ -344,7 +344,8 @@ def _rulebook_doc_to_regulatory(doc: RulebookDoc) -> RegulatoryDocument:
 
 
 def _crawl_rulebook(max_volumes: Optional[int] = None,
-                     resume: bool = True) -> List[RegulatoryDocument]:
+                     resume: bool = True,
+                     volume: Optional[str] = None) -> List[RegulatoryDocument]:
     """The whole rulebook sidebar, or the first `max_volumes` volumes.
 
     MEASURED 2026-08-20: uncapped, this ran 80 minutes without finishing and
@@ -371,6 +372,7 @@ def _crawl_rulebook(max_volumes: Optional[int] = None,
         request_delay = REQUEST_DELAY,
         max_volumes   = max_volumes,
         resume        = resume,
+        volume        = volume,
     )
     # LEAVES ONLY. The comment here used to read "Return ALL docs (including
     # folders) so caller can handle folder insertion" and filtered on
@@ -700,7 +702,8 @@ class CBBCrawlerV2(BaseCrawler):
 
     def fetch_documents(self, mode: Optional[str] = None,
                         max_volumes: Optional[int] = None,
-                        resume: bool = True) -> List[RegulatoryDocument]:
+                        resume: bool = True,
+                        volume: Optional[str] = None) -> List[RegulatoryDocument]:
         """
         Fetch documents from all CBB sources (or a specific mode).
 
@@ -737,7 +740,7 @@ class CBBCrawlerV2(BaseCrawler):
 
         if run_all or mode == "2c":
             log.info("=== Mode 2c: Rulebook Volumes ===")
-            docs = _crawl_rulebook(max_volumes, resume=resume)
+            docs = _crawl_rulebook(max_volumes, resume=resume, volume=volume)
             log.info(f"Mode 2c: {len(docs)} documents")
             all_docs.extend(docs)
 

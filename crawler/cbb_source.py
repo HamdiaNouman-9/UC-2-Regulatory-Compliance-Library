@@ -83,6 +83,7 @@ class CBBSource:
         regulator: str = REGULATOR,
         max_volumes: Optional[int] = None,
         resume: bool = True,
+        volume: Optional[str] = None,
     ):
         if not mode:
             raise ValueError("CBBSource needs a mode ('1', '2a', ... '5')")
@@ -105,6 +106,9 @@ class CBBSource:
         # volume `cbb_test_crawlers/cbb_rulebook_crawler.py` already
         # checkpointed to disk instead of starting over from Common Volume.
         # Set False in config/sources/cbb.yml for a deliberate clean re-crawl.
+        # Mode 2c ONLY: crawl just this rulebook volume (see cbb.yml). It also
+        # decides what the rows are filed under: one source_system per volume.
+        self.volume = volume
         self.resume = resume
         self.last_result: dict = {}
 
@@ -122,7 +126,7 @@ class CBBSource:
 
         docs = CBBCrawlerV2().fetch_documents(
             mode=self.mode, max_volumes=self.max_volumes,
-            resume=self.resume) or []
+            resume=self.resume, volume=self.volume) or []
 
         # A mode that returns nothing is a FINDING, not a result. Every other
         # crawler in the library says this; CBB never did, which is one reason a
@@ -133,6 +137,8 @@ class CBBSource:
                 f"documents. That is a failed read, not an empty section.")
 
         override = SOURCE_SYSTEM_OVERRIDE.get(self.mode)
+        if self.mode == "2c" and self.volume:
+            override = self.source_system      # per-volume sources, cbb.yml section 3
         for d in docs:
             if override:
                 d.source_system = override

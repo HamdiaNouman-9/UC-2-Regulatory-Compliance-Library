@@ -34,7 +34,7 @@ class SBPLawsSpider(scrapy.Spider):
         parent_title = response.meta.get("title", "")
         source_page = response.meta.get("source_page", response.url)
 
-        self.logger.info(f"🔍 Parsing Pakistan Code page: {response.url}")
+        self.logger.info(f" Parsing Pakistan Code page: {response.url}")
 
         # Get title from the page
         title = response.xpath("//h2/text()").get(default="").strip()
@@ -111,12 +111,12 @@ class SBPLawsSpider(scrapy.Spider):
         )
 
         self.shared_items.append(reg_doc)
-        self.logger.info(f"📦 Appended Pakistan Code document: {title}")
+        self.logger.info(f" Appended Pakistan Code document: {title}")
 
         yield reg_doc
 
     def parse(self, response):
-        self.logger.info(f"📄 Parsing main Laws & Regulations page: {response.url}")
+        self.logger.info(f" Parsing main Laws & Regulations page: {response.url}")
 
         current_section = None
 
@@ -162,7 +162,7 @@ class SBPLawsSpider(scrapy.Spider):
 
             if is_prudential_page or is_aml_page:
                 # These are pages with multiple documents, not direct downloads
-                self.logger.info(f"🔗 Following {'Prudential' if is_prudential_page else 'AML'} page: {title}")
+                self.logger.info(f" Following {'Prudential' if is_prudential_page else 'AML'} page: {title}")
                 yield scrapy.Request(
                     url,
                     callback=self.parse_subpage,
@@ -175,7 +175,7 @@ class SBPLawsSpider(scrapy.Spider):
             elif url.lower().endswith(DOC_EXTS):
                 # Check if it's a Foreign Exchange Manual page (which has sub-documents)
                 if "Foreign Exchange Manual" in title:
-                    self.logger.info(f"🔗 Following page: {title}")
+                    self.logger.info(f" Following page: {title}")
                     yield scrapy.Request(
                         url,
                         callback=self.parse_subpage,
@@ -187,7 +187,7 @@ class SBPLawsSpider(scrapy.Spider):
                     )
                 else:
                     # Regular direct document link
-                    self.logger.info(f"📄 Direct document: {title}")
+                    self.logger.info(f" Direct document: {title}")
                     doc_path = ["SBP", "Laws & Regulations", current_section or "Unknown", title]
 
                     reg_doc = RegulatoryDocument(
@@ -206,12 +206,12 @@ class SBPLawsSpider(scrapy.Spider):
                     )
 
                     self.shared_items.append(reg_doc)
-                    self.logger.info(f"📦 Appended document: {title}")
+                    self.logger.info(f" Appended document: {title}")
 
                     yield reg_doc
 
             elif "pakistancode.gov.pk" in url:
-                self.logger.info(f"🔗 Following Pakistan Code page: {title}")
+                self.logger.info(f" Following Pakistan Code page: {title}")
                 yield scrapy.Request(
                     url,
                     callback=self.parse_pakistan_code_page,
@@ -224,7 +224,7 @@ class SBPLawsSpider(scrapy.Spider):
 
             else:
                 # Page with more content - follow it
-                self.logger.info(f"🔗 Following page: {title}")
+                self.logger.info(f" Following page: {title}")
                 yield scrapy.Request(
                     url,
                     callback=self.parse_subpage,
@@ -240,8 +240,8 @@ class SBPLawsSpider(scrapy.Spider):
         parent_title = response.meta["parent_title"]
         parent_url = response.meta["parent_url"]
 
-        self.logger.info(f"📑 Parsing subpage: {parent_title}")
-        self.logger.info(f"🔗 URL: {response.url}")
+        self.logger.info(f" Parsing subpage: {parent_title}")
+        self.logger.info(f" URL: {response.url}")
 
         # Case 1: Foreign Exchange Manual - Chapter-based structure
         if "fe_manual" in response.url or "Foreign Exchange Manual" in parent_title:
@@ -256,7 +256,7 @@ class SBPLawsSpider(scrapy.Spider):
         is_aml = "aml" in response.url.lower() or "Anti-Money Laundering" in parent_title or "AML" in parent_title
 
         if is_prudential or is_aml:
-            self.logger.info(f"🏦 Processing {'Prudential Regulations' if is_prudential else 'AML/CFT/CPF'} page")
+            self.logger.info(f" Processing {'Prudential Regulations' if is_prudential else 'AML/CFT/CPF'} page")
 
             # Pattern for Prudential/AML pages: Look for rows with document titles and Download links
             for row in response.xpath("//table//tr[td]"):
@@ -286,7 +286,7 @@ class SBPLawsSpider(scrapy.Spider):
                     url = urljoin(response.url, download_link)
                     documents_found = True
 
-                    self.logger.info(f"📄 Document found: {title}")
+                    self.logger.info(f" Document found: {title}")
                     self.logger.info(f"   URL: {url}")
 
                     # Set doc_path based on whether it's Prudential or AML
@@ -313,7 +313,7 @@ class SBPLawsSpider(scrapy.Spider):
                     )
 
                     self.shared_items.append(reg_doc)
-                    self.logger.info(f"📦 Appended document: {title}")
+                    self.logger.info(f" Appended document: {title}")
 
                     yield reg_doc
 
@@ -352,7 +352,7 @@ class SBPLawsSpider(scrapy.Spider):
                         url = urljoin(response.url, href)
 
                         documents_found = True
-                        self.logger.info(f"📄 Document found: {title}")
+                        self.logger.info(f" Document found: {title}")
                         self.logger.info(f"   URL: {url}")
 
                         doc_path = ["SBP", "Laws & Regulations", section, parent_title, title]
@@ -373,7 +373,7 @@ class SBPLawsSpider(scrapy.Spider):
                         )
 
                         self.shared_items.append(reg_doc)
-                        self.logger.info(f"📦 Appended document: {title}")
+                        self.logger.info(f" Appended document: {title}")
 
                         yield reg_doc
 
@@ -393,7 +393,7 @@ class SBPLawsSpider(scrapy.Spider):
                     continue
 
                 documents_found = True
-                self.logger.info(f"📄 Document found (direct link): {title}")
+                self.logger.info(f" Document found (direct link): {title}")
 
                 doc_path = ["SBP", "Laws & Regulations", section, parent_title, title]
 
@@ -413,7 +413,7 @@ class SBPLawsSpider(scrapy.Spider):
                 )
 
                 self.shared_items.append(reg_doc)
-                self.logger.info(f"📦 Appended document: {title}")
+                self.logger.info(f" Appended document: {title}")
 
                 yield reg_doc
 
@@ -425,7 +425,7 @@ class SBPLawsSpider(scrapy.Spider):
         """
         Parse Foreign Exchange Manual page with proper volume/appendix detection.
         """
-        self.logger.info("📖 Parsing Foreign Exchange Manual")
+        self.logger.info(" Parsing Foreign Exchange Manual")
 
         current_volume = None
 
@@ -452,12 +452,12 @@ class SBPLawsSpider(scrapy.Spider):
 
                         if "VOLUME II" in strong_text or "VOLUME II" in element_text_upper:
                             current_volume = "Volume II"
-                            self.logger.info(f"📚 Entered {current_volume}")
+                            self.logger.info(f" Entered {current_volume}")
                             continue
                         elif "VOLUME I" in strong_text or (
                                 "VOLUME I" in element_text_upper and "VOLUME II" not in element_text_upper):
                             current_volume = "Volume I"
-                            self.logger.info(f"📚 Entered {current_volume}")
+                            self.logger.info(f" Entered {current_volume}")
                             continue
 
                     # Default to Volume I if no marker found yet
@@ -476,7 +476,7 @@ class SBPLawsSpider(scrapy.Spider):
                                 is_chapter_table = "CHAPTER" in headers_text and "SUBJECT" in headers_text
 
                                 if is_chapter_table:
-                                    self.logger.info(f"📋 Processing chapter table ({current_volume})")
+                                    self.logger.info(f" Processing chapter table ({current_volume})")
 
                                     for row in table.xpath(".//tr[position()>1]"):
                                         cells = row.xpath("./td")
@@ -501,7 +501,7 @@ class SBPLawsSpider(scrapy.Spider):
                                                 current_volume, title
                                             ]
 
-                                            self.logger.info(f"📄 FE Manual chapter: {title}")
+                                            self.logger.info(f" FE Manual chapter: {title}")
 
                                             reg_doc = RegulatoryDocument(
                                                 regulator="SBP",
@@ -544,7 +544,7 @@ class SBPLawsSpider(scrapy.Spider):
                                 ]
                                 department = [section, parent_title, current_volume]
 
-                                self.logger.info(f"📄 FE Manual document: {link_text}")
+                                self.logger.info(f" FE Manual document: {link_text}")
                                 self.logger.info(f"   Location: {current_volume}")
 
                                 reg_doc = RegulatoryDocument(
@@ -574,7 +574,7 @@ class SBPLawsSpider(scrapy.Spider):
                 has_appendices = element.xpath(".//li[contains(., 'Appendices')]")
 
                 if has_appendices:
-                    self.logger.info(f"📂 Entered Appendices section (standalone)")
+                    self.logger.info(f" Entered Appendices section (standalone)")
 
                     # The table is inside a nested <blockquote> within the <li>
                     appendix_tables = element.xpath(".//li//blockquote//table")
@@ -598,9 +598,9 @@ class SBPLawsSpider(scrapy.Spider):
         if is_appendix_table:
             # Log with or without volume
             if current_volume:
-                self.logger.info(f"📋 Processing appendix table ({current_volume})")
+                self.logger.info(f" Processing appendix table ({current_volume})")
             else:
-                self.logger.info(f"📋 Processing appendix table (standalone)")
+                self.logger.info(f" Processing appendix table (standalone)")
 
             for row in table.xpath(".//tr[position()>1]"):
                 cells = row.xpath("./td")
@@ -626,7 +626,7 @@ class SBPLawsSpider(scrapy.Spider):
                         "Appendices", title
                     ]
 
-                    self.logger.info(f"📄 FE Manual appendix: {title}")
+                    self.logger.info(f" FE Manual appendix: {title}")
                     self.logger.info(f"   Location: Appendices")
 
                     if url.lower().endswith(".htm") or url.lower().endswith(".html"):

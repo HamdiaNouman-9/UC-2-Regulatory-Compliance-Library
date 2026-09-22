@@ -524,6 +524,47 @@ sources:
     confirm: false
 
   - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Common"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-1"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-2"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-3"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-4"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-5"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-6"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-7"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+
+  - regulator: "Central Bank of Bahrain"
     source_system: "CBB-AML-LAW"
     signal: crawl
     identity: [doc_path, title]

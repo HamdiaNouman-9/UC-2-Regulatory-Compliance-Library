@@ -61,7 +61,7 @@ for _name in _PREFIXES:
             sys.modules[_name] = _m
 
 from dynamic_crawler import fingerprint                             # noqa: E402
-from dynamic_crawler.formfill.orch import NewOrchestrator           # noqa: E402
+from orchestrator.orchestrator import Orchestrator           # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -143,7 +143,7 @@ class FakeRepo:
 
 
 def orch(repo):
-    return NewOrchestrator(crawler=_Any(), repo=repo, source_name="src:test")
+    return Orchestrator(crawler=_Any(), repo=repo, source_name="src:test")
 
 
 SP_ETAG = '"{A07F4B04-B20F-4D9E-8B81-5E5AB33C4A5F},4"'

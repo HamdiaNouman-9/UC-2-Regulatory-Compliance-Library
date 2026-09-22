@@ -72,7 +72,7 @@ for _name in _PREFIXES:
 from dynamic_crawler import changesignal as cs                       # noqa: E402
 from dynamic_crawler import fingerprint                              # noqa: E402
 from dynamic_crawler.change_state import ChangeStateStore, slug      # noqa: E402
-from dynamic_crawler.formfill.orch import NewOrchestrator            # noqa: E402
+from orchestrator.orchestrator import Orchestrator            # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +177,7 @@ def test_the_field_order_the_source_declared_is_the_key_order():
 
 
 def test_the_sweep_and_the_orchestrator_build_the_same_key():
-    o = NewOrchestrator(crawler=_Any(), repo=_Any(), source_name="source:TEST")
+    o = Orchestrator(crawler=_Any(), repo=_Any(), source_name="source:TEST")
     doc = Doc(document_url="https://x/a?b=1", doc_path=["A", "B"])
     assert (cs.identity_key(o._identity_fields_of(doc))
             == cs.observation_for(doc, o.DEFAULT_IDENTITY).key
@@ -195,7 +195,7 @@ def test_the_inventory_hash_is_the_one_already_stored():
     changing them again is buying the same one-run reconciliation for every
     source — do it knowingly, not as a side effect of touching the tuple.
     """
-    o = NewOrchestrator(crawler=_Any(), repo=_Any(), source_name="source:TEST")
+    o = Orchestrator(crawler=_Any(), repo=_Any(), source_name="source:TEST")
     docs = [Doc(document_url="https://x/a?b=1", doc_path=["A", "B"]),
             Doc(reference_no="C-1", extra_meta={"identity_fields": ["reference_no"]})]
     keys = sorted(["document_url=https://x/a?b=1|doc_path=A > B|title=a document",

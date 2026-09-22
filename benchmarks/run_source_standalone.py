@@ -10,7 +10,7 @@ every other regulator behind it.
 SAMA is the case that forces the issue. It is the largest source by an order of
 magnitude and runs for hours, so triggering it through the API stops all the
 short regulators from running at all. This script does exactly what
-`trigger_source` does — same `build_regulator_crawler`, same `NewOrchestrator`,
+`trigger_source` does — same `build_regulator_crawler`, same `Orchestrator`,
 same `ExcelRepo`, same identity settings — in its own process, so SAMA can run
 alongside the others instead of in front of them.
 
@@ -102,7 +102,7 @@ def main() -> int:
     a = ap.parse_args()
 
     from dynamic_crawler.formfill.excel_repo import ExcelRepo
-    from dynamic_crawler.formfill.orch import NewOrchestrator
+    from orchestrator.orchestrator import Orchestrator
 
     cfg = {}
     if a.form:
@@ -224,7 +224,7 @@ def main() -> int:
         source_name = f"source:{reg_name}"
 
     repo = ExcelRepo(out_xlsx)
-    orch = NewOrchestrator(
+    orch = Orchestrator(
         crawler=crawler, repo=repo, downloader=None,
         source_name=source_name, analyse=a.analyse,
         limit=(a.limit or None),

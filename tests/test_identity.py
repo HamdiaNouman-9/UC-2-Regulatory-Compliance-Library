@@ -63,7 +63,7 @@ for _name in _PREFIXES:
 
 from crawler.generic_crawler_wrapper import (                        # noqa: E402
     CompositeCrawler, _source_options, build_regulator_crawler)
-from dynamic_crawler.formfill.orch import NewOrchestrator            # noqa: E402
+from orchestrator.orchestrator import Orchestrator            # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +155,7 @@ class FakeRepo:
 
 
 def orch(repo, crawler=None, **kw):
-    return NewOrchestrator(crawler=crawler or _Any(), repo=repo,
+    return Orchestrator(crawler=crawler or _Any(), repo=repo,
                            source_name="source:TEST", **kw)
 
 

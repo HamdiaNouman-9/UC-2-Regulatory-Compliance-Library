@@ -8,7 +8,7 @@ Uses MSSQLRepository + temp table approach.
 import os
 import logging
 from dotenv import load_dotenv
-from storage.mssql_repo import MSSQLRepository  # 👈 fix import
+from storage.mssql_repo import MSSQLRepository
 
 load_dotenv()
 
