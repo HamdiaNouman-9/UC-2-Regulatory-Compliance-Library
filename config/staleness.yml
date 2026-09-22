@@ -1,0 +1,16 @@
+# Alert when a regulator has produced no update (new or modified document,
+# or a withdrawal) for longer than its interval. See jobs/staleness_alert.py.
+#
+# Served by GET /monitoring/staleness.
+
+default_days: 30      # used for any regulator without its own entry
+
+# Optional watch list. When present ONLY these regulators are checked, and one
+# that has never had an update is reported too. Names must match
+# regulation_versions.regulator exactly. Omit the block to watch every
+# regulator in the table at default_days.
+#
+# regulators:
+#   "Central Bank of Bahrain": 14
+#   "Securities and Exchange Commission of Pakistan":
+#     days: 7

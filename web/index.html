@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Regulatory Compliance Library</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="sidebarToggle" class="icon-btn" title="Toggle navigation">&#9776;</button>
+      <span class="brand">Regulatory Compliance Library</span>
+      <nav class="top-nav">
+        <button class="top-nav-btn active" id="navLibraryBtn">Library</button>
+        <button class="top-nav-btn" id="navPipelineBtn">Run Pipeline</button>
+        <button class="top-nav-btn" id="navAlertsBtn">Alerts</button>
+        <button class="top-nav-btn" id="navModelBtn">Model &amp; Usage</button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <span id="healthDot" class="health-dot" title="API status"></span>
+      <input id="apiBaseInput" class="api-base-input" spellcheck="false">
+    </div>
+  </header>
+
+  <div class="titlebar">
+    <div class="titleblock">
+      <h1 id="pageTitle">COMPLIANCE LIBRARY REGULATIONS</h1>
+      <div class="crumbs" id="crumbs">Compliance Radar / Compliance Library Regulations</div>
+    </div>
+    <button id="backBtn" class="btn-outline hidden">&#10005; Back</button>
+  </div>
+
+  <div class="content">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <input id="treeFilter" class="tree-filter" placeholder="Filter">
+      </div>
+      <ul class="tree" id="treeRoot"></ul>
+    </aside>
+
+    <main class="main" id="main">
+      <!-- Browse view (folder grid) -->
+      <section id="browseView" class="panel">
+        <div class="grid" id="folderGrid"></div>
+        <div class="empty-state hidden" id="browseEmpty">This folder has no sub-folders or regulations.</div>
+      </section>
+
+      <!-- Detail view (tabs) -->
+      <section id="detailView" class="panel hidden">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="regulation">Regulation</button>
+          <button class="tab-btn" data-tab="reqact">Requirements &amp; Activities</button>
+        </div>
+
+        <div class="tab-panel" id="tab-regulation">
+          <!-- filled by JS -->
+        </div>
+
+        <div class="tab-panel hidden" id="tab-reqact">
+          <!-- filled by JS -->
+        </div>
+      </section>
+
+      <!-- Pipeline trigger view -->
+      <section id="pipelineView" class="panel hidden">
+        <div class="pipeline-card">
+          <div class="section-label">&#9654; Run a regulator's crawl</div>
+          <p class="pipeline-hint">
+            Crawls the live source and classifies documents as new / modified / unchanged /
+            disappeared, then writes the result to a local Excel workbook only --
+            <b>nothing touches the production database</b> unless you separately approve it
+            (<code>dynamic_crawler/formfill/api.py</code>, its own service on its own port).
+            "check against production DB" (below) seeds that comparison with what's actually
+            already in the library, read-only, so an already-onboarded regulator like MISA
+            correctly reports "no new updates" instead of re-reporting its whole inventory as new
+            every time. A workbook name lets a second LOCAL run also compare against the first,
+            on top of that. "reuse last crawl" replays the crawl already on disk instead of
+            hitting the live site again; MISA's own config already runs list-only (no
+            per-document detail pages), matching the fast daily monitoring check.
+          </p>
+          <div class="pipeline-form">
+            <input id="formfillBaseInput" class="api-base-input" style="width:190px;" spellcheck="false">
+            <span id="formfillHealthDot" class="health-dot" title="Formfill API status"></span>
+            <select id="formfillSourceSelect"></select>
+            <input id="formfillWorkbookInput" class="api-base-input" style="width:170px;"
+                   spellcheck="false" title="Workbook filename -- same name across runs is what makes change detection (new/modified/unchanged) possible">
+            <label style="font-size:12.5px; color:var(--muted);"
+                   title="Read-only: pulls this regulator's current rows from the real database before classifying, so already-onboarded documents aren't reported as new.">
+              <input type="checkbox" id="formfillCheckDb" checked> check against production DB</label>
+            <label style="font-size:12.5px; color:var(--muted);">
+              <input type="checkbox" id="formfillReuseLast" checked> reuse last crawl</label>
+            <label style="font-size:12.5px; color:var(--muted);" id="formfillHeadedLabel"
+                   title="Pops a real, visible browser window on this machine while it crawls -- only works when 'reuse last crawl' is off, since reusing skips the crawl entirely.">
+              <input type="checkbox" id="formfillHeaded"> show browser while crawling</label>
+            <label style="font-size:12.5px; color:var(--muted);">
+              <input type="checkbox" id="formfillAnalyse"> run LLM analysis (costs $ + time)
+            </label>
+            <button class="btn-sm primary" id="runFormfillBtn">Run</button>
+            <button class="btn-sm" id="refreshFormfillListBtn">Refresh list</button>
+          </div>
+          <div id="formfillResult" class="formfill-result"></div>
+        </div>
+
+        <div class="section-label">&#128337; This session's run history</div>
+        <div id="pipelineHistory" class="pipeline-history">
+          <div class="empty-state">No pipelines triggered yet this session.</div>
+        </div>
+      </section>
+
+      <!-- Alerts view: regulators with no update inside their interval -->
+      <section id="alertsView" class="panel hidden">
+        <div class="pipeline-card">
+          <div class="section-label">&#9888; Regulators with no recent updates</div>
+          <p class="pipeline-hint">
+            A regulator is flagged when its newest document version (new, modified or
+            withdrawn) is older than its interval. Intervals are set in
+            <code>config/staleness.yml</code>. The scheduler also runs this check daily and
+            logs the result.
+          </p>
+          <div class="pipeline-form">
+            <button class="btn-sm primary" id="refreshAlertsBtn">Check now</button>
+            <span id="alertsCheckedAt" class="muted-note"></span>
+          </div>
+          <div id="alertsResult" class="alerts-result"></div>
+        </div>
+      </section>
+
+      <!-- Model & usage view -->
+      <section id="modelView" class="panel hidden">
+        <div class="pipeline-card">
+          <div class="section-label">&#129302; Analysis model</div>
+          <p class="pipeline-hint">
+            The OpenRouter model used for requirement and activity analysis. A change applies
+            to analyses that start after you save it. Non-default models run without provider
+            pinning, so results are less reproducible run to run.
+          </p>
+          <div class="pipeline-form">
+            <span>Current: <b id="currentModel">&hellip;</b></span>
+          </div>
+          <div class="pipeline-form">
+            <input id="modelSearchInput" class="api-base-input" style="width:240px;"
+                   placeholder="Search models (e.g. claude, gpt, deepseek)" spellcheck="false">
+            <select id="modelSelect" style="max-width:420px;"></select>
+            <button class="btn-sm primary" id="saveModelBtn">Save model</button>
+          </div>
+          <div id="modelMsg" class="muted-note"></div>
+        </div>
+
+        <div class="pipeline-card" style="margin-top:14px;">
+          <div class="section-label">&#128176; Token usage</div>
+          <p class="pipeline-hint">
+            <b>This app</b> counts only the analysis calls made by this system, from when
+            recording was added. <b>Whole API key</b> is OpenRouter's own all-time figure for
+            the key, so it includes anything else using it.
+          </p>
+          <div class="pipeline-form">
+            <label class="muted-note">Group this app's usage by
+              <select id="usageGroupSelect">
+                <option value="model">model</option>
+                <option value="day">day</option>
+                <option value="step">step</option>
+                <option value="regulation">regulation id</option>
+              </select></label>
+            <button class="btn-sm" id="refreshUsageBtn">Refresh</button>
+          </div>
+          <div id="usageResult"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
