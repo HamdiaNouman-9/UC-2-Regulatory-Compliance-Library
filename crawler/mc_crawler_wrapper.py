@@ -158,8 +158,19 @@ class MCLawsCrawler:
             cmd.append("--headful")
         logger.info("MC: crawling -> %s", self.out_dir)
         # shell=False (the default) is load-bearing here — see PREFIX_ROOT.
+        #
+        # encoding/errors ARE load-bearing too, and their absence is why this
+        # crawl reported 0 documents every time it ran under the API on
+        # 2026-09-17: `text=True` alone decodes the subprocess's stdout/stderr
+        # with the LOCALE codec -- cp1252 ("charmap") on this machine -- and
+        # mc.gov.sa's Arabic/UTF-8 page content crashes Popen's reader thread
+        # with UnicodeDecodeError partway through, which surfaces here as
+        # returncode=1 and an empty pages.json, indistinguishable from a real
+        # crawl failure. jobs/monitor_jobs.py's own `_run()` documents the
+        # identical failure on a CMA sweep and fixes it the same way.
         r = subprocess.run(cmd, cwd=str(REPO_ROOT), timeout=self.timeout,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         if r.returncode != 0:
             raise RuntimeError(
                 f"MC crawl failed (exit {r.returncode}): {(r.stderr or '')[-800:]}")

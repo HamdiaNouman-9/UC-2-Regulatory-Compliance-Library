@@ -524,6 +524,47 @@ sources:
     confirm: false
 
   - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Common"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-1"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-2"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-3"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-4"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-5"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-6"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+  - regulator: "Central Bank of Bahrain"
+    source_system: "CBB-Rulebook-Vol-7"
+    signal: crawl
+    identity: [doc_path, title]
+    confirm: false
+
+  - regulator: "Central Bank of Bahrain"
     source_system: "CBB-AML-LAW"
     signal: crawl
     identity: [doc_path, title]
@@ -799,6 +840,484 @@ sources:
 
   # RECONCILED 2026-08-14 with the form, which now stores the full name and the
   # acronym. Both halves of the pair name the source.
+
+  # PDPA (Bahrain), both sources. MEASURED 2026-08-31, and `crawl` here is not
+  # the fallback it usually is -- it is the CHEAPEST question available, because
+  # each source is ONE page load (both are max_pages: 1 in config/sources/pdpa.yml).
+  #
+  #   sitemap           NONE. /sitemap.xml, /sitemap_index.xml and /en/sitemap.xml
+  #                     all answer 403 in 111 bytes from `server: AmazonS3`, and so
+  #                     does a control path that cannot exist -- which is what S3
+  #                     returns for a missing key when listing is denied. So this
+  #                     is "no sitemap", proven, not a block: /en/regulations.html
+  #                     answers 200 in 163,302 bytes to a plain request with only
+  #                     a User-Agent.
+  #   stored-inventory  Every document DOES return an ETag, opaque but stable, so
+  #                     this is available -- and it is still the wrong signal for
+  #                     either source. See the two notes below.
+  #   snapshot-articles Right shape, wrong plumbing. See "The Law" below.
+  #   sama-feed         No "what changed" page on the site.
+  #
+  - regulator: "Personal Data Protection Authority (PDPA)"
+    source_system: "The Law"
+    signal: crawl
+    confirm: false
+    # 60 of this source's 62 rows are ANCHORS INTO ONE PAGE
+    # (regulations.html#faqOne ... #faqSixty), so they share a single HTTP
+    # object: `#faqOne` and `#faqTwo` return the identical ETag
+    # 35237d1023d5c414d38d47a2c379fbae. `stored-inventory` would therefore call
+    # all 60 articles modified on any edit to that page, including an edit to
+    # something else on it entirely -- which is the exact failure
+    # `snapshot-articles` was written to fix.
+    #
+    # And `snapshot-articles` IS the right shape here: the page parses into 60
+    # labelled articles with 60 distinct hashes. But only with Bootstrap 4 class
+    # names (`card-header` / `card-body`); the module's defaults are Bootstrap 5
+    # (`accordion-button` / `accordion-body`) and parse 0 items on this page, and
+    # `snapshot_sweep()` does not thread those names through. It also reads a
+    # snapshot from formfill's SnapshotStore with a grace period, because it was
+    # built for SIMAH -- a host we are BLOCKED from and cannot crawl.
+    #
+    # We are not blocked from this one. The crawl is a single GET and it already
+    # produces exactly what snapshot-articles would: 62 rows, 62 DISTINCT
+    # content_hash values, one per article, each over the article's extracted
+    # text. There is nothing cheaper to ask and nothing more precise to ask.
+  - regulator: "Personal Data Protection Authority (PDPA)"
+    source_system: "Executive Decisions/Orders"
+    signal: crawl
+    confirm: false
+    # 20 distinct pdfs, each with its own honest ETag, so `stored-inventory`
+    # genuinely works here -- and it CANNOT BE THE ONE SIGNAL, because
+    # InventorySweep sets covers_inventory = False
+    # (dynamic_crawler/inventory_sweep.py:102). It probes only the urls we
+    # already store, so a NEW executive decision appearing on the page is not
+    # something it can observe. New decisions are the main event on this source.
+    #
+    # KNOWN GAP, recorded rather than papered over: a pdf silently REPLACED at
+    # the same url with the same link text is invisible to `crawl`. For a
+    # discovered document the engine stamps
+    # content_hash = hash("<url>|<title>") (generic_crawler/crawler.py:3476) --
+    # the ETag-reading path, stamp_declared(), runs only for --documents entries,
+    # which this config does not use. So the crawl sees additions, removals and
+    # retitles, and not that. Closing it means either declaring these 20 urls or
+    # teaching the engine to stamp discovered documents from a HEAD, and the
+    # second changes every regulator; neither is done here.
+
+  # MOIC (BAHRAIN) — `crawl`, AND HERE THE PROBE IS THE EXPENSIVE OPTION.
+  # MEASURED 2026-09-01, all four alternatives tested rather than assumed:
+  #
+  #   sitemap            DOES NOT EXIST. /sitemap.xml, /sitemap_index.xml and
+  #                      /en/sitemap.xml all answer 404 with a 44 KB soft-404 HTML
+  #                      page -- and so does a control path that cannot exist, so
+  #                      the 404 is the site's catch-all, not a missing file.
+  #                      robots.txt is live (200, 2,027 bytes) and names NO sitemap.
+  #   sama-feed          NO REVISION PAGE. /en/news exists and is press releases:
+  #                      21,578 captured characters, ONE document link on the whole
+  #                      page, and no mention of a decree, resolution, ministerial
+  #                      order or law. It reports events, not document changes.
+  #   snapshot-articles  WRONG SHAPE. 0 items parsed with either Bootstrap 4 or 5
+  #                      accordion classes. MOIC's rows are FILES, not article
+  #                      text -- `with_text` is 0 of 95.
+  #   stored-inventory   GENUINELY AVAILABLE, and still not the right choice. See
+  #                      below; this is the RERA case, not the PDPA one.
+  #
+  # STORED-INVENTORY WOULD WORK. Unlike PDPA, where 60 articles are anchors into
+  # one page and share a single ETag, MOIC's tokens are honest and per-document:
+  # every sampled pdf returns an Apache size-mtime ETag, stable across two reads
+  # (52b2f2-5d1d79f0a9d00, 5dbf7-5d1d799f99dc0, ... 6/6 `etag-opaque`), and 90 of
+  # the 95 rows are distinct pdfs.
+  #
+  # IT LOSES ON COST AND ON DISCOVERY.
+  #   cost       a probe is one request per stored document: 90 requests. The
+  #              crawl is ELEVEN page loads -- Commerce 1, Industry 1, Forms 9.
+  #              The cheap signal is the expensive one here.
+  #   discovery  InventorySweep sets covers_inventory = False
+  #              (dynamic_crawler/inventory_sweep.py:102): it re-reads only urls
+  #              we already hold. A new regulation, a new form, or a NEW FORM
+  #              CATEGORY is invisible to it -- and catching a new category is
+  #              exactly what config/sources/moic.yml's discovering Forms source
+  #              was built for.
+  #
+  # RUN stored-inventory DELIBERATELY NOW AND THEN. It is the only thing that
+  # catches a pdf silently REPLACED at the same url with the same link text: a
+  # discovered document's content_hash is hash("<url>|<title>")
+  # (generic_crawler/crawler.py:3476), so the crawl sees additions, removals and
+  # retitles, and not that. Same standing note as RERA above.
+  #
+  # ONE WRINKLE IF YOU DO. Five Forms rows are placeholders for categories that
+  # publish nothing, and they point at a tag PAGE rather than a file. A tag page's
+  # ETag is `1788244496-gzip` -- a gzip ETag on a dynamic page, which moves when
+  # the rendered bytes move. Those five would report `modified` as noise under a
+  # probe. Under `crawl` they do not: their content_hash is stable by construction.
+  #
+  # THREE ENTRIES, because config/sources/moic.yml stores three source_systems and
+  # a sweep looks a source up by (regulator, source_system). Commerce and Industry
+  # are the site's own `?about[0]` filters; Forms is the one discovering source
+  # that walks the sidebar.
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Commerce"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Industry"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Ministry of Industry and Commerce (MOIC)"
+    source_system: "Forms"
+    signal: crawl
+    confirm: false
+
+  # ---- Kuwait ------------------------------------------------------------
+  # NO `signal:` KEY, because stored-inventory is the default and this is the
+  # plain case for it: the site answers an honest version token per document.
+  #
+  # KDIPA publishes one instrument and no index worth walking, so
+  # config/sources/kdipa.yml declares it (`mode: declared`) rather than crawling
+  # for it. The sweep therefore has exactly ONE url to ask about -- one request
+  # per run, which is as cheap as this gets.
+  #
+  # MEASURED 2026-09-08 on that url:
+  #     ETag            absent
+  #     Last-Modified   Sun, 29 Aug 2021 05:26:19 GMT
+  #     Content-Length  278990
+  # so `dynamic_crawler/fingerprint.py::version_token` falls to its second tier
+  # and returns basis `last-modified+length`.
+  #
+  # CONFIRM IS FALSE BECAUSE THE TOKEN DOES NOT LIE. That 2021 date matches the
+  # file's own /2021/08/ upload path and stands still between runs -- it is not
+  # CMA's case, where Last-Modified is the CURRENT TIME and reported 1,134 false
+  # changes until `confirm: true` made it hash the visible text instead. Measure
+  # before changing this: a needless confirm downloads the file every sweep.
+  #
+  # THE TWO STRINGS ARE THE SAME ON PURPOSE. `source_system` was set to the
+  # regulator name so `_clean_trail` folds it out of doc_path and the tree does
+  # not carry a "Regulations" folder holding one document. `settings_for`
+  # matches on BOTH halves, so this still resolves to exactly this source.
+  - regulator: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    source_system: "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
+    confirm: false
+
+  # ---- Jordan ------------------------------------------------------------
+  # CBJ, ALL TEN SOURCES IN ONE ENTRY. config/sources/cbj.yml gives every source
+  # `source_system: "Legislation"` so the library nests them under one parent
+  # folder, and `settings_for` matches on (regulator, source_system) -- so this
+  # single pair names the whole regulator. The cost is recorded in cbj.yml: the
+  # ten listings cannot be gated apart, because `disappeared` and the
+  # completeness gate are scoped on that same pair.
+  #
+  # MEASURED 2026-09-16, all four alternatives:
+  #
+  #   sitemap           NONE, and proven rather than assumed. /sitemap.xml and
+  #                     /sitemap_index.xml answer 404 in 103 bytes. /EN/sitemap.xml
+  #                     answers 200 -- but a control path that cannot exist,
+  #                     /EN/List/zzz_control_does_not_exist, answers 200 at the
+  #                     IDENTICAL 385,447 bytes of `<!DOCTYPE html>`. That is the
+  #                     site's catch-all page, not a sitemap. robots.txt is 404,
+  #                     so it names none either.
+  #   sama-feed         no "what changed" page anywhere in the Legislation menu.
+  #   snapshot-articles wrong shape. It parses one page into labelled articles;
+  #                     CBJ's instruments are 399 separate PDFs, not anchors into
+  #                     a page. It would parse 0 items.
+  #   stored-inventory  AVAILABLE AND HONEST -- and still the wrong nightly
+  #                     signal. See the two reasons below.
+  #
+  # STORED-INVENTORY WORKS HERE, WHICH IS WHY IT IS RULED OUT ON EVIDENCE RATHER
+  # THAN ON AVAILABILITY. Every sampled PDF returns a real IIS ETag and a
+  # plausible, distinct Last-Modified -- not CMA's case, where Last-Modified is
+  # the current time:
+  #
+  #     etag="6e0ed747da9dc1:0"   Sun, 01 Mar 2026 13:15:21 GMT   250,012
+  #     etag="fcf52375516fdc1:0"  Wed, 17 Dec 2025 12:34:16 GMT   345,363
+  #     etag="b5efb9d719ddb1:0"   Tue, 25 Mar 2025 10:31:22 GMT   533,576
+  #
+  # It loses twice over, the same way MOIC's does:
+  #
+  #   1. COST. A probe is one request per document: 376 against TEN page loads
+  #      for the entire regulator, because every source in cbj.yml is
+  #      `max_pages: 1` -- CBJ's pagers and category dropdowns are display-only
+  #      and the unfiltered markup already carries every link. 376 and not 402:
+  #      23 multi-attachment rows leave document_url EMPTY by design and 3 are
+  #      placeholders, so 26 rows cannot be probed by anything.
+  #   2. COVERAGE. InventorySweep is covers_inventory = False -- it re-reads only
+  #      urls already stored and can never see a NEW circular. On this regulator
+  #      that is the main event, not an edge case: the register already holds
+  #      2026 circulars, and dynamic_crawler/MONITORING.md section 3 says it
+  #      outright -- on a list site the listing IS the feed.
+  #
+  # KNOWN GAP, SAME AS PDPA AND MOIC: a pdf silently replaced at the same url
+  # with the same link text is INVISIBLE. A discovered document's content_hash is
+  # hash("<url>|<title>") (generic_crawler/crawler.py, "a document is a file we
+  # have not downloaded here"), so only the url or the title moving can show. The
+  # ETags above are exactly what catches that, so a deliberate
+  # `--signal stored-inventory` run against a slice is worth doing occasionally.
+  # It is the second tier, not the nightly question.
+  #
+  # IDENTITY IS THE DEFAULT, AND THAT IS A RISK WORTH NAMING. CBJ exposes no
+  # stable item id -- nothing like CBE's Sitecore GUID -- so identity falls back
+  # to [document_url, doc_path, title]. If CBJ ever re-issues a circular at a new
+  # storage url, that reads as one new document plus one disappearance, the
+  # failure MONITORING.md section 2 names. There is no field available to fix it
+  # with today; if CBJ starts exposing one, override `identity` here.
+  - regulator: "Central Bank of Jordan (CBJ)"
+    source_system: "Legislation"
+    signal: crawl
+    confirm: false
+
+  # EDB (BAHRAIN) - `crawl` IS A MEASURED CONCLUSION HERE TOO.
+  #
+  # October CMS on Laravel. A law is an HTML PAGE - no PDFs on this site at all.
+  # MEASURED 2026-08-19:
+  #   ETag / Last-Modified   ABSENT on every response, section and law pages
+  #                          alike - `stored-inventory` has no token to read.
+  #   conditional GET        If-Modified-Since answered 200 + the full 95,389-byte
+  #                          body. No 304 support.
+  #   robots.txt / sitemap   both 404 - so `sitemap` cannot work either.
+  #   HEAD                   returns NO Content-Length. It conveys nothing here.
+  #   a publisher feed       NONE. /search-result has no dates and no ordering.
+  #   /all-laws/all-laws     names all 64 in one request, so it catches a law
+  #                          ADDED, REMOVED or RENAMED - but it is BYTE-IDENTICAL
+  #                          when Article 12 is edited in place, and it carries no
+  #                          category so it cannot build doc_path. A companion to
+  #                          the crawl, never a replacement.
+  #   raw body sha256        STABLE - 3 fetches byte-identical. The OPPOSITE of
+  #                          MLCU: no __VIEWSTATE, no nonce; the edb_session
+  #                          cookie is a HEADER and cannot move a body hash.
+  #   visible text sha256    STABLE across those same 3.
+  #
+  # So BOTH bases work and text is a CHOICE: raw HTML moves whenever EDB redeploys
+  # a template, reporting all 64 laws modified for a footer change. A probe would
+  # also buy nothing - with no ETag it must fetch and hash all 64 law pages
+  # against the crawl's 72, and it CANNOT DISCOVER A NEW LAW.
+  #
+  # `confirm: true` is recorded, not exercised; if ever run it must hash text.
+  # IDENTITY IS THE DEFAULT: measured across all 64, no duplicate document_url,
+  # title or content_hash and no version suffix in any slug.
+  - regulator: "Bahrain Economic Development Board (EDB)"
+    source_system: "Bahrain Business Laws"
+    signal: crawl
+    confirm: true
+
+  # MLSD (BAHRAIN) - `crawl`, AND THE MEASUREMENT THAT DECIDED IT IS UNUSUAL.
+  #
+  # One page, 30 rows, 28 of them Arabic PDFs behind `download.php?...&id=<32
+  # hex>`. MEASURED 2026-08-20:
+  #   ETag / Last-Modified   ABSENT on the listing AND on all 28 PDFs.
+  #   Content-Length         PRESENT on every PDF - the only per-document token
+  #                          this host offers, AND STILL NOT USABLE:
+  #                          dynamic_crawler/fingerprint.py reads ETag then
+  #                          Last-Modified and returns BASIS_NONE otherwise, so a
+  #                          sweep would compare "" against "" and report zero
+  #                          changes FOREVER - which reads like a quiet regulator.
+  #                          Reading it means changing the one shared token
+  #                          definition, which is a change to every source in this
+  #                          file, so it is recorded here and not done here.
+  #   robots.txt / sitemap   both 404.
+  #   a publisher feed       NONE. News and infographics say no law moved.
+  #   listing body sha256    STABLE - 3 fetches byte-identical (3d9b79a1c0e55c95).
+  #   the `id` values        STABLE across fetches AND across a fresh session with
+  #                          a new PHPSESSID, so identity holds.
+  #
+  # The crawl is 31 requests and it DISCOVERS A NEW LAW, which no probe can.
+  #
+  # `confirm: true` is recorded, not exercised; these are FILES, so confirm would
+  # hash their bytes, which is the right basis for a PDF.
+  # IDENTITY IS THE DEFAULT: 30 rows, 30 distinct urls. Titles are stored in
+  # ENGLISH and only 29 are distinct - the ministry's translation drops "amending
+  # some provisions of" and collapses two distinct resolutions onto one title.
+  # document_url separates them, and the Arabic name is kept per row as
+  # extra_meta["title_ar"] so a person can tell them apart.
+  - regulator: "Ministry of Labour and Social Development (MLSD)"
+    source_system: "Legislation and Regulations"
+    signal: crawl
+    confirm: true
+
+  # LMRA (BAHRAIN) - `crawl` IS A MEASURED CONCLUSION.
+  #
+  # An instrument is normally an HTML PAGE carrying its own full text.
+  # MEASURED 2026-08-20:
+  #   ETag                   ABSENT everywhere.
+  #   Last-Modified          ABSENT on every DYNAMIC page; PRESENT on the static
+  #                          files under /files/cms/. Only 3 of the 46 documents
+  #                          draw text from such a file, so it cannot carry a
+  #                          probe - it is kept per row as pdf_last_modified.
+  #   robots.txt / sitemap   both 404. /en/page/show/446 is a human sitemap page,
+  #                          not XML with lastmod.
+  #   a publisher feed       NONE that says what CHANGED. The listings badge a
+  #                          POSTING date, not the instrument's - Resolution
+  #                          1/2014 is badged 29-03-2026.
+  #   raw body sha256        STABLE - 3 fetches each of a listing, an instrument
+  #                          and an article page, all byte-identical.
+  #   `#page_content` text   STABLE across those same 3.
+  #
+  # The crawl is 97 requests; a probe would cost 46 and could not discover a new
+  # decree.
+  #
+  # THE FINGERPRINT IS SCOPED TO `#page_content` because every page carries a
+  # service-outage modal WITH DATES IN IT outside that block - a whole-body hash
+  # would move all 46 fingerprints the next time LMRA scheduled maintenance.
+  # `confirm: true` on the same reasoning: these are server-rendered pages, so a
+  # confirming probe must hash VISIBLE TEXT, which `confirm` already does for HTML.
+  # IDENTITY IS THE DEFAULT: across all 46, no duplicate document_url, doc_path or
+  # title, and no url carries a version suffix.
+  - regulator: "Labour Market Regulatory Authority (LMRA)"
+    source_system: "LMRA Legislations"
+    signal: crawl
+    confirm: true
+
+  # NBR (BAHRAIN) - `crawl` IS A MEASURED CONCLUSION, AND AN UNUSUAL ONE:
+  # this is the rare source where an honest ETag EXISTS and is still not used.
+  #
+  # An instrument here is a PDF ON S3 behind a `/media/<slug>` permalink; the
+  # permalink page is an Adobe viewer shell whose own visible text is 36
+  # characters. MEASURED 2026-08-31:
+  #   ETag / Last-Modified   BOTH PRESENT on every one of the seven S3 objects,
+  #                          and ABSENT on every `/media/` page and on the
+  #                          listing. So a stored-inventory sweep could only work
+  #                          if document_url were the S3 url - and it must not be.
+  #                          S3 keys are Laravel upload hashes: a replaced file
+  #                          gets a NEW key, so an S3 document_url reads as one
+  #                          `disappeared` plus one `new` on every amendment and
+  #                          loses the version chain. Worse, the sweep would keep
+  #                          probing the OLD key, which stays 200 with an
+  #                          unchanged ETag for as long as the orphaned object
+  #                          survives - reporting `unchanged` FOREVER while the
+  #                          site serves a different file. A silent permanent
+  #                          miss is the one failure mode worth paying to avoid.
+  #                          The validators are kept per row as s3_etag and
+  #                          s3_last_modified so a reviewer can still see them.
+  #   robots.txt             200, `Disallow:` empty - everything allowed.
+  #   sitemap.xml            404.
+  #   a publisher feed       NONE. /announcements and /releases are news; neither
+  #                          says which instrument moved.
+  #   raw body sha256        NOT STABLE - every response carries a fresh
+  #                          `<meta name="csrf-token">`, so a body hash moves on
+  #                          every fetch. The fingerprint is the PDF text.
+  #   BURST THROTTLING       REAL. Six unpaced requests in one session returned
+  #                          403 on everything; one paced request 45s later
+  #                          returned 200. The crawler paces at 3s, backs off 15s
+  #                          on a 403 and never treats one as an answer.
+  #
+  # The crawl is 18 requests and ~3.9 MB, and it DISCOVERS A NEW INSTRUMENT,
+  # which no probe can.
+  #
+  # `confirm: true` is recorded, not exercised; these are FILES, so confirm would
+  # hash their bytes, which is the right basis for a PDF.
+  #
+  # IDENTITY DIFFERS BY ROW, and change_signals has nothing to keep in step
+  # because the crawler DECLARES it per document. Reshaped 2026-09-01 on review:
+  # ONE ROW IS ONE `<h2>` SECTION of the page, not one PDF. THREE rows carrying
+  # SEVEN PDFs. The one-PDF row (the GCC Agreement) keeps `document_url` and the
+  # default identity; the two three-PDF rows leave it empty and declare
+  # `identity_fields: [doc_path, extra_meta.attachment_links, title]`, which is
+  # the contract in models.RegulatoryDocument and what `check` enforces.
+  #
+  # THE STORED FILE URLS ARE THE S3 PDFs, not the `/media/` viewer pages. So a
+  # re-upload rotates the key and the row reads `new` + `disappeared` rather than
+  # `modified` - the cost models.py already names for multi-file rows. The stable
+  # `/media/` permalink is kept beside every file as `media_page`.
+  #
+  # Measured 2026-09-01: 3 rows, 3 distinct titles, 3 distinct hashes, 0 blank,
+  # 7 distinct file urls, no `/media/` page stored as a file.
+  #
+  # A CHEAPER SIGNAL EXISTS AND IS NOT IN THIS FILE'S VOCABULARY, measured
+  # 2026-08-31 after the first delivery. A NORMALISED PAGE-SNAPSHOT HASH: one GET
+  # of the listing, strip the per-request token and the site's now() stamp, hash
+  # the rest. Two fetches six seconds apart differ in EXACTLY SIX PLACES and every
+  # one is inside `<meta name="csrf-token">`; byte length is identical (87,044)
+  # because the token is fixed-length.
+  #
+  # IT IS A TRAP WITHOUT THE SECOND STRIP. Every NBR page carries
+  # "Last Updated: <date>" and that date is now() - it read as TODAY on the VAT,
+  # excise, dmtt, decisions, a /media/ page and /about_NBR alike. Three same-day
+  # fetches look perfectly stable, which is how this gets adopted by mistake.
+  # Simulating a date rollover: csrf-stripped-only changes (a FALSE CHANGE EVERY
+  # DAY, the CMA pathology that cost 1,134 of them); csrf+stamp-stripped does not.
+  #
+  # WARNING TO WHOEVER MAKES THIS CHEAPER LATER. `inventory_sweep._visible_text`
+  # strips all TAGS, so the csrf token is handled for free - but it KEEPS visible
+  # text, and the now() stamp is visible text in a <div>. So switching any
+  # nbr.gov.bh source to `stored-inventory` + `confirm: true` yields a confirm
+  # hash that moves daily on every page. This source is unaffected today:
+  # `confirm` is read only by cli/sweep.py when it builds a StoredInventorySweep,
+  # and `signal: crawl` never constructs one, so the flag below is inert.
+  #
+  # FULL CHEAP COVERAGE would be three tiers - listing snapshot (1 request:
+  # add/remove/retitle/relink), /media/ page snapshot (7: the S3 key rotating),
+  # S3 ETag HEAD (7: bytes changing at an unchanged key) = 15 tiny requests, no
+  # downloads, no OCR, against `crawl`'s 18 requests + 3.9 MB + OCR.
+  #
+  # KEPT ON `crawl` DELIBERATELY at SEVEN documents: the saving does not justify a
+  # new signal type plus a normaliser that must track NBR's template, and the
+  # crawl DISCOVERS new documents, which tiers 2 and 3 structurally cannot. The
+  # arithmetic flips at roughly 65 documents (VAT + excise + dmtt + decisions +
+  # clarifications + the 40 guidelines) - build it then, with the numbers above.
+  - regulator: "National Bureau for Revenue (NBR)"
+    source_system: "Laws and Executive Regulations"
+    signal: crawl
+    confirm: true
+
+  # JUSTICE CANADA (CANADA) - `stored-inventory`, AND IT IS THE FIRST SOURCE
+  # SINCE ZATCA WHERE A CHEAP PROBE IS GENUINELY THE RIGHT ANSWER. Measured
+  # 2026-09-09 and re-measured 2026-09-13; artefacts in
+  # UC-2-Scratch/JUSTICE_CANADA/cache/.
+  #
+  # EDB, MLSD, LMRA and NBR are all `crawl` because every cheap option failed.
+  # Here one succeeds: `/eng/XML/<CODE>.xml` returns BOTH an ETag and a
+  # Last-Modified, and unlike CMA's they are HONEST — the file is rewritten only
+  # when Justice re-cuts that Act. Proof is the acts that were NOT rewritten:
+  #
+  #     act     the page says       its XML says     its XML file written
+  #     B-3     current to 2026-06-21  2026-06-21    2026-08-20 14:10:00
+  #     C-21    current to 2026-06-21  2026-06-21    2026-08-20 14:10:00
+  #     I-21    current to 2026-06-21  2024-12-08    2025-01-14 15:26:00
+  #     F-27    current to 2026-06-21  2025-03-31    2025-04-29 18:44:48
+  #     P-21    current to 2026-06-21  2026-03-02    2026-03-18 15:59:48
+  #     A-17    current to 2026-07-21  2022-08-08    2022-08-17 17:26:53
+  #     F-3.3   current to 2026-07-21  2019-06-21    2019-09-24 15:23:20
+  #
+  # Every page advertises the same currency date because it is injected at
+  # render time; the FILES tell the truth. The last two rows are the strongest:
+  # F-3.3 advertises 2026-07-21 over a file untouched since SEPTEMBER 2019.
+  #
+  # ONE HEAD PER ACT replaces downloading the Act, and there are FOUR documents,
+  # so the sweep is four requests.
+  #
+  # THE PROBE WAS RE-RUN 2026-09-13, FOUR DAYS AND ONE BANNER ROLL LATER. The
+  # site-wide banner moved 2026-06-21 -> 2026-07-21 in that window. All four
+  # Acts returned byte-identical ETag and Last-Modified to the values recorded
+  # on 2026-09-09 — so the roll did NOT move the files, and the detect half
+  # reported zero changes across it. That is the false-positive control this
+  # signal most needed, and it passed.
+  #
+  # `confirm: true`, AND THE MEASUREMENT IS AMBIGUOUS RATHER THAN ALARMING.
+  # B-3, C-21, C-46 and B-1.01 were all rewritten in one batch at 2026-08-20
+  # 14:10:00, but B-1.01's last amendment was 2026-03-26 — months earlier.
+  # Either its text really changed in the June cycle (its point-in-time index
+  # carries a 2026-06-18 version, which supports that) or the batch re-cut it
+  # and only the currency date moved. The second case is a false `modified`.
+  # Confirming costs one fetch on the documents that actually moved and is
+  # correct under either reading.
+  #
+  # STILL NOT SETTLED as of 2026-09-13, and the 2026-09-13 re-probe does not
+  # settle it. That re-probe shows a BANNER roll does not rewrite the files,
+  # which is a different question: B-1.01 asks whether a FILE rewrite always
+  # means the text changed, and answering it needs a rewrite to happen. None
+  # has since 2026-08-20. Keep `confirm: true` until one does.
+  #
+  # NOTE ON THE ETag: B-3 and C-21 return the SAME ETag ("0ac4b96ad30dd1:0")
+  # despite being 1.1 MB and 146 KB. IIS derives it from the file's write time
+  # and both were written in the same second. Harmless — a token is only ever
+  # compared against that same document's previous token, never across
+  # documents — but startling enough to record.
+  #
+  # NO `sama-feed` EXISTS HERE. Looked for first, as the onboarding directs:
+  # robots.txt, sitemap.xml and every "recently amended" url tried are 404.
+  - regulator: "Department of Justice Canada (JUS)"
+    source_system: "Consolidated Acts"
+    signal: stored-inventory
+    confirm: true
 
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

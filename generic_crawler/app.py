@@ -25,7 +25,7 @@ CRAWLER = HERE / "crawler.py"
 DEFAULT_OUT = PROJECT_ROOT / "output" / "standalone_crawler"
 
 st.set_page_config(page_title="Sidebar Crawler (test)", layout="wide")
-st.title("🕸️ Sidebar Crawler — test harness")
+st.title(" Sidebar Crawler — test harness")
 st.caption("Standalone Playwright crawler. Walks a nested sidebar, grabs HTML content + PDF links per page. "
            "Fully separate from the live pipeline.")
 
@@ -47,7 +47,7 @@ with st.sidebar:
              "host = anything on the same domain.",
     )
     headful = st.checkbox("Show browser window (headful)", value=False)
-    start = st.button("▶ Start crawl", type="primary")
+    start = st.button(" Start crawl", type="primary")
 
 out_dir = DEFAULT_OUT / run_name
 
@@ -80,27 +80,27 @@ def run_crawl():
         e = ev.get("event")
         if e == "visit":
             recorded = ev.get("recorded", recorded)
-            logs.append(f"✅ [{ev['depth']}] {ev.get('title','')[:70]}  "
+            logs.append(f" [{ev['depth']}] {ev.get('title','')[:70]}  "
                         f"(pdfs:{ev.get('n_pdfs',0)}, chars:{ev.get('text_len',0)})")
             status_line.info(f"Recorded **{recorded}** pages · queue {ev.get('queued','?')}")
         elif e == "skip":
-            logs.append(f"⏭️  skip/{ev.get('reason','')}: {ev['url']}")
+            logs.append(f"  skip/{ev.get('reason','')}: {ev['url']}")
         elif e == "error":
-            logs.append(f"❌ error: {ev['url']} — {ev.get('message','')}")
+            logs.append(f" error: {ev['url']} — {ev.get('message','')}")
         elif e == "start":
-            logs.append(f"🚀 seed={ev['seed']} scope={ev['scope']}")
+            logs.append(f" seed={ev['seed']} scope={ev['scope']}")
         elif e == "anchor":
-            logs.append(f"📍 section anchor = '{ev['section_anchor']}'")
+            logs.append(f" section anchor = '{ev['section_anchor']}'")
         elif e == "blocked":
-            logs.append(f"🛑 BLOCKED: {ev['url']} — {ev.get('reason','')}")
+            logs.append(f" BLOCKED: {ev['url']} — {ev.get('reason','')}")
         elif e == "cap":
-            logs.append(f"✂️  page cap hit at {ev['pages']} pages, "
+            logs.append(f"  page cap hit at {ev['pages']} pages, "
                         f"{ev.get('queued', 0)} URLs left unwalked")
         elif e == "done":
             # "done" no longer implies success — say which outcome it was.
             outcome["status"] = ev.get("status", "ok")
             outcome["stopped"] = ev.get("stopped", "")
-            logs.append(f"🏁 {outcome['status'].upper()} — {ev['pages']} pages, "
+            logs.append(f" {outcome['status'].upper()} — {ev['pages']} pages, "
                         f"{ev['documents']} documents, "
                         f"{ev.get('blocked_pages', 0)} blocked")
         log_box.code("\n".join(logs[-25:]))
@@ -150,17 +150,17 @@ if xlsx.exists():
             df = pd.DataFrame([{k: p[k] for k in
                                 ("section_path", "title", "url", "depth", "status",
                                  "n_pdfs", "text_len", "html_file")} for p in pages])
-            st.dataframe(df, use_container_width=True, height=380)
+            st.dataframe(df, width="stretch", height=380)
             pick = st.selectbox("Preview a page's content", options=list(range(len(pages))),
                                 format_func=lambda i: pages[i]["title"] or pages[i]["url"])
             st.text_area("Extracted text", pages[pick]["text"][:8000], height=250)
     with tab2:
         if docs:
-            st.dataframe(pd.DataFrame(docs), use_container_width=True, height=380)
+            st.dataframe(pd.DataFrame(docs), width="stretch", height=380)
         else:
             st.info("No document links found.")
 
-    st.download_button("⬇ Download Excel", data=xlsx.read_bytes(),
+    st.download_button("Download Excel", data=xlsx.read_bytes(),
                        file_name=f"{run_name}_pages.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.caption(f"Full HTML per page saved under: {out_dir / 'html'}")

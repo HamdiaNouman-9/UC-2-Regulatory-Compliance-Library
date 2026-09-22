@@ -63,7 +63,7 @@ for _name in _PREFIXES:
             _m.__path__ = []
             sys.modules[_name] = _m
 
-from dynamic_crawler.formfill.orch import NewOrchestrator             # noqa: E402
+from orchestrator.orchestrator import Orchestrator             # noqa: E402
 from dynamic_crawler.formfill.runner import (                         # noqa: E402
     _split_targets, _stamp_hashes, _url_key, content_key)
 
@@ -149,7 +149,7 @@ def classify(rows, docs):
 
 def _classify(rows, docs):
     """(buckets, orchestrator) — the stored-row count lives on the second."""
-    o = NewOrchestrator(crawler=FakeCrawler(), repo=FakeRepo(rows),
+    o = Orchestrator(crawler=FakeCrawler(), repo=FakeRepo(rows),
                         source_name="source:TEST")
     return o.classify_documents(docs), o
 

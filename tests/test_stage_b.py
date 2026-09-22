@@ -1,4 +1,4 @@
-"""The change-detection fixes in NewOrchestrator, tested without a database.
+"""The change-detection fixes in Orchestrator, tested without a database.
 
 WHY THIS FILE LOOKS LIKE THIS
 
@@ -82,7 +82,7 @@ for _name in _StubFinder.PREFIXES:
             _m.__path__ = []
             sys.modules[_name] = _m
 
-from dynamic_crawler.formfill.orch import NewOrchestrator          # noqa: E402
+from orchestrator.orchestrator import Orchestrator          # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -181,12 +181,12 @@ _BUILT = [0]
 
 
 def build(repo, crawler=None, **kw):
-    """A NewOrchestrator with the parent's __init__ bypassed."""
-    o = NewOrchestrator.__new__(NewOrchestrator)
+    """A Orchestrator with the parent's __init__ bypassed."""
+    o = Orchestrator.__new__(Orchestrator)
     o.repo = repo
     o.crawler = crawler or FakeCrawler()
     o.source_name = kw.pop("source_name", "src")
-    o.identity = NewOrchestrator._clean_identity(kw.pop("identity", None))
+    o.identity = Orchestrator._clean_identity(kw.pop("identity", None))
     o.version_key = kw.pop("version_key", None)
     o.analyse = False
     o.limit = None
@@ -241,7 +241,7 @@ def test_modify_rewrites_content_not_only_the_hash():
     doc = Doc(document_url="u", content_hash="new", title="New Title",
               document_html="<p>new</p>", published_date="2026-08-01",
               extra_meta={"a": 1})
-    fields = NewOrchestrator._modified_row_fields(doc, "new")
+    fields = Orchestrator._modified_row_fields(doc, "new")
     assert fields["content_hash"] == "new"
     assert fields["document_html"] == "<p>new</p>", (
         "the new hash must not sit next to the old html")
@@ -252,7 +252,7 @@ def test_modify_rewrites_content_not_only_the_hash():
 
 def test_modify_never_blanks_a_field_the_crawl_did_not_return():
     doc = Doc(document_url="u", content_hash="new", title="", document_html=None)
-    fields = NewOrchestrator._modified_row_fields(doc, "new")
+    fields = Orchestrator._modified_row_fields(doc, "new")
     assert "title" not in fields, "an empty title must not erase the stored one"
     assert "document_html" not in fields
     assert fields == {"content_hash": "new"}
@@ -357,10 +357,10 @@ def test_a_configured_identity_changes_the_lookup():
 
 
 def test_identity_accepts_a_bare_string():
-    assert NewOrchestrator._clean_identity("page") == ("page",)
+    assert Orchestrator._clean_identity("page") == ("page",)
     # The empty/None default follows DEFAULT_IDENTITY, which gained `title`.
-    assert NewOrchestrator._clean_identity([]) == ("document_url", "doc_path", "title")
-    assert NewOrchestrator._clean_identity(None) == ("document_url", "doc_path", "title")
+    assert Orchestrator._clean_identity([]) == ("document_url", "doc_path", "title")
+    assert Orchestrator._clean_identity(None) == ("document_url", "doc_path", "title")
 
 
 def test_a_repo_that_cannot_honour_the_config_says_so():

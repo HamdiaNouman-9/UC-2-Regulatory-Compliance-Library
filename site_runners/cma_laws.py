@@ -567,6 +567,21 @@ JS_FAQ_SHOWN = r"""() => Array.from(document.querySelectorAll('.accordion-item')
   .map(e => e.getAttribute('data-id') || '')"""
 
 
+# Every coverage_gap the runner reports, in the order reported. The runner only
+# ever PRINTED them, and nothing reads a runner's stdout, so a tab that returned
+# 81 of 266 rows was called trustworthy: the crawler knew, the gate never did.
+# crawler/cma_crawler_wrapper.py drains this after each tab and hands it to the
+# completeness gate. Cleared by the wrapper before a run, not here.
+GAPS: list = []
+
+
+def report_gap(**fields):
+    """Print a coverage_gap event AND record it where the gate can see it."""
+    event = {"event": "coverage_gap", **fields}
+    GAPS.append(event)
+    print(json.dumps(event), flush=True)
+
+
 def load(page, url, wait_ms=1500, tries=3):
     """CMA is generally well behaved, but a blip must not be read as 'no articles'."""
     for _ in range(tries):
@@ -781,16 +796,12 @@ def check_total(page, cards, tab_label):
     stated = page.evaluate(JS_PAGER_TOTAL)
     seen = max([int(c["data"].get("page", 0) or 0) for c in cards] or [0])
     if stated and seen and seen != stated:
-        print(json.dumps({"event": "coverage_gap", "tab": tab_label,
-                          "stated_pages": stated, "pages_seen": seen,
-                          "rows": len(cards),
-                          "why": "list may still have been rendering"}), flush=True)
+        report_gap(tab=tab_label, stated_pages=stated, pages_seen=seen,
+                   rows=len(cards), why="list may still have been rendering")
     src = page.evaluate(JS_SOURCE_COUNT)
     if src and src != len(cards):
-        print(json.dumps({"event": "coverage_gap", "tab": tab_label,
-                          "source_list_count": src, "cards_read": len(cards),
-                          "why": "SharePoint list holds more rows than the grid drew"}),
-              flush=True)
+        report_gap(tab=tab_label, source_list_count=src, rows=len(cards),
+                   why="SharePoint list holds more rows than the grid drew")
     elif src:
         print(json.dumps({"event": "source_count_ok", "tab": tab_label,
                           "count": src}), flush=True)
@@ -1117,8 +1128,8 @@ def crawl_faqs(page, tab, trail_root, limit=None):
                       "stated_pages": stated, "pages_seen": len(pages),
                       "missing_pages": gaps}), flush=True)
     if gaps:
-        print(json.dumps({"event": "coverage_gap", "tab": tab["label"],
-                          "missing_pages": gaps}), flush=True)
+        report_gap(tab=tab["label"], missing_pages=gaps,
+                   why=f"{len(gaps)} page(s) of the list were not read")
 
     # NO PER-REGULATION FOLDERS, and this is deliberate.
     #
@@ -1234,17 +1245,51 @@ JS_VISIBLE_CARDS = r"""() => {
 # so the next arrow is the SECOND-TO-LAST li, not the last. Both the numbered
 # "2" and the next arrow carry class `page-item2`, so selecting by class clicks
 # the wrong one — measured: it jumped to page 2 and stayed there.
-JS_PAGER_STATE = r"""() => {
+#
+# FIND THE ARROW BY WHAT IT IS, NOT BY WHERE IT SITS. "Second-to-last li" was
+# right on a fresh load and wrong on the run that mattered: on 2026-09-18 every
+# paged tab (Announcements, Prospectuses, Shareholder Circulars) stopped after
+# ONE chunk with
+#     Page.click: Timeout 10000ms exceeded ... locator resolved to
+#     <a href="#" class="page-link">…</a>
+# i.e. the second-to-last item was the ellipsis, not the arrow, and the click
+# waited 10s for an element that was never going to accept it. Prospectuses
+# returned 60 (81 with sub-tabs) of 266 and the run was still called trustworthy.
+#
+# The arrow is the LAST <li> that carries an icon. The previous arrow also has
+# one but comes first in the DOM, the ellipsis and "Total N Pages" carry text
+# only, and a list with a single icon-bearing item at index 0 has no next arrow.
+_JS_NEXT_LI = r"""
   const p = document.querySelector('ul.pagination.pagination-container');
+  const lis = p ? Array.from(p.children).filter(e => e.tagName === 'LI') : [];
+  let idx = -1;
+  lis.forEach((li, i) => { if (li.querySelector('svg, img')) idx = i; });
+  const nxt = idx > 0 ? lis[idx] : null;
+"""
+
+JS_PAGER_STATE = r"""() => {
+""" + _JS_NEXT_LI + r"""
   if (!p) return null;
-  const lis = Array.from(p.querySelectorAll('li'));
-  const nxt = lis[lis.length - 2];
   const m = (p.innerText||'').replace(/\s+/g,' ').match(/Total\s+(\d+)\s+[Pp]ages?/);
   return {active: ((p.querySelector('.active')||{}).innerText||'').trim(),
           total: m ? parseInt(m[1],10) : 0,
           nextDisabled: nxt ? /\bdisabled\b/.test(nxt.getAttribute('class')||'') : true};
 }"""
 
+# Clicks the arrow from inside the page, so it cannot time out on visibility or
+# be intercepted by an overlay, and says what it found so the caller can retry.
+JS_CLICK_NEXT = r"""() => {
+  if (!document.querySelector('ul.pagination.pagination-container')) return 'no_pager';
+""" + _JS_NEXT_LI + r"""
+  if (!nxt) return 'no_next';
+  if (/\bdisabled\b/.test(nxt.getAttribute('class')||'')) return 'disabled';
+  const a = nxt.querySelector('a');
+  if (!a) return 'no_anchor';
+  a.click();
+  return 'clicked';
+}"""
+
+# Kept for callers outside walk_pages; do not use it to page.
 NEXT_SEL = "ul.pagination.pagination-container li:nth-last-child(2) > a"
 
 # THE CURSOR. This is what makes the big lists tractable.
@@ -1530,6 +1575,13 @@ def walk_pages(page, cap=0, read=JS_CARDS, cutoff_date=None):
     accumulates, nothing races, and a missed hop cannot masquerade as the end of
     the list. Falls back to the pager click for lists with no .nxtbtn.
 
+    NOTE 2026-09-21: the body below CLICKS the pager; it does not follow the
+    cursor (JS_NEXT_URL is defined and unused). Measured on Prospectuses: the
+    cursor url loads the same 60 rows again and offers the same next url, so it
+    does not advance there, while the click reaches all 266 rows in 23 chunks.
+    What made the click fail on 2026-09-18 was finding the arrow by position;
+    it is now found by its icon and clicked from inside the page, with retries.
+
     `cutoff_date`, when given, stops the walk once the list has clearly moved
     past it — the list is newest-first, so nothing further out can be newer.
 
@@ -1593,12 +1645,28 @@ def walk_pages(page, cap=0, read=JS_CARDS, cutoff_date=None):
         if PACE["page_ms"]:
             page.wait_for_timeout(PACE["page_ms"])
         before = page.evaluate(JS_PAGE_SIG)
-        try:
-            page.click(NEXT_SEL, timeout=10000)
-        except Exception as e:
-            print(json.dumps({"event": "walk_stop", "reason": "click_exception",
+        # Three attempts, re-reading the pager each time: the control can be
+        # absent for a moment while the site redraws it, and giving up on the
+        # first miss ended every paged tab after one chunk on 2026-09-18. Only a
+        # control that STAYS missing is a reason to stop, and it is reported as
+        # a fault below -- never as the end of the list.
+        outcome = ""
+        for attempt in range(3):
+            try:
+                outcome = page.evaluate(JS_CLICK_NEXT)
+            except Exception as e:
+                outcome = f"exception: {str(e)[:120]}"
+            if outcome in ("clicked", "disabled"):
+                break
+            page.wait_for_timeout(1500)
+        if outcome == "disabled":
+            print(json.dumps({"event": "walk_stop", "reason": "nextDisabled",
+                              "chunks": chunks, "rows": len(rows)}), flush=True)
+            break
+        if outcome != "clicked":
+            print(json.dumps({"event": "walk_stop", "reason": "next_control_missing",
                               "chunks": chunks, "rows": len(rows),
-                              "message": str(e)[:200]}), flush=True)
+                              "message": outcome}), flush=True)
             break
         # WAIT FOR THE CONTENT TO CHANGE, not for a fixed delay.
         #
@@ -1756,10 +1824,8 @@ def crawl_paged(page, tab, trail_root, max_pages=None, limit=None):
                       "rows": len(rows), "source_list_count": src},
                      ensure_ascii=False), flush=True)
     if src and len(rows) != src and not cutoff:
-        print(json.dumps({"event": "coverage_gap", "tab": tab["label"],
-                          "rows": len(rows), "source_list_count": src,
-                          "why": "row count differs from the SharePoint list"}),
-              flush=True)
+        report_gap(tab=tab["label"], rows=len(rows), source_list_count=src,
+                   why="row count differs from the SharePoint list")
 
     # Sub-tab folders. Opt-in per tab, because it means walking every sub-tab in
     # addition to "All": cheap for Prospectuses (23 more pages) and Shareholder
@@ -2334,10 +2400,8 @@ def crawl_register(page, tab, trail_root, max_chunks=None, limit=None):
     total = sum(len(r["rows"]) for r in REGISTERS
                 if r["source_url"] == tab["url"])
     if src and total < src:
-        print(json.dumps({"event": "coverage_gap", "tab": tab["label"],
-                          "entities_read": total, "source_list_count": src,
-                          "why": "register holds fewer rows than the list claims"}),
-              flush=True)
+        report_gap(tab=tab["label"], rows=total, source_list_count=src,
+                   why="register holds fewer rows than the list claims")
         if total < src * 0.5:
             raise SystemExit(
                 f"{tab['label']}: read {total} of {src} entities. Refusing to "

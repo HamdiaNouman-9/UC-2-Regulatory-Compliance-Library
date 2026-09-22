@@ -1,0 +1,139 @@
+# MLSD — Bahrain's social-development legislation. CUSTOM, like MOH, MLCU and EDB.
+#
+#   Measured 2026-08-20, cached in UC-2-Scratch/MLSD/. ONE page, ONE flat list,
+#   THIRTY rows. Twenty-eight are Arabic PDFs behind `download.php?main=1&id=`,
+#   one is an HTML article on pmo.gov.bh, and one is unreachable (see below).
+#
+# NO ETag, NO Last-Modified anywhere — not on the listing, not on a single PDF.
+# robots.txt and sitemap.xml are both 404. `Content-Length` IS returned on every
+# PDF, but `dynamic_crawler/fingerprint.py:75-85` reads only ETag then
+# Last-Modified, so a stored-inventory sweep here would score every document
+# `url+title (identity only — cannot detect an edit)` and report nothing forever.
+# That is why this source is `signal: crawl`; full measurements on the
+# change_signals.yml entry.
+#
+# IDENTITY IS THE DEFAULT, deliberately. `download.php?...&id=<32 hex>` is unique
+# per document and STABLE — identical across three fetches and across a fresh
+# session with a new PHPSESSID. Measured 2026-08-20: 30 rows, 30 distinct urls,
+# 29 distinct English titles (see below), 30 distinct Arabic ones. No `identity:`
+# key, which also means change_signals.yml has nothing to keep in step.
+#
+# ENGLISH TITLES — the business decision, 2026-08-20. Both renderings are read:
+# the Arabic default first, then `?lang=en`. English titles the row and the
+# Arabic name is kept as extra_meta["title_ar"].
+#
+# THE ARABIC READ IS THE DISAMBIGUATOR, not decoration. The ministry's
+# translation is LOSSY: it drops "amending some provisions of", so TWO DISTINCT
+# INSTRUMENTS carry the SAME English title — 29 distinct English titles across 30
+# rows. Identity separates them on document_url so nothing collides, but by name
+# alone a reviewer cannot tell them apart, and `title_ar` is what lets them:
+#   `قرار رقم (11) لسنة 2023 ...`                        the resolution
+#   `قرار بتعديل بعض أحكام القرار رقم (11) لسنة 2023 ...`  the one AMENDING it
+# The crawler counts the collapsed titles and reports it as a run warning.
+#
+# NOT A PUBLISHER DEFECT — it was reported as one on 2026-08-20 and that was
+# wrong; the pair only looks wrong in translation.
+#
+# ORDER IS LOAD-BEARING: `?lang=en` sets the language in the PHP SESSION, not the
+# url, so Arabic must be read first. The two readings are paired on document_url,
+# never on position.
+
+regulator: "Ministry of Labour and Social Development (MLSD)"
+owner: Fakih
+
+# THE FINGERPRINT is the document's extracted text, NFKC-normalised, with
+# `document_url|title` as the floor.
+#
+# The listing page is byte-identical across three fetches a second apart
+# (sha256 3d9b79a1c0e55c95) so there is no per-request token to defeat, and the
+# PDFs are files, whose bytes are the document.
+#
+# NFKC IS NOT COSMETIC HERE. Five of the readable PDFs extract as Arabic
+# PRESENTATION FORMS (U+FB50-FEFF) rather than ordinary Arabic — one carries
+# 3,926 such characters. The letters are right and in logical order but the
+# string is a different string, so it matches neither its own title nor an
+# Arabic search. NFKC folds them back; measured pres_nfkc == 0 on all thirty.
+#
+# THE CRAWL MUST RUN WITH ARABIC OCR AVAILABLE. Tesseract's language setup is
+# deployment configuration and lives in `.env`, not here; what belongs here is
+# what it costs to get it wrong.
+#
+# IT IS NOT A TUNING KNOB, IT DECIDES WHETHER THE STORED TEXT IS THE LAW. The
+# same 28 PDFs, measured both ways on 2026-08-20:
+#
+#   ocr_langs 'ara+eng'   28/28 readable, 91.2-102.4% Arabic, 928-48,785 chars.
+#                         Seventeen need OCR on 1-25 pages and still land there.
+#   ocr_langs 'eng'       NINE return ZERO Arabic — 808-15,310 characters of
+#                         Latin transliteration noise. The crawler discards those
+#                         (no-Arabic rule) so they store no text at all.
+#
+# The nine are not marginal documents; they include Law 18/2006 on social
+# security and Law 5/2007 on vagrancy. A workbook produced without `ara` is a
+# workbook missing nine instruments' text, and NOTHING IN THE FILE SAYS SO —
+# which is why every row records `pdf_ocr_langs`, `pdf_ocr_available` and
+# `pdf_arabic_ratio`. Check those before sending a workbook on.
+#
+# KNOWN GAP, NOT FIXED HERE: `.env` is loaded by `monitor_jobs._repo()`, which
+# opens a database connection. `python -m tools.workbook export` opens none by
+# design, so the export path does not pick up tesseract's language settings on
+# its own and they must be present in the environment for that command. Fixing it
+# properly means touching `processor/Text_Extractor.py`, which is outside the
+# file scope of this change.
+
+# DEVELOPMENT-ONLY FLAGS, DELIBERATELY ABSENT: `page_cache_dir` and
+# `pdf_cache_dir`, also read from MLSD_PAGE_CACHE_DIR / MLSD_PDF_CACHE_DIR. A
+# cache serving production is a stale law reporting `unchanged` after an
+# amendment. This config crawls live, every run.
+
+# ONE ENTRY, BECAUSE THE MINISTRY PUBLISHES ONE LIST. The completeness gate
+# groups on extra_meta["crawl_source"] and re-keys per source, so one entry means
+# one baseline of thirty — which is what it should be measured against. If the
+# ministry ever splits this page into sections, add one entry per section rather
+# than widening this one: two sections sharing a folder propose each other's
+# documents as withdrawn.
+#
+# `init_kwargs.regulator` is set even though the top-level `regulator:` exists,
+# because for mode: custom `build_source` passes only init_kwargs
+# (generic_crawler_wrapper.py:553); the top-level key reaches the report label,
+# not the stored rows. That is how CMA's stored name and its change_signals.yml
+# entry came to disagree while both looked right.
+sources:
+  - name: "Legislation and Regulations"
+    mode: custom
+    crawler_class: "crawler.mlsd_crawler.MLSDCrawler"
+    init_kwargs:
+      regulator: "Ministry of Labour and Social Development (MLSD)"
+      source_system: "Legislation and Regulations"
+      listing_url: "https://www.social.gov.bh/ministry/legistlations_and_regulations"
+      # The ministry's own spelling of the path. It is not a typo in this file.
+      listing_title: "List of laws related to the Ministry's competencies"
+
+# TWO DEFECTS ON THE MINISTRY'S OWN PAGE, measured 2026-08-20. Both are recorded
+# rather than corrected: this library stores what the regulator publishes, and a
+# crawler that quietly repairs a publisher's list is a library that disagrees
+# with the site.
+#
+#   ROW 25 IS A DEAD LINK. "Law No. 59 of 2014 amending Article No. 5 of Law
+#     No. 74 of 2006" points at `www.mlsd.gov.bh`, the ministry's PREVIOUS
+#     domain, which no longer resolves at all — NXDOMAIN, not a 404, so nothing
+#     answers to be retried. The row is stored with no text and the
+#     `document_url|title` fingerprint. It is a live amendment to a law we do
+#     hold, so losing it silently would be the worst outcome.
+#
+#   ROW 2 IS THE ONE OFF-SITE ROW, and it is STORED WITH NO TEXT. It is the
+#     amending resolution described above and it points at a Prime Minister's
+#     Office article, which is a plausible home for it. pmo.gov.bh has none of
+#     the content containers this crawler recognises, and the crawler will NOT
+#     fall back to `<body>` — the first attempt did, and stored that site's
+#     search box, menu and cookie banner as the words of a resolution, which
+#     `check` passed because it was the wrong text in the right shape. A person
+#     working the `status = ''` queue has the url and can follow it.
+#
+#     NOT A PUBLISHER DEFECT. It was reported as one on 2026-08-20 and that was
+#     wrong — the finding came from reading the English rendering, which drops
+#     "amending some provisions of" from the title. See the note above.
+#
+# NOT LISTED, DELIBERATELY:
+#   The English listing is the SAME THIRTY ROWS, not extra documents — same urls,
+#     same ids, a translated rendering. See the Arabic-only note above.
+#   /media/publications, /open_data/* — reports and statistics, not instruments.

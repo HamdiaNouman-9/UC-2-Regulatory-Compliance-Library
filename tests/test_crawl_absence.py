@@ -162,9 +162,9 @@ def test_a_source_that_produced_nothing_is_blocked():
 
 def test_the_gates_own_tolerance_is_untouched():
     """This layer re-asks the count question; it does not relax the gate. Read
-    off the source rather than imported: orch.py pulls in the OCR stack."""
-    orch = (Path(__file__).resolve().parents[1] / "dynamic_crawler" / "formfill"
-            / "orch.py").read_text(encoding="utf-8")
+    off the source rather than imported: the orchestrator pulls in the OCR stack."""
+    orch = (Path(__file__).resolve().parents[1] / "orchestrator"
+            / "orchestrator.py").read_text(encoding="utf-8")
     assert "COUNT_TOLERANCE_PCT = 5.0" in orch
     assert "spread <= COUNT_TOLERANCE_PCT" in orch
     assert wd.COUNT_TOLERANCE_PCT == 5.0

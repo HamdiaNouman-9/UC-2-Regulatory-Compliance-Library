@@ -2,10 +2,12 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form,Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 import logging
+import uuid
 import os
+import re
 import json
 import tempfile
 from typing import Optional, List, Dict, Any, Tuple
@@ -13,7 +15,7 @@ import time
 from threading import Thread, Lock
 from datetime import time as dtime
 
-from scheduler.scheduler import run_sbp_pipeline, run_secp_pipeline, run_sama_pipeline,run_cbb_monitoring
+from scheduler.scheduler import run_sbp_pipeline, run_secp_pipeline, run_sama_pipeline
 from storage.mssql_repo import MSSQLRepository
 from processor.gap_analyzer import GapAnalyzer
 from processor.Text_Extractor import OCRProcessor
@@ -34,8 +36,23 @@ from utils.lang_translator import (
     translate_v2_gap_result,
 )
 from utils.public_meta import public_extra_meta
+from apis import run_results_api
+from storage import run_store
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Regulatory Pipeline API", version="2.0.0")
+
+
+@app.middleware("http")
+async def _count_requests(request, call_next):
+    t0 = time.time()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        run_results_api.metrics.record(f"{request.method} {getattr(route, 'path', request.url.path)}", status, time.time() - t0)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +73,8 @@ repo = MSSQLRepository({
     "password": os.getenv("MSSQL_PASSWORD"),
     "driver":   os.getenv("MSSQL_DRIVER"),
 })
+run_results_api.init(repo)
+app.include_router(run_results_api.router)
 _diag_logger = logging.getLogger("db_diagnostic")
 _diag_logger.info("=" * 60)
 _diag_logger.info(f"DB SERVER:   {os.getenv('MSSQL_SERVER')}")
@@ -73,7 +92,6 @@ REGULATOR_PIPELINES = {
     "SBP":  run_sbp_pipeline,
     "SECP": run_secp_pipeline,
     "SAMA": run_sama_pipeline,
-    "CBB":  run_cbb_monitoring,
 }
 
 pipeline_lock = Lock()
@@ -1277,49 +1295,6 @@ def trigger_full_pipeline():
     }
 
 
-class CBBMonitoringRequest(BaseModel):
-    from_date: Optional[str] = None   # "YYYY-MM-DD" — default: last crawl date from DB
-    to_date:   Optional[str] = None   # "YYYY-MM-DD" — default: today
-
-
-@app.post("/trigger/CBB/monitoring", tags=["CBB"])
-def trigger_cbb_monitoring_with_dates(request: CBBMonitoringRequest = Body(default=None)):
-    """
-    Trigger CBB monitoring with optional custom date range.
-
-    - **from_date** `YYYY-MM-DD` — start of TR revision window (default: last crawl date - 1 day)
-    - **to_date**   `YYYY-MM-DD` — end of TR revision window   (default: today)
-
-    Example body for backfill May 25 -> Jul 16 2026:
-    ```json
-    { "from_date": "2026-05-25", "to_date": "2026-07-16" }
-    ```
-    Leave body empty (or `{}`) to use auto-detected dates from DB.
-    """
-    from crawler.cbb_monitoring_crawler import monitor_cbb_changes
-
-    req = request or CBBMonitoringRequest()
-    logger.info(f"CBB monitoring triggered via API — from={req.from_date} to={req.to_date}")
-    try:
-        result = monitor_cbb_changes(from_date=req.from_date, to_date=req.to_date)
-        return {
-            "status":       result.get("status", "done"),
-            "from_date":    req.from_date or "auto",
-            "to_date":      req.to_date   or "today",
-            "completed_at": datetime.utcnow().isoformat(),
-            "summary":      {
-                "changes_detected":   result.get("changes_detected", 0),
-                "new_processed":      result.get("new_processed",    0),
-                "modified_processed": result.get("modified_processed", 0),
-                "total_errors":       result.get("total_errors", 0),
-            },
-            "details": result,
-        }
-    except Exception as e:
-        logger.error(f"CBB monitoring API failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": str(e)})
-
-
 # ============================================================================
 #  MONITORING JOBS OVER HTTP
 # ============================================================================
@@ -1357,21 +1332,62 @@ _MONITOR_JOBS = {
     "monitor_cheap_probes", "monitor_sama", "monitor_mc", "monitor_cma",
     "monitor_mlcu", "monitor_cbe", "monitor_cbb", "monitor_bahrain_bourse",
     "monitor_rera", "monitor_sio", "monitor_lloc",
+    # Added 2026-09-17 -- all six existed and worked in jobs/monitor_jobs.py
+    # and in scheduler.py's own job mappings, but were missing from THIS
+    # allowlist, so /trigger/monitor/{job} 404'd "unknown monitoring job" for
+    # every one of them even though the function ran fine from a cron slot.
+    "monitor_cbj", "monitor_edb", "monitor_mlsd", "monitor_lmra",
+    "monitor_justice_canada", "monitor_nbr",
+    # monitor_moic / monitor_pdpa existed in jobs/monitor_jobs.py but were
+    # wired NOWHERE -- not here, not in scheduler.py, not in
+    # config/scheduler.yml. Fixed in all three places 2026-09-17.
+    "monitor_moic", "monitor_pdpa",
+    # Snapshot-first jobs (2026-09-21): they read a saved page, never the site,
+    # unless allow_live is on and the saved page is due. See jobs/monitor_jobs.py.
+    "monitor_simah", "monitor_saudi_exchange",
 }
 
 _monitor_state: Dict[str, Dict[str, Any]] = {}
 _monitor_lock = Lock()
 
 
-def _run_monitor_job(name: str) -> None:
-    """Run one monitor job on a worker thread and record how it ended."""
+def _job_callable(name: str):
+    """Resolve a pipeline job name to its callable, lazily.
+
+    Monitor jobs live in jobs.monitor_jobs; the three legacy per-regulator
+    orchestrator pipelines are already imported at the top of this module
+    from scheduler.scheduler. Keeping both kinds in one flat namespace means
+    /trigger/monitor/{job} and /trigger/regulators (below) share the exact
+    same running-job lock and state -- triggering "SBP" from one and
+    "sbp_pipeline" from the other cannot start two overlapping SBP crawls.
+    """
+    if name == "sbp_pipeline":
+        return run_sbp_pipeline
+    if name == "secp_pipeline":
+        return run_secp_pipeline
     import jobs.monitor_jobs as mj
-    started = datetime.utcnow().isoformat()
+    return getattr(mj, name)
+
+
+def _persist_run(name, regulators, state, started, error, result) -> None:
+    """Keep the run for the review API. Never allowed to break the job's own record."""
     try:
-        result = getattr(mj, name)()
+        run_store.save_run(repo, name, regulators, state, started, datetime.utcnow().isoformat(), error, result)
+    except Exception as e:
+        logger.error("could not store the run of %s: %s", name, e, exc_info=True)
+
+
+def _run_monitor_job(name: str) -> None:
+    """Run one pipeline job on a worker thread and record how it ended."""
+    started = datetime.utcnow().isoformat()
+    with _monitor_lock:
+        regulators = list((_monitor_state.get(name) or {}).get("regulators") or [])
+    try:
+        result = _job_callable(name)()
+        _persist_run(name, regulators, "finished", started, None, result)
         with _monitor_lock:
             _monitor_state[name] = {
-                "state": "finished", "started_at": started,
+                "state": "finished", "started_at": started, "regulators": regulators,
                 "finished_at": datetime.utcnow().isoformat(),
                 # The job's own report, unedited. `skipped: true` means the
                 # exclusive lock was held — a normal outcome, not a failure.
@@ -1379,9 +1395,10 @@ def _run_monitor_job(name: str) -> None:
             }
     except Exception as e:
         logger.error("monitor job %s failed: %s", name, e, exc_info=True)
+        _persist_run(name, regulators, "failed", started, f"{type(e).__name__}: {e}", None)
         with _monitor_lock:
             _monitor_state[name] = {
-                "state": "failed", "started_at": started,
+                "state": "failed", "started_at": started, "regulators": regulators,
                 "finished_at": datetime.utcnow().isoformat(),
                 "error": f"{type(e).__name__}: {e}",
             }
@@ -1438,6 +1455,309 @@ def list_monitor_jobs():
             "state": seen,
             "note": ("state is in memory and resets when the api restarts; "
                      "run_history in the database is the durable record")}
+
+
+class LLMSettingsBody(BaseModel):
+    model: str
+
+
+@app.get("/llm/models", tags=["LLM"])
+def llm_models(search: Optional[str] = None, refresh: bool = False):
+    """OpenRouter's model catalogue (cached an hour). `search` filters by id/name.
+    Prices are USD per token."""
+    from storage import llm_settings
+    try:
+        models = llm_settings.list_models(refresh=refresh)
+    except Exception as e:
+        raise HTTPException(502, f"could not reach OpenRouter: {e}")
+    if search:
+        q = search.lower()
+        models = [m for m in models if q in m["id"].lower() or q in (m["name"] or "").lower()]
+    return {"count": len(models), "models": models}
+
+
+@app.get("/llm/settings", tags=["LLM"])
+def llm_get_settings():
+    from storage import llm_settings
+    return {"model": llm_settings.get_model(repo)}
+
+
+@app.put("/llm/settings", tags=["LLM"])
+def llm_put_settings(body: LLMSettingsBody):
+    """Choose the model for analyses that START after this call. Must be an id
+    from /llm/models."""
+    from storage import llm_settings
+    from processor.llm_client import DEFAULT_MODEL
+    try:
+        known = {m["id"] for m in llm_settings.list_models()}
+    except Exception as e:
+        raise HTTPException(502, f"cannot verify the model, OpenRouter unreachable: {e}")
+    if body.model not in known:
+        raise HTTPException(400, f"{body.model!r} is not an OpenRouter model id; see GET /llm/models")
+    llm_settings.set_model(repo, body.model)
+    out = {"model": body.model}
+    if body.model != DEFAULT_MODEL:
+        out["note"] = ("provider pinning is off for this model, so results are "
+                       "less reproducible run to run than with " + DEFAULT_MODEL)
+    return out
+
+
+@app.get("/llm/usage", tags=["LLM"])
+def llm_usage(since: Optional[str] = None, until: Optional[str] = None,
+              group_by: str = "model"):
+    """Token usage, two views.
+
+    `uc`: calls made by this app's analysis, from our own records (counts from
+    when recording was added; group_by is model, day, step or regulation;
+    since/until are ISO dates, until exclusive).
+    `openrouter`: everything on the API key, per OpenRouter, all-time. Sections
+    OpenRouter refuses are listed under `openrouter.errors`."""
+    from storage import llm_settings
+    try:
+        uc = llm_settings.usage_summary(repo, since, until, group_by)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"could not read usage records: {e}")
+    return {"uc": uc, "openrouter": llm_settings.openrouter_usage()}
+
+
+@app.get("/monitoring/staleness", tags=["Monitoring"])
+def monitoring_staleness():
+    """Regulators with no update (new/modified document or withdrawal) for longer
+    than their interval in config/staleness.yml. Empty `stale` means all current."""
+    from jobs.staleness_alert import check_staleness
+    return check_staleness(repo)
+
+
+# ============================================================================
+#  UNIFIED REGULATOR TRIGGER — one call, one or many regulators             #
+# ============================================================================
+# WHY THIS EXISTS
+# ---------------
+# /trigger/{regulator} and /trigger/monitor/{job} already exist, but neither
+# answers "run this regulator, whichever underlying job that actually is" --
+# the caller has to already know that SAMA's real signal is monitor_sama (not
+# run_sama_pipeline), that CBB means the orchestrator's TR-feed path, and that
+# ZATCA/MOE/SDAIA/AML/MHRSD/KDIPA are not separate jobs at all but one shared
+# monitor_cheap_probes sweep. REGULATOR_REGISTRY is that mapping, written down
+# once instead of re-derived by every caller.
+#
+# THIS ALWAYS RUNS THE MONITORING PATH, NEVER A FROM-ZERO RE-INGEST. Every job
+# reachable here already diffs against what regulations already holds:
+# run_sbp_pipeline / run_secp_pipeline call orchestrator.filter_new_documents
+# on every run, CBB is monitor_cbb (config/sources/cbb.yml), and every monitor_* job is a change-detection
+# sweep by construction (jobs/monitor_jobs.py's module docstring). There is no
+# "wipe and re-crawl everything" mode reachable from this endpoint.
+#
+# THREE REGULATOR STATUSES, so a caller cannot mistake one kind of "can't run
+# this" for another:
+#   active   -- has a working job, reachable today.
+#   blocked  -- deliberately has NO job. Nothing is in this state today: Saudi
+#               Exchange and SIMAH were, until 2026-09-21, and now run as
+#               SNAPSHOT-FIRST jobs (see their registry entries). The status stays
+#               so a host that gets blocked in future can be refused outright,
+#               rather than 404ing as though the name were a typo.
+#   unwired  -- has a config/sources/*.yml but no monitoring job was ever
+#               written. No regulator is in this state today: MISA was, until
+#               2026-09-21, when it was added to CHEAP_PROBE_SOURCES. The status
+#               stays so the next unlisted regulator shows up as a distinct
+#               answer rather than a 404.
+_ACRONYM_RE = re.compile(r'\(([A-Za-z0-9]+)\)\s*$')
+
+REGULATOR_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "SBP":  {"job": "sbp_pipeline",  "display": "State Bank of Pakistan (SBP)", "status": "active"},
+    "SECP": {"job": "secp_pipeline", "display": "Securities and Exchange Commission of Pakistan (SECP)", "status": "active"},
+    # SAMA has two pipelines; this deliberately picks the MONITORING one
+    # (SAMA's own revision feed) rather than run_sama_pipeline's full sweep.
+    "SAMA": {"job": "monitor_sama",  "display": "Saudi Arabian Monetary Authority (SAMA)", "status": "active"},
+    # Of the three CBB implementations found in this audit -- the orchestrator's
+    # TR-feed path, the bespoke /trigger/CBB/monitoring crawler, and
+    # jobs.monitor_jobs.monitor_cbb's generic config crawl -- this one was
+    # confirmed as canonical: it is the actively-documented, fully-versioned
+    # path (see orchestrator.py's BaseOrchestrator docstring).
+    "CBB":  {"job": "monitor_cbb", "display": "Central Bank of Bahrain", "status": "active"},
+
+    "MC":   {"job": "monitor_mc",   "display": "Ministry of Commerce", "status": "active"},
+    "CMA":  {"job": "monitor_cma",  "display": "Capital Market Authority (CMA)", "status": "active"},
+    "MOH":  {"job": "monitor_cheap_probes", "display": "Ministry of Health", "status": "active"},
+    "MLCU": {"job": "monitor_mlcu", "display": "Egyptian Anti-Money Laundering and Counter-Terrorism Financing Unit (MLCU)", "status": "active"},
+    "CBE":  {"job": "monitor_cbe",  "display": "Central Bank of Egypt (CBE)", "status": "active"},
+    "BAHRAIN_BOURSE": {"job": "monitor_bahrain_bourse", "display": "Bahrain Bourse (BHB)", "status": "active"},
+    "RERA": {"job": "monitor_rera", "display": "Real Estate Regulatory Authority (RERA)", "status": "active"},
+    "SIO":  {"job": "monitor_sio",  "display": "Social Insurance Organisation (SIO)", "status": "active"},
+    "LLOC": {"job": "monitor_lloc", "display": "Legislation and Legal Opinion Commission (LLOC)", "status": "active"},
+    "CBJ":  {"job": "monitor_cbj",  "display": "Central Bank of Jordan (CBJ)", "status": "active"},
+    "EDB":  {"job": "monitor_edb",  "display": "Bahrain Economic Development Board (EDB)", "status": "active"},
+    "MLSD": {"job": "monitor_mlsd", "display": "Ministry of Labour and Social Development (MLSD)", "status": "active"},
+    "LMRA": {"job": "monitor_lmra", "display": "Labour Market Regulatory Authority (LMRA)", "status": "active"},
+    "NBR":  {"job": "monitor_nbr",  "display": "National Bureau for Revenue (NBR)", "status": "active"},
+    "JUSTICE_CANADA": {"job": "monitor_justice_canada", "display": "Department of Justice Canada (JUS)", "status": "active"},
+    "MOIC": {"job": "monitor_moic", "display": "Ministry of Industry and Commerce (MOIC)", "status": "active"},
+    "PDPA": {"job": "monitor_pdpa", "display": "Personal Data Protection Authority (PDPA)", "status": "active"},
+
+    # Bundled into ONE shared job with MOH -- see CHEAP_PROBE_SOURCES in
+    # jobs/monitor_jobs.py. Requesting any one (or several) of these six plus
+    # MOH starts the same sweep exactly once; the response says so.
+    "MOE":   {"job": "monitor_cheap_probes", "display": "Ministry of Education", "status": "active"},
+    "SDAIA": {"job": "monitor_cheap_probes", "display": "Saudi Data and AI Authority (SDAIA)", "status": "active"},
+    "AML":   {"job": "monitor_cheap_probes", "display": "Anti-Money Laundering Permanent Committee (AML)", "status": "active"},
+    "MHRSD": {"job": "monitor_cheap_probes", "display": "Ministry of Human Resource and Social Development (MHRSD)", "status": "active"},
+    "ZATCA": {"job": "monitor_cheap_probes", "display": "Zakat, Tax and Customs Authority (ZATCA)", "status": "active"},
+    "KDIPA": {"job": "monitor_cheap_probes", "display": "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013", "status": "active"},
+
+    # Joined the shared sweep 2026-09-21 (CHEAP_PROBE_SOURCES). It had been
+    # `unwired` only because nobody listed it, not by decision.
+    "MISA":  {"job": "monitor_cheap_probes", "display": "Ministry of Investment (MISA)", "status": "active"},
+
+    # SNAPSHOT-FIRST (2026-09-21). Both hosts blocked us after repeated automated
+    # visits, so these jobs read a SAVED page and cannot iterate against the site:
+    # the saved page's own clock decides when a live visit is allowed (one, no
+    # retry, backing off 6h..14d after a block) and `allow_live` in
+    # config/sources/<name>.yml ships false. Triggering one of these through this
+    # API therefore replays the saved page and makes no request. `snapshot` names
+    # the saved page so GET /trigger/regulators can report its state.
+    "SIMAH": {"job": "monitor_simah", "display": "Saudi Credit Bureau (SIMAH)",
+              "status": "active", "snapshot": "simah.rules", "snapshot_source": "simah"},
+    "SAUDI_EXCHANGE": {"job": "monitor_saudi_exchange", "display": "Saudi Exchange",
+                       "status": "active", "snapshot": "tadawul.rules",
+                       "snapshot_source": "saudi_exchange"},
+}
+
+
+def _resolve_regulator_key(raw: str) -> Optional[str]:
+    """Match a caller-supplied regulator string against REGULATOR_REGISTRY --
+    its short key ("CBE"), its full display name ("Central Bank of Egypt
+    (CBE)"), or the acronym inside that name's parentheses -- all
+    case-insensitive. None if nothing matches."""
+    v = (raw or "").strip()
+    if not v:
+        return None
+    if v.upper() in REGULATOR_REGISTRY:
+        return v.upper()
+    vf = v.casefold()
+    for key, entry in REGULATOR_REGISTRY.items():
+        if entry["display"].casefold() == vf:
+            return key
+        m = _ACRONYM_RE.search(entry["display"])
+        if m and m.group(1).casefold() == vf:
+            return key
+    return None
+
+
+class RegulatorTriggerRequest(BaseModel):
+    regulators: List[str]
+
+
+@app.get("/trigger/regulators", tags=["Monitoring"])
+def list_regulator_triggers():
+    """Every regulator this API knows about: its underlying job (None if it
+    has no job) and whether it is active / blocked / unwired. See the module
+    comment above for what each status means."""
+    from jobs.monitor_jobs import snapshot_report
+    out = {}
+    for key, v in sorted(REGULATOR_REGISTRY.items()):
+        entry = {"display": v["display"], "status": v["status"], "job": v["job"]}
+        if v.get("snapshot"):
+            # Reads a manifest file; makes no request to the site.
+            entry["snapshot"] = snapshot_report(v["snapshot"], v.get("snapshot_source"))
+        out[key] = entry
+    return {"regulators": out}
+
+
+@app.get("/trigger/regulators/status", tags=["Monitoring"])
+def regulator_trigger_status():
+    """Current in-memory state of every job reachable from
+    POST /trigger/regulators. Shares its state dict with /trigger/monitor, so
+    a job started from either endpoint shows up here."""
+    jobs = sorted({v["job"] for v in REGULATOR_REGISTRY.values() if v["job"]})
+    with _monitor_lock:
+        state = {j: dict(_monitor_state.get(j) or {"state": "never_started"})
+                 for j in jobs}
+    return {"jobs": state,
+            "note": ("state is in memory and resets when the api restarts; "
+                     "run_history in the database is the durable record")}
+
+
+@app.post("/trigger/regulators", tags=["Monitoring"], status_code=202)
+def trigger_regulators(request: RegulatorTriggerRequest):
+    """Start the MONITORING pipeline for one or more regulators.
+
+    Accepts regulator keys, full display names, or bare acronyms (see
+    REGULATOR_REGISTRY / _resolve_regulator_key), case-insensitive, e.g.
+    `{"regulators": ["CBB", "sama", "Central Bank of Egypt (CBE)"]}`.
+
+    Several regulators can share one underlying job (MOH + MOE + SDAIA + AML +
+    MHRSD + ZATCA + KDIPA all run inside monitor_cheap_probes) -- asking for
+    more than one of them starts that job exactly once, not once per name.
+
+    Returns as soon as every resolved job has STARTED, not finished -- these
+    are the same long-running jobs behind /trigger/monitor/{job}, some of
+    which take hours. Poll GET /trigger/regulators/status, or
+    GET /trigger/monitor/{job} for one job by name, for the outcome. The
+    durable record is `run_history` in the database.
+    """
+    if not request.regulators:
+        raise HTTPException(400, "Provide at least one regulator")
+
+    resolved: Dict[str, Dict[str, Any]] = {}      # as-requested -> outcome
+    jobs_to_start: Dict[str, list] = {}           # job name -> [regulator keys]
+
+    for raw in request.regulators:
+        key = _resolve_regulator_key(raw)
+        if not key:
+            resolved[raw] = {"status": "unknown_regulator",
+                             "available": sorted(REGULATOR_REGISTRY)}
+            continue
+        entry = REGULATOR_REGISTRY[key]
+        if entry["status"] == "blocked":
+            resolved[raw] = {
+                "status": "blocked", "regulator": key,
+                "reason": ("this host was permanently/near-permanently blocked "
+                           "after automated access from this project; it is "
+                           "never retried by this API -- see the module "
+                           "comment above and jobs/monitor_jobs.py"),
+            }
+            continue
+        if entry["status"] == "unwired":
+            resolved[raw] = {
+                "status": "unwired", "regulator": key,
+                "reason": "configured (config/sources/*.yml) but no monitoring job has been written yet",
+            }
+            continue
+        job = entry["job"]
+        jobs_to_start.setdefault(job, []).append(key)
+        resolved[raw] = {"status": "triggered", "regulator": key,
+                         "display": entry["display"], "job": job}
+
+    jobs_outcome: Dict[str, Dict[str, Any]] = {}
+    for job, keys in jobs_to_start.items():
+        with _monitor_lock:
+            current = _monitor_state.get(job) or {}
+            if current.get("state") == "running":
+                outcome = {"state": "already_running",
+                          "started_at": current.get("started_at")}
+            else:
+                _monitor_state[job] = {"state": "running",
+                                       "started_at": datetime.utcnow().isoformat(),
+                                       "regulators": keys}
+                outcome = {"state": "started",
+                          "started_at": _monitor_state[job]["started_at"]}
+        if outcome["state"] == "started":
+            Thread(target=_run_monitor_job, args=(job,), daemon=True,
+                  name=f"monitor-{job}").start()
+            logger.info("regulator trigger started job %s for %s", job, keys)
+        jobs_outcome[job] = {**outcome, "regulators": keys}
+
+    for raw, info in resolved.items():
+        if info.get("status") == "triggered":
+            info.update(jobs_outcome[info["job"]])
+
+    return {
+        "requested": resolved,
+        "jobs": jobs_outcome,
+        "poll": "/trigger/regulators/status",
+    }
 
 
 @app.post("/trigger/{regulator}")
@@ -1818,6 +2138,377 @@ def get_regulation_detail(
         raise
     except Exception as e:
         logger.exception(f"Error fetching regulation {regulation_id}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================================================== #
+#  REQUIREMENT / ACTIVITY ENDPOINTS                                    #
+#  Stage A (RequirementAnalyzer) + Stage B (ActivityAnalyzer), then     #
+#  processor.requirement_activity_sync writes only the diff against    #
+#  what's already stored. Same code path orch.py runs during a crawl   #
+#  (_run_requirement_activity_analysis), triggerable here for one      #
+#  regulation on demand instead of waiting for a recrawl.              #
+# ================================================================== #
+
+_analysis_state: Dict[int, Dict[str, Any]] = {}
+_analysis_lock = Lock()
+
+
+def _set_analysis_stage(regulation_id: int, stage: str, **extra) -> None:
+    """Update the in-progress state without clobbering started_at -- the
+    frontend polls this to render a 3-step log (extract text / generate
+    requirements / generate activities) instead of a single 'running'."""
+    with _analysis_lock:
+        current = _analysis_state.get(regulation_id) or {}
+        current.update(state="running", stage=stage, **extra)
+        _analysis_state[regulation_id] = current
+
+
+def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> None:
+    try:
+        row = repo.get_regulation_by_id(regulation_id)
+        if not row:
+            raise ValueError(f"no regulations row with id={regulation_id}")
+        version = repo.get_active_regulation_version(regulation_id) or {}
+        version_id = version.get("version_id")
+        if not version_id:
+            raise ValueError(f"regulation {regulation_id} has no active "
+                             f"regulation_versions row -- nothing to attach spans to")
+
+        meta = row.get("extra_meta") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+
+        # scripts.run_regulation_by_id no longer exists (its .pyc in scripts/__pycache__
+        # is the only trace left -- the .py was never committed, so this import broke
+        # silently for every caller: POST /regulation/{id}/analyze, /analysis/trigger,
+        # /analysis/trigger/run/{run_id}). Same download+OCR/office-extract logic already
+        # lives on the orchestrator (_download_and_extract_file dispatches by extension:
+        # .pdf through OCR, .docx/.xlsx/.xls through processor/office_text_extractor).
+        # crawler=None is fine -- this helper never calls fetch_documents().
+        from processor.downloader import Downloader
+        _fetch_orch = Orchestrator(crawler=None, repo=repo, downloader=Downloader())
+        fetch_attachment_text = _fetch_orch._download_and_extract_file
+
+        _set_analysis_stage(regulation_id, "extracting_text")
+        documents = []
+        # org_pdf_text is the established slot for pre-OCR'd PDF text
+        # elsewhere in this codebase (upload-regulation, analyze/document,
+        # orchestrator.py's own "Tier 1a: SAMA pre-OCR'd PDF text") --
+        # checked ahead of content_text/document_html for the same reason
+        # orchestrator.py does: it is text OCR'd FOR analysis specifically,
+        # not a copy of crawled markup, and deliberately excluded from the
+        # public API (utils/public_meta.py's NEVER_PUBLISH) since OCR output
+        # is often rough and isn't fit to show as "the document".
+        main_text = (meta.get("org_pdf_text") or meta.get("content_text")
+                    or row.get("document_html") or "").strip()
+        if len(main_text) < 200 and row.get("document_url"):
+            # Nothing stored at all -- e.g. a PDF-only crawl that was never
+            # OCR'd (this is exactly what CBE's Presidential Decree rows
+            # hit). Extract it now via the same OCR path already used for
+            # attachments below, and persist it so this regulation doesn't
+            # need re-extracting on every future analysis run.
+            ocr_text = fetch_attachment_text(row["document_url"])
+            if ocr_text and len(ocr_text.strip()) >= 200:
+                main_text = ocr_text.strip()
+                # Both keys, not just org_pdf_text: other code paths in this
+                # codebase check content_text (orchestrator.py's Tier 1b)
+                # rather than org_pdf_text (Tier 1a), so writing only one
+                # would leave this regulation invisible to whichever
+                # convention that other path happens to follow.
+                updated_meta = dict(meta)
+                updated_meta["org_pdf_text"] = main_text
+                updated_meta["content_text"] = main_text
+                repo.update_regulation(regulation_id,
+                                       extra_meta=json.dumps(updated_meta, ensure_ascii=False))
+                logger.info(f"backfilled extra_meta.org_pdf_text/content_text for regulation "
+                           f"{regulation_id} from document_url OCR ({len(main_text)} chars)")
+        if len(main_text) >= 200:
+            documents.append({"source_document": "main_body", "text": main_text})
+        raw_links = meta.get("attachment_links") or ""
+        for url in [u.strip() for u in str(raw_links).split("|") if u.strip()]:
+            text = fetch_attachment_text(url)
+            if text and len(text.strip()) >= 200:
+                name = url.rsplit("/", 1)[-1][:80] or url
+                documents.append({"source_document": name, "text": text})
+        if not documents:
+            raise ValueError("no document in this regulation's bundle produced "
+                             ">=200 chars of usable text -- nothing to analyse")
+
+        requirement_types = repo.get_requirement_types()
+
+        from processor.requirement_analyzer import RequirementAnalyzer
+        from processor.activity_analyzer import ActivityAnalyzer
+        from processor.requirement_activity_sync import sync_requirements_and_activities
+
+        _set_analysis_stage(regulation_id, "generating_requirements",
+                            documents=[d["source_document"] for d in documents])
+        from storage import llm_settings
+        model = llm_settings.get_model(repo)
+        req_analyzer = RequirementAnalyzer(model=model)
+        req_analyzer.client.on_usage = llm_settings.make_usage_recorder(
+            repo, step="requirements",
+            regulation_id=regulation_id, version_id=version_id)
+        stage_a = req_analyzer.extract_and_classify(
+            documents=documents, document_title=row.get("title") or "",
+            requirement_types=requirement_types, regulator=row.get("regulator") or "",
+            reference=row.get("reference_no") or "",
+            publication_date=str(row.get("published_date") or ""))
+        requirements = stage_a["requirements"]
+        chunk_texts = stage_a["chunk_texts"]
+
+        activities = []
+        if requirements:
+            _set_analysis_stage(regulation_id, "generating_activities",
+                                requirements_extracted=len(requirements))
+            act_analyzer = ActivityAnalyzer(model=model)
+            act_analyzer.client.on_usage = llm_settings.make_usage_recorder(
+                repo, step="activities",
+                regulation_id=regulation_id, version_id=version_id)
+            activities = act_analyzer.design_activities(
+                requirements=requirements, chunk_texts=chunk_texts)
+
+        counts = sync_requirements_and_activities(
+            repo, regulation_id, version_id, requirements, activities)
+
+        with _analysis_lock:
+            _analysis_state[regulation_id] = {
+                "state": "done",
+                "stage": "done",
+                "finished_at": datetime.utcnow().isoformat(),
+                "documents": [d["source_document"] for d in documents],
+                "requirements_extracted": len(requirements),
+                "activities_extracted": len(activities),
+                "counts": counts,
+            }
+    except Exception as e:
+        logger.exception(f"requirement/activity analysis failed for regulation {regulation_id}")
+        with _analysis_lock:
+            _analysis_state[regulation_id] = {
+                "state": "failed",
+                "finished_at": datetime.utcnow().isoformat(),
+                "error": str(e),
+            }
+
+
+@app.post("/regulation/{regulation_id}/analyze", tags=["Requirements & Activities"],
+         status_code=202)
+def trigger_requirement_activity_analysis(regulation_id: int):
+    """Start Stage A/B requirement+activity extraction for one regulation's
+    stored content. Returns as soon as the run has STARTED, not finished --
+    an LLM run over a real document takes real time. Poll
+    GET /regulation/{regulation_id}/analyze for the outcome."""
+    row = repo.get_regulation_by_id(regulation_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Regulation not found")
+
+    with _analysis_lock:
+        current = _analysis_state.get(regulation_id) or {}
+        if current.get("state") == "running":
+            return {"regulation_id": regulation_id, "state": "already_running",
+                    "started_at": current.get("started_at")}
+        _analysis_state[regulation_id] = {"state": "running", "stage": "queued",
+                                          "started_at": datetime.utcnow().isoformat()}
+
+    Thread(target=_run_requirement_activity_analysis_for_regulation,
+          args=(regulation_id,), daemon=True,
+          name=f"reqact-{regulation_id}").start()
+    logger.info("requirement/activity analysis started via API for regulation %s",
+               regulation_id)
+    return {"regulation_id": regulation_id, "state": "started",
+            "started_at": _analysis_state[regulation_id]["started_at"],
+            "poll": f"/regulation/{regulation_id}/analyze"}
+
+
+@app.get("/regulation/{regulation_id}/analyze", tags=["Requirements & Activities"])
+def requirement_activity_analysis_status(regulation_id: int):
+    """What this API process last saw of this regulation's analysis run.
+    In-memory only -- resets when the API restarts; the Requirement/Activity
+    tables themselves are the durable record of what was actually written."""
+    with _analysis_lock:
+        state = dict(_analysis_state.get(regulation_id) or {"state": "never_started"})
+    state["regulation_id"] = regulation_id
+    return state
+
+
+# ------------------------------------------------------------------ #
+#  BATCH TRIGGERS -- the same requirement/activity analyzers            #
+# ------------------------------------------------------------------ #
+# Both endpoints below feed ONE runner, `_run_requirement_activity_analysis_for_regulation`
+# (RequirementAnalyzer then ActivityAnalyzer, synced into the span tables), so a
+# regulation is analysed identically whichever way it was triggered, and shares the
+# per-regulation state that GET /regulation/{id}/analyze reports.
+
+_analysis_batches: Dict[str, Dict[str, Any]] = {}
+_batch_lock = Lock()
+ANALYSIS_BATCH_MAX = 500
+
+
+class AnalysisTriggerRequest(BaseModel):
+    regulation_ids: List[int] = Field(..., min_length=1, max_length=ANALYSIS_BATCH_MAX,
+                                      description="regulations to analyse")
+    force: bool = Field(False, description="also re-analyse regulations that already have active requirements")
+
+
+def _start_analysis_batch(ids: List[int], force: bool, source: str) -> Dict[str, Any]:
+    ids = list(dict.fromkeys(ids))
+    skipped = {"not_found": [], "already_running": [], "already_analysed": []}
+    todo = []
+    for rid in ids:
+        if not repo.get_regulation_by_id(rid):
+            skipped["not_found"].append(rid)
+            continue
+        with _analysis_lock:
+            if (_analysis_state.get(rid) or {}).get("state") == "running":
+                skipped["already_running"].append(rid)
+                continue
+        if not force and repo.get_requirements_for_regulation(rid, active_only=True):
+            skipped["already_analysed"].append(rid)
+            continue
+        todo.append(rid)
+
+    batch_id = uuid.uuid4().hex[:12]
+    now = datetime.utcnow().isoformat()
+    batch = {"batch_id": batch_id, "source": source, "force": force, "state": "running" if todo else "finished",
+             "started_at": now, "finished_at": None if todo else now, "total": len(todo),
+             "requested": len(ids), "skipped": skipped,
+             "items": {rid: {"state": "queued"} for rid in todo}}
+    with _batch_lock:
+        _analysis_batches[batch_id] = batch
+        for old in list(_analysis_batches)[:-50]:          # keep the last 50
+            _analysis_batches.pop(old, None)
+    if todo:
+        with _analysis_lock:
+            for rid in todo:
+                _analysis_state[rid] = {"state": "running", "stage": "queued", "started_at": now}
+        Thread(target=_run_analysis_batch, args=(batch_id, todo), daemon=True,
+               name=f"reqact-batch-{batch_id}").start()
+    return batch
+
+
+def _run_analysis_batch(batch_id: str, todo: List[int]) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, int(os.getenv("ANALYSIS_BATCH_WORKERS", "2")))
+
+    def one(rid: int) -> None:
+        with _batch_lock:
+            _analysis_batches[batch_id]["items"][rid] = {"state": "running"}
+        try:
+            _run_requirement_activity_analysis_for_regulation(rid)
+        except Exception as e:                              # the runner records its own failures; this is a backstop
+            with _analysis_lock:
+                _analysis_state[rid] = {"state": "failed", "error": str(e),
+                                        "finished_at": datetime.utcnow().isoformat()}
+        with _analysis_lock:
+            st = dict(_analysis_state.get(rid) or {})
+        item = {"state": st.get("state", "failed")}
+        for k in ("error", "requirements_extracted", "activities_extracted"):
+            if k in st:
+                item[k] = st[k]
+        with _batch_lock:
+            _analysis_batches[batch_id]["items"][rid] = item
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(one, todo))
+    with _batch_lock:
+        _analysis_batches[batch_id].update(state="finished", finished_at=datetime.utcnow().isoformat())
+
+
+def _batch_view(batch: Dict[str, Any]) -> Dict[str, Any]:
+    items = batch["items"]
+    counts = {s: sum(1 for i in items.values() if i["state"] == s) for s in ("queued", "running", "done", "failed")}
+    return {**{k: v for k, v in batch.items() if k != "items"}, "counts": counts,
+            "items": {str(k): v for k, v in items.items()}}
+
+
+@app.post("/analysis/trigger", tags=["Requirements & Activities"], status_code=202)
+def trigger_analysis_batch(request: AnalysisTriggerRequest):
+    """Start requirement + activity analysis for a LIST of regulations. Returns at once with
+    a `batch_id`; poll GET /analysis/batches/{batch_id}. Regulations that already have active
+    requirements are skipped unless `force` is true, so re-sending a list costs nothing for the
+    ones already done. Regulations already being analysed, or not found, are reported and skipped."""
+    batch = _start_analysis_batch(request.regulation_ids, request.force, source="regulation_ids")
+    return {**_batch_view(batch), "poll": f"/analysis/batches/{batch['batch_id']}"}
+
+
+@app.post("/analysis/trigger/run/{run_id}", tags=["Requirements & Activities"], status_code=202)
+def trigger_analysis_for_run(run_id: int,
+                             types: List[str] = Query(["new", "modified"], description="new | modified | deleted"),
+                             force: bool = False, include_rejected: bool = False):
+    """Start requirement + activity analysis for the documents a stored run (GET /runs/{id}) found.
+    Defaults to its new and modified documents, leaving out changes a reviewer rejected."""
+    bad = [t for t in types if t not in run_store.CHANGE_TYPES]
+    if bad:
+        raise HTTPException(422, f"types must be from {run_store.CHANGE_TYPES}, got {bad}")
+    ids = run_store.regulation_ids_for_run(repo, run_id, types=types, include_rejected=include_rejected)
+    if ids is None:
+        raise HTTPException(404, f"run {run_id} not found")
+    if len(ids) > ANALYSIS_BATCH_MAX:
+        raise HTTPException(413, f"run {run_id} has {len(ids)} matching documents; the limit is "
+                                 f"{ANALYSIS_BATCH_MAX} per batch. Narrow `types` or send ids in slices "
+                                 f"to POST /analysis/trigger.")
+    batch = _start_analysis_batch(ids, force, source=f"run:{run_id}")
+    return {**_batch_view(batch), "run_id": run_id, "poll": f"/analysis/batches/{batch['batch_id']}"}
+
+
+@app.get("/analysis/batches/{batch_id}", tags=["Requirements & Activities"])
+def analysis_batch_status(batch_id: str):
+    """Progress of one batch: counts per state and each regulation's outcome. In memory
+    (last 50 batches); the requirement/activity tables are the durable record."""
+    with _batch_lock:
+        batch = _analysis_batches.get(batch_id)
+        if not batch:
+            raise HTTPException(404, f"batch {batch_id!r} not found (they are kept in memory, last 50)")
+        return _batch_view(batch)
+
+
+@app.get("/regulation/{regulation_id}/requirements", tags=["Requirements & Activities"])
+def get_regulation_requirements(regulation_id: int,
+                                active_only: bool = Query(
+                                    True, description="False also returns "
+                                    "superseded requirements, one row per span")):
+    """Every requirement for one regulation, each with its activities nested
+    under it. active_only=True (default) is what's in force right now."""
+    row = repo.get_regulation_by_id(regulation_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Regulation not found")
+    try:
+        requirements = repo.get_requirements_for_regulation(
+            regulation_id, active_only=active_only)
+        for r in requirements:
+            r["activities"] = repo.get_activities_for_requirement_full(
+                r["requirement_id"], active_only=active_only)
+        return {"success": True, "regulation_id": regulation_id,
+                "count": len(requirements), "data": requirements}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching requirements for regulation {regulation_id}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/regulation/{regulation_id}/activities", tags=["Requirements & Activities"])
+def get_regulation_activities(regulation_id: int,
+                              active_only: bool = Query(
+                                  True, description="False also returns "
+                                  "superseded activities, one row per span")):
+    """Every activity under every requirement of one regulation, flat --
+    each row keeps requirement_ref_key so it can still be traced back."""
+    row = repo.get_regulation_by_id(regulation_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Regulation not found")
+    try:
+        activities = repo.get_activities_for_regulation(
+            regulation_id, active_only=active_only)
+        return {"success": True, "regulation_id": regulation_id,
+                "count": len(activities), "data": activities}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching activities for regulation {regulation_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

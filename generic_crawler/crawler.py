@@ -534,24 +534,78 @@ def title_from_slug(url: str) -> str:
     return slug[:180]
 
 
-def disambiguate_titles(documents: list) -> int:
+#: A uuid the way `title_from_slug` renders one: hex groups, separators turned
+#: to spaces, title-cased, sometimes with a "(1)" copy marker. Never a name.
+_OPAQUE_ID = re.compile(
+    r"^[0-9A-Fa-f]{8}[ \-][0-9A-Fa-f]{4}[ \-][0-9A-Fa-f]{4}"
+    r"[ \-][0-9A-Fa-f]{4}[ \-][0-9A-Fa-f]{12}\b")
+
+
+def disambiguate_titles(documents: list, prof: dict = None) -> int:
     """A title shared by several DIFFERENT documents is not a title.
 
     SDAIA links whole groups of quarterly reports as "2025" and a set of distinct
     policies as "Policies" — 41 of its 415 documents collide this way. The URL
     slug names them properly, so re-derive only the colliding ones and leave every
     unique title untouched. Returns how many were rewritten.
+
+    WHAT THE REPLACEMENT IS. The slug, by default. Under `heading_is_title` it is
+    the document's own LAST SECTION CRUMB, and that crumb is then removed from
+    `section_path` — a name cannot be both the folder and the title of what sits
+    inside it. See the profile key for the measurement; the short version is that
+    pdp.gov.bh states each executive decision's real name in that crumb and
+    nowhere else, while its two links say only "Download in English" and its
+    filenames say "Trans Order Auditor Tasks".
+
+    Unique titles are untouched either way, so this only ever changes a title that
+    was going to be rewritten anyway.
     """
     from collections import Counter
-    counts = Counter((d.get("title") or "").strip().lower() for d in documents)
+    heading_first = bool((prof or {}).get("heading_is_title"))
+    # A PLACEHOLDER'S SHARED TITLE IS DELIBERATE. `empty_page_placeholder` gives
+    # every empty page the same sentence on purpose, and the url slug is no kind
+    # of replacement: all six of MOIC's empty form categories were rewritten to
+    # "Forms", the slug of /en/forms?tag=NNN. Excluded from the COUNT as well as
+    # the rewrite, so six identical placeholders cannot drag a real title into
+    # collision either.
+    real = [d for d in documents if not d.get("placeholder")]
+    counts = Counter((d.get("title") or "").strip().lower() for d in real)
     fixed = 0
-    for d in documents:
+    for d in real:
         t = (d.get("title") or "").strip()
         if not t or counts[t.lower()] < 2:
             continue
-        alt = title_from_slug(d.get("doc_url") or "")
+        alt, crumbs, from_heading = "", [], False
+        if heading_first:
+            crumbs = [c.strip() for c in (d.get("section_path") or "").split(">")
+                      if c.strip()]
+            if crumbs:
+                alt, from_heading = crumbs[-1], True
+        if not alt:
+            alt, from_heading = title_from_slug(d.get("doc_url") or ""), False
+        # A REPLACEMENT HAS TO BE BETTER THAN WHAT IT REPLACES.
+        #
+        # The slug is only a good name when the site names its files. Where it
+        # serves them from an opaque id, this rewrite turns a real title into a
+        # worse one. MEASURED 2026-09-10 on cbj.gov.jo/EN/List/Laws: two rows
+        # both read "Central Bank of Jordan Law No. 23 of 1971" -- the same law
+        # as .pdf and .docx -- and were rewritten to
+        #
+        #     C3F6F427 8350 4226 9C9B 40A6Ffe17933
+        #     A6D37E65 4Ed7 41D0 8799 60962F082F77 (1)
+        #
+        # A shared title is a problem; two unreadable ones are a worse problem,
+        # and the rows were never ambiguous to the DATABASE anyway -- identity
+        # carries document_url. So keep the shared title and let a person see
+        # the duplicate, which is what `merge_files_at_same_path` is for.
+        if alt and _OPAQUE_ID.match(alt.strip()):
+            continue
         if alt and alt.strip().lower() != t.lower() and len(alt) > 3:
             d["title"] = alt
+            if from_heading:
+                # The crumb IS the title now. Left in place it would produce a
+                # folder and a document of the same name, one inside the other.
+                d["section_path"] = " > ".join(crumbs[:-1])
             fixed += 1
     return fixed
 
@@ -585,6 +639,32 @@ def collapse_heading_path(path) -> list:
                 continue
         kept.append(raw)
     return kept
+
+
+def _with_link_title(breadcrumb, link_title, prof) -> list:
+    """The breadcrumb, plus the anchor text that led here, when the host asks.
+
+    A filtered listing is a page whose subject is named nowhere on it except in
+    the link that reached it: /en/forms?tag=326 shows the SUBcategories of
+    "Business Services & Bahrain Investors Center Services" and never that name.
+    `linked_from_title` is recorded for every queued url, so the label is
+    discovered rather than configured -- which is the point, because a hardcoded
+    list of the categories a site has today cannot notice the one it adds
+    tomorrow.
+
+    Appended to the breadcrumb so it lands AFTER the page's own trail and BEFORE
+    its headings. Skipped for the seed (nothing linked to it) and skipped when
+    the trail already says it.
+    """
+    crumbs = list(breadcrumb or [])
+    if not (prof or {}).get("link_title_is_section"):
+        return crumbs
+    lt = clean_doc_title(link_title)
+    if not lt or len(lt) > 120:
+        return crumbs
+    if _norm_heading(lt) in [_norm_heading(c) for c in crumbs]:
+        return crumbs
+    return crumbs + [lt]
 
 
 def doc_section_path(breadcrumb: list, group: str = "", nav_path: str = "",
@@ -656,22 +736,83 @@ def doc_section_path(breadcrumb: list, group: str = "", nav_path: str = "",
 #: the page count first, then the size. RERA's "380.13Kb" needs only one.
 #: A PAGE COUNT IS ONLY STRIPPED WITH THE WORD "page(s)" PRESENT, so a title
 #: ending in a bare year or number ("Report 2024", "Decision No. 12") is safe.
+#: A LANGUAGE MARKER MAY FOLLOW THE SIZE, and until 2026-08-27 that blocked the
+#: whole match, because the size had to be the last thing in the string.
+#: Measured on moic.gov.bh/en/regulations: 73 of 79 titles read
+#: "The Law of Commerce No. 7 of 1987 5.17 MB EN", so every one kept its size.
+#: The list is closed on purpose — a bare two-letter word is not evidence of a
+#: language, and "Circular 12 MB EN" is the only shape worth trusting.
+_LANG_TAIL = r"(?:\s*[\-–—|,;(\[]*\s*(?:EN|AR|ENG|ARA|English|Arabic|عربي|عربى)\s*[)\]]*)?"
+
 _SIZE_TAIL = re.compile(
     r"[\s\-–—|,;(\[]*"
     r"(?:\d+(?:[.,]\d+)?\s*(?:[KMGT]i?B|bytes?)"
     r"|\d+\s*pages?)"
-    r"\s*[)\]]*\s*$",
+    r"\s*[)\]]*"
+    + _LANG_TAIL +
+    r"\s*$",
     re.I)
 
 
+#: A trailing FORMAT LABEL, and the separator in front of it: "| DOC", "- PDF".
+#:
+#: A listing that shows a format column puts it in the row text, so the context
+#: a title is built from ends "<name> | DOC". MEASURED on the 2026-09-15 CBJ
+#: export, 1 row of 313: "Guidelines for Bank Licensing | DOC".
+#:
+#: THE PIPE IS WHY THIS IS NOT COSMETIC. `doc_path` is a LIST in the library and
+#: is flattened with " | " into the workbook, so a pipe inside a title makes the
+#: flattened trail ambiguous: `promote` splits it back and gets one crumb too
+#: many. That row would land as a FOLDER "Guidelines for Bank Licensing"
+#: holding a document called "DOC". `check` passes it -- the shape is valid --
+#: which is exactly the class of fault ONBOARDING says only a person can see.
+#:
+#: The separator is required, so a title that merely ENDS in a format word
+#: ("Guide to PDF") is untouched; only "<name> | PDF" is.
+#: The separator is a REAL one -- a pipe or a dash, not merely a space. An
+#: earlier version wrote `[\s|\-–—]+` and so matched whitespace alone, which
+#: turned the legitimate title "Guide to PDF" into "Guide to".
+_FORMAT_TAIL = re.compile(
+    r"\s*[|\-–—]\s*(?:doc|docx|pdf|xls|xlsx|ppt|pptx|rtf|zip|txt|csv)\s*$", re.I)
+
+
 def clean_doc_title(s) -> str:
-    """One space between words, and no trailing file size."""
+    """One space between words, no trailing file size, no trailing format label."""
     s = re.sub(r"\s+", " ", (s or "")).strip()
     prev = None
     while prev != s:              # "(1.2 MB)" can leave a bracket behind
         prev = s
         s = _SIZE_TAIL.sub("", s).strip()
+        # After the size, because "<name> | DOC 1.2 MB" hides the label behind
+        # it -- and in the same loop, because removing one can expose the other.
+        s = _FORMAT_TAIL.sub("", s).strip()
     return s.strip(" -|–—")
+
+
+#: A `title="..."` made only of digits and separators. See `best_doc_title`.
+_BARE_NUMBER = re.compile(r"^[\d\s.,\-/_]+$")
+
+
+def _ctx_title(ctx) -> str:
+    """The title a row/card context reduces to, or "" if it reduces to nothing.
+
+    ONE definition, deliberately: `best_doc_title` uses it to PICK a context and
+    `_merge_links` uses it to CHOOSE BETWEEN two sightings of the same href. Two
+    copies would let the merge keep a context the title step then rejects, which
+    is exactly the state that produced guid-named documents on cbj.gov.jo.
+    """
+    t = clean_doc_title(ctx)
+    t = re.sub(r"\b(download|pdf|view|click here|read more)\b", "", t,
+               flags=re.I).strip(" -|")
+    # A CARD LAYOUT REPEATS THE TABLE'S COLUMN HEADINGS inside every card, so
+    # the context reads "File Name <the actual name> Type Size 686KB" rather
+    # than the name alone. MEASURED on cbj.gov.jo's mobile card list, which is
+    # where 14 of its 24 documents are found. These are column labels on any
+    # site that uses them; none of them is ever part of a document's name.
+    t = re.sub(r"^\s*file\s*name\s*[:\-]?\s*", "", t, flags=re.I)
+    t = re.sub(r"\s*\btype\b\s*\bsize\b.*$", "", t, flags=re.I)
+    t = t.strip(" -|&,;:")
+    return clean_doc_title(t)      # removing "download" can expose a size
 
 
 def best_doc_title(link: dict, url: str) -> str:
@@ -691,13 +832,27 @@ def best_doc_title(link: dict, url: str) -> str:
         picked = t
     if not picked:
         ta = clean_doc_title(link.get("title_attr"))
-        if len(ta) > 3:
+        # A BARE NUMBER IS A CMS NODE ID, NOT A NAME.
+        #
+        # MEASURED 2026-09-09 on cbj.gov.jo: every one of the 34 document links
+        # on the MoUs listing carries title="2373" -- the same id on all of
+        # them. Four characters clears the length test, so tier 2 picked it and
+        # tier 3 never ran, even though the row context right below held
+        # "MoU between CBJ and Bank Al-Maghrib 2017/11/13 2282KB".
+        #
+        # `disambiguate_titles` then did its job on the wreckage: 34 documents
+        # sharing one title is not a title, so it re-derived each from the url
+        # slug -- and this site's slugs are guids. The workbook came out with 24
+        # rows named "E2Ad73E3 0655 4B5C Aa4A Fa97B1919341".
+        #
+        # Rejecting it here costs nothing: the ladder simply continues to the
+        # row context, then the slug, both of which are strictly better answers
+        # than an id. Digits and separators only -- anything with a letter in it
+        # is a name someone chose.
+        if len(ta) > 3 and not _BARE_NUMBER.match(ta):
             picked = ta
     if not picked:
-        ctx = clean_doc_title(link.get("ctx"))
-        ctx = re.sub(r"\b(download|pdf|view|click here|read more)\b", "", ctx,
-                     flags=re.I).strip(" -|")
-        ctx = clean_doc_title(ctx)      # removing "download" can expose a size
+        ctx = _ctx_title(link.get("ctx"))
         if len(ctx) > 3:
             picked = ctx
     return (picked or clean_doc_title(title_from_slug(url)) or t)[:200]
@@ -823,6 +978,159 @@ SITE_PROFILES = {
         # these pages from another when a person opens the saved file. Add it here
         # if the saved HTML should be text-only.
         "drop_selectors": ".breadcrumbs, .pagemenu",
+    },
+    "www.moic.gov.bh": {
+        # /en/forms publishes the same list twice: unfiltered, and once per
+        # sidebar category. The category exists ONLY in the rail link, and the
+        # rail is 8 ordinary anchors, so the walk finds them — and finds a ninth
+        # the day it appears. See both keys' docs in DEFAULT_PROFILE.
+        "link_title_is_section": True,
+        "prefer_deepest_section": True,
+        # Six of the eight form categories publish nothing. Without a row each,
+        # the tree would show two categories where the ministry lists eight —
+        # and would look identical to a site that never had the other six.
+        "empty_page_placeholder": "No documents published under this category",
+        # MOIC (Bahrain), MEASURED 2026-08-27 on /en/regulations and /en/forms.
+        #
+        # THERE IS NO BREADCRUMB ON THIS SITE. JS_BREADCRUMB returns [] on both
+        # pages, so `section_path` was EMPTY on all 79 regulation documents and
+        # all 13 forms — every document filed at the root with no structure at
+        # all.
+        #
+        # The structure it does have is the page's own headings: the listing is
+        # an accordion whose <h2> names the topic. With `group_headings` the
+        # links' heading_path reaches doc_section_path, and the 79 documents
+        # sort into 18 real folders —
+        #   Regulations > Commercial Companies      14
+        #   Regulations > Consumer Protection       11
+        #   Regulations > Commercial Register        7
+        #   Regulations > Trademarks                 7
+        #   Regulations > Corporate Governance       6
+        #   Regulations > Patents                    6   ... and 12 more
+        # — and the 13 forms into 5 (Companies Control, Testing and Metrology,
+        # Precious Metals Assay Centre, Consumer Protection, Industrial Areas).
+        #
+        # This is what `group_headings` is for, and the flag's own note explains
+        # why it is opt-in: on SECP the headings are dates, on CBB "FOLLOW US",
+        # on CMA the document titles. Here they are the taxonomy.
+        #
+        # NOT NEEDED, and checked rather than assumed:
+        #   * no API. /jsonapi, /en/jsonapi, /api, /en/api and
+        #     /jsonapi/node/regulation all 404; it is Drupal with JSON:API off,
+        #     and there is no /sitemap.xml either.
+        #   * no filter urls. ?about[0]=19 (Commerce, 75 files) and =20
+        #     (Industry, 5 files) union to exactly the 79 the plain page already
+        #     lists, and the 8 form ?tag= values union to 12 of the 13 forms —
+        #     so crawling the filters would add nothing and LOSE one form.
+        #   * `strategy: generic` IS needed, but that is a crawl argument rather
+        #     than a profile key, so it lives in config/sources/moic.yml. Without
+        #     it the seed detects as `list` and the run reports `status: ok` with
+        #     78 pages, 78 errors and ZERO documents.
+        "group_headings": True,
+        # THE SIZE AND LANGUAGE UNDER EVERY LINK. Each document anchor is
+        #     <a class="DocumentItem">TITLE<div class="Itemlang"><span>5.17 MB</span> EN</div></a>
+        # so the captured page reads "... Law of Commerce No. 7 of 1987 / 5.17 MB
+        # EN" on every one of the 79 rows. The document TITLES are already clean —
+        # `_SIZE_TAIL` strips a trailing size and, since 2026-08-27, a language
+        # marker after it — but the html keeps the site's own line, which is
+        # neither the title nor useful once the file is stored.
+        # `.docImg` is the red PDF glyph repeated before every link —
+        #     <a class="DocumentItem"><div class="docImg"><img
+        #        src="/themes/custom/indestry/images/pdfDownload.JPG"></div>TITLE</a>
+        # 78 of them on the regulations page, identical, and each one an <img>
+        # the saved file cannot load anyway (relative to a theme directory).
+        "drop_selectors": ".Itemlang, .docImg",
+        # Bahrain's national economic vision, linked from the body of both
+        # listings and filed under whichever heading it sat below. Not a MOIC
+        # regulation. Matched on the directory so a re-upload is still caught.
+        "exclude_document_urls": "/2030-vision/",
+    },
+    "www.pdp.gov.bh": {
+        # PDPA (Bahrain), MEASURED 2026-08-27 on the three pages crawled into
+        # output/pdpa_regulations, output/pdpa_forms and output/pdpa_exec_orders.
+        #
+        # 1. THE CRUMBS ARE BARE <li>s. section_path read "Home" on all three
+        #    pages, so every document filed under the site root rather than its
+        #    own section. The trail is
+        #      <ul><li><a>Home</a></li><li class="sep">…</li><li>Forms</li></ul>
+        #    and the current crumb carries no anchor, no [aria-current] and no
+        #    "current"/"active" class, so neither anchors-only nor
+        #    `breadcrumb_current` can see it. VERIFIED: with breadcrumb_li the
+        #    crumbs read Home > Forms, Home > Executive Decisions/Orders and
+        #    Home > The Law.
+        #
+        # 2. THE ARTICLE HEADINGS ARE BUTTONS. regulations.html is an accordion:
+        #    61 .collapse panels hold 98,087 characters of article text and are
+        #    captured fine, but the 62 <button>s that title them — "Article (1)
+        #    Definitions" and so on, 2,848 characters — were deleted by the junk
+        #    list. The law came out as one run of text with no headings.
+        #
+        # 3. THE BREADCRUMB IS INSIDE <main>. `content_selector` cannot exclude
+        #    it (measured: main contains .breadcrumb-area on all three pages), so
+        #    it is named here. Only the <ul> is dropped, NOT the whole area: the
+        #    area also holds <h2 class="page-title">, which is the page's own
+        #    heading and worth keeping in the captured html.
+        # 4. A SCROLL ANIMATION HID MOST OF THE LAW. The pages are built with
+        #    WOW.js, which sets `visibility: hidden` inline until an element
+        #    scrolls into view. 58 of 68 `.wow` elements on regulations.html were
+        #    still hidden at capture — the preamble and every "Section One / Two
+        #    / Three" heading — so the saved page opened as a few visible
+        #    paragraphs and then blank space. The text itself was always present
+        #    (a detached clone's innerText is textContent), so this is a
+        #    rendering fix, not a recovery.
+        # 5. THE DECISION NAME IS A <div>, NOT A HEADING. Executive
+        #    Decisions/Orders names each decision in
+        #    `.executive-decisions-pdf > .block:first-child`, with its Arabic and
+        #    English pdf in the SECOND .block. JS_LINKS reads h1-h4 only, so all
+        #    20 documents came back under the one page heading and the twenty
+        #    decisions collapsed into a single folder.
+        #
+        #    `:first-child` matters: both children carry class `block`, and the
+        #    second one holds the download links. Naming `.block` alone would
+        #    make a link's nearest heading its OWN container, and every decision
+        #    would be titled "تحميل باللغة العربية Download in English".
+        # 6. THE LAW'S ARTICLES ARE ACCORDION PANELS, and they are records.
+        #    /en/regulations.html renders 60 articles as
+        #      <button data-target="#faqOne">Article (1) Definitions</button>
+        #      <div class="collapse" id="faqOne"> ...the article text... </div>
+        #    which is the shape `keep_modals` already reads — measured: 61
+        #    panels, 60 kept, bodies of 1,292-4,017 characters. Without it the
+        #    page contributes TWO documents (the pdf and its Gazette copy) and
+        #    the law itself is one undifferentiated blob of text.
+        #
+        #    Safe host-wide: executive-decisions.html and forms.html each carry
+        #    exactly ONE panel, the nav dropdown `navbarSupportedContent`, whose
+        #    trigger has no text — so it is dropped by the collector's title
+        #    check and neither page gains a record.
+        "keep_modals": True,
+        # The law names each division in two elements — <h5>Section Three</h5>
+        # followed by <p>Transfer of Personal Data outside the Kingdom</p> — and
+        # all eleven divisions are written that way. Without this the tree holds
+        # three folders called "Section One", one per Part, and nothing on the
+        # face of them says which law they belong to.
+        # Each executive decision is a PAIR of download links -- one Arabic, one
+        # English -- under a heading carrying its only real name. Without this the
+        # ten decisions are folders and the twenty rows are named after files.
+        "heading_is_title": True,
+        # The law's own voice is its preamble; its Parts, Sections and 60
+        # Articles are all stored as children. Without this the page record
+        # repeated the entire law — 119,277 characters against the 3,618 the
+        # preamble actually is.
+        "page_text_stops_at_children": True,
+        "heading_subtitle": True,
+        "heading_selector": ".executive-decisions-pdf > .block:first-child",
+        # Needed for the above to reach section_path at all: without it
+        # doc_section_path is passed neither `group` nor `heading_path`.
+        "group_headings": True,
+        "breadcrumb_li": True,
+        "keep_buttons": True,
+        "unhide_animated": True,
+        # The WHOLE breadcrumb block, not just its list: the section is a banner
+        # carrying a background image and an <h2> that repeats the page title the
+        # content states again immediately below ("The Law The Law ..."). Nothing
+        # is lost — JS_DOC_TITLE reads the live document, so `title` still says
+        # Forms / Executive Decisions/Orders / The Law.
+        "drop_selectors": ".breadcrumb-area",
     },
     "www.sio.gov.bh": {
         "keep_modals": True,
@@ -1025,6 +1333,18 @@ SITE_PROFILES = {
 
 DEFAULT_PROFILE = {
     "breadcrumb_current": False,
+    #: Read the breadcrumb container's <li>s as the crumbs, link or not. For a
+    #: site whose current crumb is a bare <li> with no class and no aria marker.
+    "breadcrumb_li": False,
+    #: Keep <button> in the captured content, for a site whose section headings
+    #: ARE buttons (an accordion). Off everywhere else, where a button is a
+    #: control and its label is not part of the document.
+    "keep_buttons": False,
+    #: Clear the inline `visibility: hidden` a scroll-animation library leaves on
+    #: elements that never came into view. Neutralises the style, never deletes
+    #: the element: the text was already captured, it is the saved page that
+    #: renders blank.
+    "unhide_animated": False,
     "unwrap_forms": False,
     "sharepoint_main": False,
     "group_headings": False,
@@ -1033,6 +1353,170 @@ DEFAULT_PROFILE = {
     #: JS_MAIN_CONTENT's list. Empty means "use the defaults", which is what every
     #: host without an entry does.
     "content_selector": "",
+    #: When several documents share one title, name them after their SECTION
+    #: instead of their URL slug -- and drop that crumb from `section_path`, since
+    #: it has become the title.
+    #:
+    #: `disambiguate_titles` exists because a title shared by different documents
+    #: is not a title. Its replacement is the URL slug, which is right for SDAIA
+    #: (whole groups of quarterly reports linked as "2025", named properly by
+    #: their filenames) and second-best where the page already states the real
+    #: name one level up.
+    #:
+    #: MEASURED on pdp.gov.bh/en/executive-decisions.html: each of the ten
+    #: executive decisions is a PAIR of links whose text is the Arabic
+    #: "download in Arabic" and "Download in English". Neither is in
+    #: GENERIC_LINK_TEXT, so both survive best_doc_title; then ten documents share
+    #: each of the two titles, every one is rewritten from the slug, and the result
+    #: reads
+    #:     Regarding Data Protection Guardians / Trans Order Auditor Tasks
+    #: where the decision's name is the only real title on the page. With this on:
+    #:     Regarding Data Protection Guardians  <- the title, and the only folder
+    #:
+    #: OPT-IN, because it would change every site that currently gets a slug out
+    #: of a collision. On SDAIA the colliding links sit under a SHARED heading, so
+    #: naming them after it would put the collision straight back -- the slug is
+    #: the better answer there and stays the default.
+    #:
+    #: It only ever applies to a title `disambiguate_titles` was going to rewrite
+    #: anyway, so a document with a title of its own is never touched.
+    "heading_is_title": False,
+    #: The ANCHOR TEXT THAT LED HERE becomes the outer folder for this page's
+    #: documents.
+    #:
+    #: A filtered listing — /en/forms?tag=326 — is a page whose subject is named
+    #: nowhere on it except in the rail link that reached it. Its own headings are
+    #: the SUBcategories, and its breadcrumb is the unfiltered parent, so a crawl
+    #: files its documents exactly where the unfiltered page files them and the
+    #: filter's whole contribution is lost.
+    #:
+    #: This reads `linked_from_title`, which the walker already records for every
+    #: queued url, so the label is DISCOVERED. That is the point: hardcoding the
+    #: eight known tags as eight sources cannot notice a ninth.
+    #:
+    #: MEASURED on moic.gov.bh/en/forms: 8 rail anchors, and with this on the
+    #: documents of ?tag=326 read
+    #:     Business Services & Bahrain Investors Center Services > Companies Control
+    #: instead of "Companies Control" alone. Skipped for the seed, which nothing
+    #: linked to, and skipped when the label already opens the trail.
+    "link_title_is_section": False,
+    #: A PAGE THAT YIELDED NO DOCUMENT still contributes one row, so the folder
+    #: it sits in exists. The value is that row's title; setting it turns this on.
+    #:
+    #: Folders are built from the trails of documents, so a category that
+    #: publishes nothing has no folder and cannot be told apart from a category
+    #: the site never had. That matters most on exactly the sites where the
+    #: categories are DISCOVERED: `link_title_is_section` finds them by walking,
+    #: and an empty one would be found and then silently dropped.
+    #:
+    #: PER PAGE, not per source. The wrapper has `placeholder_when_empty` for a
+    #: source that yields nothing, and it cannot help here: one source now walks
+    #: every category, so the source is not empty even when six of its pages are.
+    #:
+    #: MEASURED on moic.gov.bh/en/forms: the walk visits the index plus 8
+    #: categories; tag=326 gives 10 forms, tag=325 gives 1, and the other SIX give
+    #: zero — tag=324 and tag=319 return zero characters of content and zero
+    #: links. So six placeholders, and none for the index, which has 12.
+    #:
+    #: The row points at the page itself, which is honest and distinct per
+    #: category, so identity separates the placeholders instead of collapsing
+    #: them. Only for pages that are IN SCOPE and were really read: a page that
+    #: errored or was blocked is not an empty page and gets nothing.
+    "empty_page_placeholder": "",
+    #: One file found under SEVERAL trails keeps only the DEEPEST.
+    #:
+    #: Normally a document in two sections is cross-listed on purpose, and both
+    #: placements are kept. On a site that publishes the same list unfiltered AND
+    #: per category, the two placements are not two sections — they are one
+    #: document seen twice, once with its category and once without.
+    #:
+    #: MEASURED on moic.gov.bh/en/forms: 11 of the 12 forms appear on both the
+    #: unfiltered page and exactly one tag page. Without this the tree carries
+    #: them twice; with it the categorised trail wins and the 1 orphan that no tag
+    #: returns still arrives from the unfiltered page. Ties keep the first seen.
+    "prefer_deepest_section": False,
+    #: Under `keep_modals`, END the page's own text where its CHILD RECORDS
+    #: begin — at the heading block that opens the accordion.
+    #:
+    #: A page of panels is an index over its children plus whatever it says in
+    #: its own voice. On pdp.gov.bh/en/regulations.html that own voice is the
+    #: law's preamble: the royal citation list, First through Fourth Article, and
+    #: the enactment date. Everything after it is Part > Section > Article, all of
+    #: which is already stored as 60 child records under 11 folders.
+    #:
+    #: MEASURED on that page: the captured text went 119,277 -> 3,618 characters
+    #: and what remains ends at "12/07/2018 A.D." — the preamble, nothing else.
+    #: MEASURED on sio.gov.bh/en/ministerial-orders, the other `keep_modals`
+    #: host: 17,441 -> 17,441, unchanged even with this on, because its 47
+    #: triggers have no heading block above them to cut at.
+    #:
+    #: THE BOUNDARY IS THE CONTIGUOUS HEADING BLOCK, not the outermost heading.
+    #: Three earlier attempts cut at the outermost heading above the first panel
+    #: and every one of them returned an EMPTY page, because on this host the
+    #: outermost heading above the panels is the page title and the preamble
+    #: hangs below it:
+    #:     h2 The Law                        <- page title
+    #:     h3 The Law
+    #:     h4 The Shura Council ...          <- the preamble is headings too
+    #:     h5 First Article .. Fourth Article, 28 /10/1439 A.H. 12/07/2018 A.D.
+    #:     h4 Personal Data Protection Law   <- the children start HERE
+    #:     h5 Section One
+    #:        button Article (1) Definitions
+    #: So the walk goes backwards from the first trigger and steps only from a
+    #: heading to a heading OUTSIDE it (h5 then h4), stopping the instant
+    #: anything else intervenes — which is what separates "Section One" and
+    #: "Personal Data Protection Law" from the h5s of the preamble above them.
+    #: h1 and h2 are never a boundary: those are page titles.
+    "page_text_stops_at_children": False,
+    #: Append the short paragraph that FOLLOWS a heading to the heading itself,
+    #: joined with " - ".
+    #:
+    #: Some documents split a division's number from its subject:
+    #:     <h5>Section Three</h5><p>Transfer of Personal Data outside the Kingdom</p>
+    #: MEASURED on pdp.gov.bh/en/regulations.html, which does this for all eleven
+    #: divisions of the Personal Data Protection Law. Without it the folders read
+    #: "Section One", "Section two", "Section Three" three times over — accurate
+    #: and unusable, because a law has a Section One in every Part.
+    #:
+    #: Only the IMMEDIATELY following sibling, only when it is short, and only
+    #: when it differs from the heading, so a heading followed by a body
+    #: paragraph is left alone.
+    "heading_subtitle": False,
+    #: A selector for elements that ACT as headings on this host but are not
+    #: h1-h6. Added to the two heading lists JS_LINKS builds, so `group` and
+    #: `heading_path` — and through them `section_path` and the folder trail —
+    #: can see them.
+    #:
+    #: MEASURED on pdp.gov.bh/en/executive-decisions.html: each decision is
+    #:     <div class="executive-decisions-pdf">
+    #:       <div class="block">Regarding Data Protection Guardians</div>
+    #:       <div class="block"> <a>عربية</a> <a>Download in English</a> </div>
+    #: so the name of the decision — the folder every one of its documents
+    #: belongs in — is a bare DIV. Without this every document on the page came
+    #: back under the single page heading and the twenty decisions collapsed
+    #: into one.
+    #:
+    #: Ranked BELOW every real heading (see rankOf), so a page that has both
+    #: keeps its h1..h6 nesting and gains this as the innermost level.
+    #:
+    #: Off by default. A div is not a heading in general, and naming one as a
+    #: heading on a site that did not ask for it would re-file its documents.
+    "heading_selector": "",
+    #: Substrings of a DOCUMENT URL that mean "this is site furniture, not a
+    #: document of this section", comma-separated.
+    #:
+    #: config/sources/*.yml already has an `exclude_documents` list and the
+    #: wrapper applies it — but only on the wrapper's path. A direct
+    #: `crawler.py --url ...` run knows nothing about it, so every pages.xlsx
+    #: still carried the excluded file: measured on moic.gov.bh, where
+    #: /sites/default/files/2030-vision/vision2030-en.pdf appeared in all 14
+    #: exploratory crawls while the workbook was correctly clean.
+    #:
+    #: Site-wide furniture belongs to the HOST rather than to one source config,
+    #: which is why it is here as well. Excluded documents are recorded in the
+    #: run's `chrome_dropped` audit, never silently discarded — the same
+    #: treatment header/footer links get.
+    "exclude_document_urls": "",
     #: Extra selectors to delete from the captured content, comma-separated.
     #:
     #: For furniture that sits INSIDE the content wrapper, so naming the wrapper
@@ -1044,6 +1528,21 @@ DEFAULT_PROFILE = {
     #: document from the documents sheet.
     "drop_selectors": "",
 }
+
+
+def _excluded_doc_url(url: str, prof: dict) -> bool:
+    """Is this document url site furniture, per the host profile?
+
+    Substring match, like the wrapper's `exclude_documents`, so a directory
+    ("/2030-vision/") survives a re-upload under a new filename.
+    """
+    pats = (prof or {}).get("exclude_document_urls") or ""
+    if isinstance(pats, str):
+        pats = [p.strip() for p in pats.split(",")]
+    for p in pats:
+        if p and p in url:
+            return True
+    return False
 
 
 def profile_for(url: str) -> dict:
@@ -1092,14 +1591,38 @@ JS_BREADCRUMB = r"""
       const sel = opts.breadcrumb_current
         ? 'a, [class*="current" i], [aria-current], [class*="active" i]'
         : 'a';
-      let nodes = Array.from(el.querySelectorAll(sel));
-      // drop a node that merely CONTAINS another crumb node (avoid double counting)
-      nodes = nodes.filter(n => !nodes.some(o => o !== n && n.contains(o)));
-      let parts = nodes.filter(visible)
-        .map(n => n.textContent.trim()).filter(t => !isSep(t) && t.length < 200);
-      if (!parts.length)
+      // `breadcrumb_li`: THE CRUMBS ARE THE <li>s, LINK OR NOT.
+      //
+      // pdp.gov.bh writes the trail as
+      //     <ul><li><a href="index.html">Home</a></li>
+      //         <li class="sep"><span class="fal fa-angle-double-left"></span></li>
+      //         <li>Forms</li></ul>
+      // so the current crumb is a BARE <li> — no anchor, no [aria-current], no
+      // "current"/"active" class. Anchors-only reads ['Home'], and
+      // `breadcrumb_current` reads ['Home'] too, because the selectors it adds
+      // match nothing here. The <li> fallback below would have caught it, but it
+      // only fires when NOTHING matched, and 'Home' is something.
+      //
+      // Measured on /en/forms.html, /en/executive-decisions.html and
+      // /en/regulations.html: section_path was "Home" on all three, so every
+      // document filed under the site root instead of its own section.
+      //
+      // Separator <li>s cost nothing: their text is an icon span, so `isSep`
+      // drops them on emptiness.
+      let parts;
+      if (opts.breadcrumb_li) {
         parts = Array.from(el.querySelectorAll('li')).filter(visible)
           .map(n => n.textContent.trim()).filter(t => !isSep(t) && t.length < 200);
+      } else {
+        let nodes = Array.from(el.querySelectorAll(sel));
+        // drop a node that merely CONTAINS another crumb node (avoid double counting)
+        nodes = nodes.filter(n => !nodes.some(o => o !== n && n.contains(o)));
+        parts = nodes.filter(visible)
+          .map(n => n.textContent.trim()).filter(t => !isSep(t) && t.length < 200);
+        if (!parts.length)
+          parts = Array.from(el.querySelectorAll('li')).filter(visible)
+            .map(n => n.textContent.trim()).filter(t => !isSep(t) && t.length < 200);
+      }
       const out = [];
       for (const p of parts) if (out[out.length-1] !== p) out.push(p);
       if (out.length) return out;
@@ -1154,19 +1677,46 @@ JS_MAIN_CONTENT = r"""
   }
   // `keep_modals` does NOT inline the panels. Each one becomes its own record
   // (see JS_MODALS below and the collector in crawl()), because a page holding 47
-  // laws is one document where the library wants 47. So here the panels stay
-  // stripped by the junk sweep and only the trigger's dead href is repaired:
-  // javascript:void(0) becomes "#<id>", which absolutize_html turns into
-  // <page>#<id> — the same url the per-law record is stored under, so the page
-  // reads as an index over its own children.
+  // laws is one document where the library wants 47. Two things happen here:
+  //
+  //   - the trigger's dead href is repaired: javascript:void(0) becomes
+  //     "#<id>", which absolutize_html turns into <page>#<id> — the same url the
+  //     per-law record is stored under, so the page reads as an index over its
+  //     own children.
+  //   - the PANEL IS REMOVED, so the page does not also carry the text of every
+  //     child. This comment used to claim the junk sweep already did that. It
+  //     only did so by accident: a Bootstrap MODAL carries aria-hidden="true"
+  //     and the sweep drops it, but a Bootstrap ACCORDION panel is a plain
+  //     .collapse and survived. MEASURED on pdp.gov.bh/en/regulations.html:
+  //     80,523 of the page's characters were its own 61 panels, stored a second
+  //     time as 61 child records. On sio.gov.bh, whose panels are modals, this
+  //     changes the captured text by 0 characters.
   if (opts.keep_modals) {
     clone.querySelectorAll('a[data-bs-target], [data-target]').forEach(a => {
       const t = a.getAttribute('data-bs-target') || a.getAttribute('data-target') || '';
       if (t.charAt(0) === '#') a.setAttribute('href', t);
+      if (t.length > 1) {
+        let p = null;
+        try { p = clone.querySelector('#' + CSS.escape(t.slice(1))); } catch (e) {}
+        if (p) p.remove();
+      }
     });
   }
+  // `keep_buttons`: THE HEADINGS ARE BUTTONS ON SOME SITES.
+  //
+  // 'button' is in this list because a button is normally a control — "Download
+  // PDF", "back to top". On an accordion it is the HEADING. Measured on
+  // pdp.gov.bh/en/regulations.html: 62 buttons carrying 2,848 characters, every
+  // one of them an article title ("Article (1) Definitions", "Article (2) Scope
+  // of Application", ...), while the 61 .collapse panels holding the 98,087
+  // characters of article text survive. So the law was captured as one
+  // undifferentiated run of text with every heading deleted.
+  //
+  // Opt-in per host: leaving buttons in by default would put "Download PDF" and
+  // "Submit" back into the text of every other site.
   const junk = [
-    'script','style','noscript','nav','aside','header','footer','button','iframe',
+    'script','style','noscript','nav','aside','header','footer','iframe',
+    ...(opts.keep_buttons ? [] : ['button']),
     ...(opts.unwrap_forms ? [] : ['form']),
     '[aria-hidden="true"]','[hidden]','.no-print',
     // The SITE'S OWN "this is not content" marker. Bootstrap's d-print-none means
@@ -1181,6 +1731,62 @@ JS_MAIN_CONTENT = r"""
     '[style*="display:none"]','[style*="display: none"]'
   ];
   clone.querySelectorAll(junk.join(',')).forEach(n => n.remove());
+  // `page_text_stops_at_children`: the page's own text ends where its children
+  // begin. AFTER the junk sweep on purpose — a navbar toggler is a
+  // [data-bs-target] too, and running this before <nav> was swept made the
+  // navbar the first trigger and emptied the page.
+  if (opts.keep_modals && opts.page_text_stops_at_children) {
+    const trig = clone.querySelector('[data-bs-target], [data-target]');
+    let bound = null;
+    if (trig) {
+      const flat = Array.from(clone.querySelectorAll(
+          'h1,h2,h3,h4,h5,h6,[data-bs-target],[data-target]'));
+      // Backwards from the accordion, heading to OUTER heading only. h1/h2 are
+      // page titles and can never be the boundary. See the profile key's docs
+      // for the measured heading order this reads.
+      let rank = 7;
+      for (let j = flat.indexOf(trig) - 1; j >= 0; j--) {
+        const m = /^H([3-6])$/.exec(flat[j].tagName);
+        if (!m) break;
+        const r = +m[1];
+        if (r >= rank) break;
+        rank = r; bound = flat[j];
+      }
+    }
+    if (bound) {
+      try {
+        const rg = clone.ownerDocument.createRange();
+        rg.setStartBefore(bound);
+        rg.setEnd(clone, clone.childNodes.length);
+        rg.deleteContents();
+      } catch (e) { /* no boundary we can act on: leave the page whole */ }
+    }
+  }
+  // `unhide_animated`: A SCROLL ANIMATION LEFT THE PAGE INVISIBLE.
+  //
+  // WOW.js and its relatives set `visibility: hidden` inline on every element
+  // carrying their trigger class, and only clear it when the element scrolls
+  // into view. A crawler never scrolls, so whatever sat below the fold stays
+  // hidden. MEASURED on pdp.gov.bh/en/regulations.html: 58 of 68 `.wow`
+  // elements, which is most of the law — its preamble, and every "Section One /
+  // Two / Three" heading between the articles.
+  //
+  // THE TEXT WAS NEVER LOST, which is why this is not a junk-list problem and
+  // why deleting those elements would be exactly wrong: a detached clone's
+  // innerText is textContent, so `text` already holds all 119,359 characters and
+  // content_hash was always right. It is the SAVED HTML that renders as a
+  // sequence of blank gaps, because the inline style travels with it.
+  //
+  // So the style is neutralised rather than the element removed, and only for a
+  // host that asks: an inline `visibility: hidden` elsewhere may be deliberate.
+  if (opts.unhide_animated) {
+    clone.querySelectorAll('[style*="visibility"]').forEach(n => {
+      if (/hidden/i.test(n.style.visibility || '')) n.style.visibility = 'visible';
+    });
+    clone.querySelectorAll('[style*="opacity"]').forEach(n => {
+      if (parseFloat(n.style.opacity) === 0) n.style.opacity = '';
+    });
+  }
   // Per-host furniture that lives INSIDE the content wrapper. Wrapped in a
   // try/catch so one bad selector in a profile cannot empty a whole crawl — a
   // typo should cost the removal, not the page.
@@ -1244,6 +1850,52 @@ JS_MODALS = r"""
     });
     return el;
   };
+  // THE HEADINGS A PANEL SITS UNDER, in document order.
+  //
+  // A page of panels is not flat. PDPA's Personal Data Protection Law is
+  // Part > Section > Article, and the Part and Section are plain h4/h5 elements
+  // BEFORE the accordion — nothing links them to a panel but position. Without
+  // this every one of the 60 articles inherited the page's own section_path and
+  // landed in a single folder.
+  //
+  // textContent, never innerText: these headings are exactly the ones a scroll
+  // animation leaves at `visibility: hidden` (see `unhide_animated`), and
+  // innerText returns "" for a hidden element. Reading textContent is why this
+  // works on a page the crawler never scrolled.
+  //
+  // Walks BACKWARDS from the trigger, keeping the nearest heading at each rank
+  // and stopping at the first h1/h2 — so a Section from the PREVIOUS Part can
+  // never leak into this one.
+  const _flat = Array.from(document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,[data-bs-target],[data-target]'));
+  // A heading's own text, plus the short paragraph that names it when the host
+  // says its divisions are written that way (see `heading_subtitle`).
+  const headingLabel = el => {
+    const t = clean(el.textContent);
+    if (!opts.heading_subtitle || !t) return t;
+    const n = el.nextElementSibling;
+    if (!n || !/^(P|SPAN|DIV|H6)$/.test(n.tagName)) return t;
+    const sub = clean(n.textContent);
+    if (!sub || sub === t || sub.length > 90) return t;
+    return t + ' - ' + sub;
+  };
+  const headingTrailFor = el => {
+    const at = _flat.indexOf(el);
+    if (at < 0) return [];
+    const best = {};
+    for (let j = at - 1; j >= 0; j--) {
+      const e = _flat[j];
+      const m = /^H([1-6])$/.exec(e.tagName);
+      if (!m) continue;
+      const rank = +m[1];
+      const t = headingLabel(e);
+      if (!t || t.length > 160) continue;
+      if (best[rank] === undefined) best[rank] = t;
+      if (rank <= 2) break;
+    }
+    return Object.keys(best).sort().map(k => best[k]);
+  };
+
   for (const a of document.querySelectorAll('[data-bs-target], [data-target]')) {
     const raw = a.getAttribute('data-bs-target') || a.getAttribute('data-target') || '';
     if (raw.charAt(0) !== '#' || raw.length < 2) continue;
@@ -1269,6 +1921,7 @@ JS_MODALS = r"""
       title: clean(a.innerText || a.textContent) || clean(head && head.textContent),
       text: text,
       html: (body.innerHTML || ''),
+      heading_path: headingTrailFor(a),
       placeholder: /will be published soon/i.test(text)
     });
   }
@@ -1305,10 +1958,23 @@ JS_DOC_TITLE = r"""
 # `nav=true` links (page numbers, next/prev, pager containers) are followed at LOW
 # priority so real content/detail pages get crawled before index pages.
 JS_LINKS = r"""
-() => {
+(opts) => {
+opts = opts || {};
+// A host may name extra elements that act as headings (see `heading_selector`).
+// Guarded: one bad selector in a profile must cost the extra headings, not the
+// whole link harvest, and querySelectorAll throws on invalid syntax.
+let extraSel = "";
+if (opts.heading_selector) {
+  try { document.querySelector(opts.heading_selector); extraSel = ", " + opts.heading_selector; }
+  catch (e) { extraSel = ""; }
+}
+const isExtra = el => {
+  if (!opts.heading_selector) return false;
+  try { return el.matches(opts.heading_selector); } catch (e) { return false; }
+};
 // Headings, in document order, resolved ONCE per call (the DOM changes between
 // calls — expand_tree reveals more — so this must not be cached on window).
-const heads = Array.from(document.querySelectorAll('h1,h2,h3,h4,legend,caption'))
+const heads = Array.from(document.querySelectorAll('h1,h2,h3,h4,legend,caption' + extraSel))
   .map(h => ({ el: h, text: (h.innerText || '').replace(/\s+/g, ' ').trim() }))
   .filter(h => h.text && h.text.length < 120);
 
@@ -1325,13 +1991,16 @@ const rankOf = el => {
     if (n >= 1 && n <= 6) return n;
   }
   if (t === 'LEGEND' || t === 'CAPTION' || t === 'SUMMARY') return 7;
+  // A profile-named heading sits below every real one, so a page keeps its
+  // h1..h6 nesting and gains this as the innermost level.
+  if (isExtra(el)) return 6;
   return 0;
 };
 const inWidget = el => !!el.closest(
   'nav, aside, header, footer, [role="navigation"], [role="complementary"], '
   + '[role="banner"], [role="contentinfo"]');
 const rankedHeads = Array.from(document.querySelectorAll(
-    'h1,h2,h3,h4,h5,h6,legend,caption,summary,[role="heading"]'))
+    'h1,h2,h3,h4,h5,h6,legend,caption,summary,[role="heading"]' + extraSel))
   .map(h => ({ el: h, rank: rankOf(h),
                text: (h.innerText || h.textContent || '').replace(/\s+/g, ' ').trim() }))
   .filter(h => h.rank && h.text && h.text.length < 300 && !inWidget(h.el));
@@ -1375,6 +2044,44 @@ return _cands.map(({el: a, href: _href}) => {
       break;
     }
     row = row.parentElement;
+  }
+  // SECOND PASS — only when the first found nothing a title could be made of.
+  //
+  // The class test above stops at the NEAREST row/card ancestor, which on a
+  // card layout can be the wrapper around the button rather than the card.
+  // MEASURED on cbj.gov.jo, whose mobile card list supplies 14 of its 24
+  // documents:
+  //
+  //   div.col-8                      ''
+  //   div.row py-2 mx-0              'View & Download'   <- pass 1 stops here
+  //   div.col-12 border py-3 ...     'File Name MoU between CBJ and Banking
+  //                                   Regulation and Supervision Agency of
+  //                                   Turkey. 2011/09/06 Type Size 1898KB'
+  //   div.row                        all 24 documents, 2663 chars
+  //
+  // The naming element carries no row/card class, so no widening of the class
+  // test reaches it -- and the ancestor above it DOES match while holding the
+  // whole list, which on other sites would hand a listing's text to a single
+  // document as its title.
+  //
+  // So this pass ignores class entirely and stops on two honest signals: text
+  // that still says something once button words are removed, and a container
+  // that has not yet grown into the list. Guarded by `_meat(ctx) <= 3` so a
+  // page where pass 1 already worked is untouched -- every regulator that has
+  // a usable ctx today keeps exactly the one it has.
+  const _meat = s => (s || '')
+      .replace(/\b(download|pdf|view|click here|read more)\b/gi, '')
+      .replace(/[^A-Za-z0-9]+/g, ' ').trim();
+  if (_meat(ctx).length <= 3) {
+    let up = a;
+    for (let i = 0; i < 6 && up; i++) {
+      // More than a couple of links means we have climbed out of the item and
+      // into the list holding it; that text names the section, not this file.
+      if (up.querySelectorAll && up.querySelectorAll('a[href]').length > 2) break;
+      const t = (up.innerText || '').replace(/\s+/g, ' ').trim();
+      if (_meat(t).length > 3 && t.length <= 250) { ctx = t; break; }
+      up = up.parentElement;
+    }
   }
   // Group heading = nearest heading BEFORE this link in document order. Listing
   // pages split their documents under on-page headings that never appear in the
@@ -1509,6 +2216,26 @@ def _merge_links(store: dict, links) -> dict:
             store[h]["heading_path"] = l["heading_path"]
         if not store[h].get("group") and l.get("group"):
             store[h]["group"] = l["group"]
+        # A RICHER CONTEXT WINS, the same rule as the heading trail above.
+        #
+        # MEASURED 2026-09-09 on cbj.gov.jo: 34 document link sightings, 24
+        # unique hrefs, 10 of them seen TWICE -- once from the row that names
+        # the instrument, once from a "View & Download" button beside it:
+        #
+        #     ctx: 'MOU between CBJ and TRC 2022/04/30 686KB'
+        #     ctx: 'View & Download'
+        #
+        # First-sighting-wins gave 14 of 24 the button. Its context reduces to
+        # nothing under `_ctx_title`, so `best_doc_title` fell past it to the
+        # url slug, and this site's slugs are guids.
+        #
+        # Compared through `_ctx_title` rather than raw length, so the winner is
+        # judged by what a title would actually be made of: "View & Download" is
+        # 15 characters and worth none of them.
+        if _ctx_title(l.get("ctx")) and (
+                len(_ctx_title(l.get("ctx")))
+                > len(_ctx_title(store[h].get("ctx")))):
+            store[h]["ctx"] = l.get("ctx")
     return store
 
 
@@ -1528,7 +2255,7 @@ def extract_all(page, opts=None):
     link_map = {}
     for fr in page.frames:                 # page.frames includes the main frame
         try:
-            _merge_links(link_map, fr.evaluate(JS_LINKS))
+            _merge_links(link_map, fr.evaluate(JS_LINKS, opts))
         except Exception:
             pass
         try:
@@ -2748,7 +3475,15 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                         "type": doc_type_of(href, seed_host),
                         "found_on": url,
                         "section_path": doc_section_path(
-                            breadcrumb,
+                            # `link_title_is_section`: the rail link that reached
+                            # this page names what the page is a filtered view OF,
+                            # and nothing on the page itself says it. Appended to
+                            # the BREADCRUMB, not prepended to the finished trail:
+                            # the category refines the page's own position, so it
+                            # belongs after "Forms" and before the page's own
+                            # headings. See the profile key's docs.
+                            _with_link_title(breadcrumb, link_titles.get(url, ""),
+                                             prof),
                             l.get("group") if group_headings else "",
                             nav_path_map.get(
                                 (dn, (l.get("text") or "").strip()), ""),
@@ -2762,15 +3497,55 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                     if l.get("chrome"):
                         chrome_documents.setdefault(dn, rec_doc)
                         continue
+                    # Host-level furniture, by url. Same audit list as chrome, so
+                    # `exclude_document_urls` can be checked against a real crawl
+                    # rather than trusted.
+                    if _excluded_doc_url(dn, prof):
+                        rec_doc["reason"] = "profile exclude_document_urls"
+                        chrome_documents.setdefault(dn, rec_doc)
+                        continue
                     page_docs.append(dn)
                     # Keyed by (url, section_path), not url alone: regulators
                     # deliberately cross-list one document under several sections,
                     # and each listing is a separate place in the library. The DB
                     # agrees — document_exists_by_url(url, category) is
                     # category-scoped precisely for SAMA's cross-listed documents.
+                    # NO CATEGORY COULD BE DISCOVERED FOR THIS ONE. Under
+                    # `link_title_is_section` a page's category comes from the
+                    # anchor that led to it; the seed has no such anchor, so a
+                    # document that survives only from the seed is one the site
+                    # filed under no category at all. Marked here, routed by the
+                    # wrapper's `uncategorised_source_system`.
+                    if prof.get("link_title_is_section") and not clean_doc_title(
+                            link_titles.get(url, "")):
+                        rec_doc["uncategorised"] = True
                     key = (dn, rec_doc["section_path"])
                     if key not in documents:
                         documents[key] = rec_doc
+
+            # NOTHING PUBLISHED ON THIS PAGE, AND THAT IS WORTH A ROW. See
+            # `empty_page_placeholder` in DEFAULT_PROFILE for why this is per
+            # page rather than per source.
+            ph_title = (prof.get("empty_page_placeholder") or "").strip()
+            if ph_title and not page_docs and in_scope:
+                ph_sec = doc_section_path(
+                    _with_link_title(breadcrumb, link_titles.get(url, ""), prof),
+                    "", "", None)
+                ph_key = (url, ph_sec)
+                if ph_key not in documents:
+                    documents[ph_key] = {
+                        "title": ph_title,
+                        # The page itself. There is no file to point at, and the
+                        # page is what the reader would open to check.
+                        "doc_url": url,
+                        "type": "PAGE",
+                        "found_on": url,
+                        "section_path": ph_sec,
+                        "placeholder": True,
+                    }
+                    emit({"event": "empty_page", "url": url,
+                          "section_path": ph_sec,
+                          "why": "in scope, read, and carrying no document"})
 
             if not in_scope:
                 emit({"event": "skip", "url": url, "depth": depth,
@@ -2836,8 +3611,19 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                     if murl in visited:
                         continue
                     visited.add(murl)
+                    # The panel's own Part/Section trail, when the host says its
+                    # headings are a real grouping. Without `group_headings` this
+                    # is exactly the old behaviour — every panel inherits the
+                    # page's path — which is what sio.gov.bh wants: its modals
+                    # are a flat list of laws under one sector.
+                    msec = rec["section_path"]
+                    if group_headings:
+                        trail = [t for t in (m.get("heading_path") or []) if t]
+                        if trail:
+                            msec = doc_section_path(breadcrumb, "", "",
+                                                    trail)
                     modal_records.append({
-                        "section_path": rec["section_path"],
+                        "section_path": msec,
                         "title": mtitle,
                         "url": murl,
                         "depth": depth + 1,
@@ -2960,6 +3746,26 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
     dropped_chrome = [d for u, d in chrome_documents.items() if u not in kept_urls]
 
     # Panels come after the pages so the index reads before its children.
+    # `prefer_deepest_section`: one file, one placement — the most specific one.
+    # See the profile key's docs for why this is opt-in and not the default.
+    # `documents` is keyed by (url, section_path) — the key already carries both
+    # halves, so the deepest placement is decided without touching the values.
+    if prof.get("prefer_deepest_section") and documents:
+        depth_of = lambda sp: len([x for x in (sp or "").split(" > ") if x.strip()])
+        best = {}                       # url -> the key with the deepest trail
+        for key in documents:
+            u, sp = key[0], key[1]
+            if u not in best or depth_of(sp) > depth_of(best[u][1]):
+                best[u] = key
+        keep = set(best.values())
+        dropped = len(documents) - len(keep)
+        if dropped:
+            emit({"event": "deepest_section", "kept": len(keep),
+                  "dropped": dropped,
+                  "why": "same file also found under a shallower trail"})
+            # Rebuilt by comprehension over items(), so discovery order survives.
+            documents = {k: v for k, v in documents.items() if k in keep}
+
     return _finish(out, seed_norm, records + modal_records,
                    list(documents.values()),
                    dropped_chrome, shape="generic", note=note)
@@ -3025,10 +3831,34 @@ def run_status(counts: dict) -> str:
     by design, and if 1 bad page in 150 said INCOMPLETE the word would stop meaning
     anything. Only the walk being CUT SHORT flips it — cap, dead browser, or a seed
     that never arrived (which decides scope and shape for everything after it).
+
+    ONE BAD PAGE IN 150 IS NOISE. ALL 150 IS A FAILED RUN, and that case had no
+    rule until 2026-08-27. The shape-detection trap produces it exactly:
+    `crawl_list` treats each row's PDF as a page to navigate into, so every
+    "page" is an error and no document is ever recorded — and the run reported
+    `ok`. Measured four times before this was added:
+
+        cbe.org.eg  /en/laws-regulations/regulations/circulars
+                    list, 10 pages, 10 errors, 0 documents, `ok`
+        sio.gov.bh  six sections, each  list, 0 pages, `zero`
+        moic.gov.bh /en/regulations
+                    list, 78 pages, 78 errors, 0 documents, `ok`
+        moic.gov.bh /en/regulations?about[0]=19
+                    list, 74 pages, 74 errors, 0 documents, `ok`
+
+    Two of those cost a full export apiece before anyone noticed. The rule is
+    deliberately narrow — every page errored AND nothing was collected — so a
+    run that got documents, or that had one bad page among good ones, is
+    untouched. `zero` rather than a new word: the vocabulary is already handled
+    everywhere (`_looks_ok` accepts only ok/incomplete) and a walk whose every
+    page failed did find nothing, whatever the page counter says.
     """
     if counts.get("blocked_pages"):
         return "blocked"
     if not counts.get("pages"):
+        return "zero"
+    if (counts.get("errors", 0) >= counts.get("pages", 0)
+            and not counts.get("documents")):
         return "zero"
     if (counts.get("cap_hit") or counts.get("stopped")
             or not counts.get("seed_loaded", True)):
@@ -3045,7 +3875,9 @@ def _finish(out, seed_norm, records, documents, chrome_dropped, shape, note=None
     Returns (records, documents).
     """
     # Rewrite only titles that several different documents share (SDAIA's "2025").
-    renamed = disambiguate_titles(documents)
+    # The profile comes from the seed rather than a new argument, so every caller
+    # of _finish is unchanged.
+    renamed = disambiguate_titles(documents, profile_for(seed_norm))
 
     # content_hash: what change detection compares between runs. It is the hash of
     # the page's TEXT, not its HTML — HTML churns on every deploy (build ids,

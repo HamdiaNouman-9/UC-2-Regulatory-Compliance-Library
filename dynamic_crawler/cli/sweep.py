@@ -46,6 +46,22 @@ It also carries `targets`: the urls of the documents ruled `modified`, which
 them for that command to read.
 """
 
+# FIRST, before anything opens a connection. This module runs as its OWN process
+# (monitor_jobs._sweep launches `python -m dynamic_crawler.cli.sweep`) and never
+# imports orchestrator/orchestrator.py, which is the only other place
+# truststore is injected. Without it `requests` verifies against certifi's fixed
+# bundle, which cannot complete the chain for hosts that omit their intermediate
+# certificate, and every probe to them fails with
+#     SSLCertVerificationError: unable to get local issuer certificate
+# That is recorded as `probe-failed` -- no version token -- which reads exactly
+# like a regulator with nothing to report. Measured 2026-09-15 on AML: the same
+# 11 documents gave {"probe-failed": 11} without this and {"etag": 11} with it,
+# and it affects every source in CHEAP_PROBE_SOURCES. Certificates are still
+# fully verified, against the OS store instead of certifi.
+import truststore
+
+truststore.inject_into_ssl()
+
 import argparse
 import json
 import logging

@@ -1,0 +1,53 @@
+# Saudi Exchange (Tadawul) -- Exchange Rules And Procedures
+#
+# Added 2026-09-21. Runs under the SAME snapshot-first fetch policy as SIMAH
+# (crawler/simah_wrapper.py, reused via crawler/saudi_exchange_wrapper.py), so it
+# can sit on a schedule like every other regulator without being able to repeat
+# what got saudiexchange.sa blocked: an Akamai 403 within two hours of one crawl
+# plus repeated probes from one address (config/change_signals.yml, skip_hosts).
+#
+# WHAT A SCHEDULED RUN DOES
+#   * reads the saved page from output/snapshots/tadawul.rules.html. No network.
+#   * makes a live visit ONLY when `allow_live` is true AND the saved page is
+#     older than max_age_days AND the backoff clock allows it: one navigation,
+#     no retry, and a block backs off 6h/24h/72h/7d/14d.
+#   * past grace_days with no successful refresh it RAISES rather than replay a
+#     page that may be out of date as if it were current.
+#
+# HOW TO TURN LIVE VISITS ON (allow_live) -- in this order, never the reverse
+#   1. On the machine that will run the job, take ONE visit BY HAND:
+#          python -m dynamic_crawler.formfill snapshot dynamic_crawler/hints/tadawul.rules.yml
+#      It needs a visible browser (Akamai refuses headless); on a Linux server
+#      run it under Xvfb. This is also the only way the first snapshot comes to
+#      exist -- output/snapshots/ is not part of the code, so a new machine has
+#      none, and until it does every run fails loudly and its scheduler slot is
+#      off.
+#   2. Read the result. `... snapshot <hints> --status` makes no request.
+#        ok       -> the network is accepted; go to 3.
+#        blocked  -> the backoff is recorded; leave allow_live false and stop.
+#   3. Only after an `ok`, set allow_live: true below and deploy. From then the
+#      job refreshes itself when due, inside the same limits.
+#
+# WHY allow_live SHIPS false. The block was on the development machine's
+# address; whether the production address is accepted is unknown, and the only
+# safe way to find out is one deliberate visit, not the first scheduled run.
+#
+# MUST MATCH `regulations.regulator` EXACTLY ("Saudi Exchange", 19 stored rows)
+# and is repeated in init_kwargs on purpose: a crawler that falls back to its own
+# default regulator name files every folder at the tree root and matches no
+# stored row (CMA did exactly that on 2026-09-18).
+regulator: "Saudi Exchange"
+owner: lead
+
+sources:
+  - name: "Exchange Rules And Procedures"
+    mode: custom
+    crawler_class: "crawler.saudi_exchange_wrapper.SaudiExchangeCrawler"
+    init_kwargs:
+      regulator: "Saudi Exchange"
+      source_system: "Exchange Rules And Procedures"
+      require_approved: true
+      max_age_days: 25   # monthly cron: 30 could read 'fresh' on day 29 and skip a whole month
+      grace_days: 90
+      allow_live: false
+      headed: true

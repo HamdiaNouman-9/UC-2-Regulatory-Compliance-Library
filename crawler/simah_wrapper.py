@@ -54,7 +54,13 @@ from dynamic_crawler.formfill.snapshot import (DEFAULT_GRACE_DAYS,
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HINTS = "dynamic_crawler/hints/simah.rules.yml"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# ABSOLUTE, not relative to the working directory. These used to be relative, so a
+# process started from anywhere but the repo root would look for its snapshot in
+# the wrong place, find none, and report the source as having never been captured.
+DEFAULT_HINTS = str(REPO_ROOT / "dynamic_crawler" / "hints" / "simah.rules.yml")
+DEFAULT_SNAPSHOT_DIR = str(REPO_ROOT / "output" / "snapshots")
 
 
 class SimahCrawler(FormfillCrawler):
@@ -71,12 +77,14 @@ class SimahCrawler(FormfillCrawler):
                  grace_days: int = DEFAULT_GRACE_DAYS,
                  allow_live: bool = True,
                  headed: bool = True,
-                 repo=None):
+                 repo=None,
+                 label: str = "SIMAH"):
         super().__init__(hints_path=hints_path, regulator=regulator,
                          source_system=source_system, category=category,
                          out_dir=out_dir, require_approved=require_approved,
                          in_process=False)
-        self.store = SnapshotStore(self.hints["name"], snapshot_dir,
+        self.store = SnapshotStore(self.hints["name"],
+                                   snapshot_dir or DEFAULT_SNAPSHOT_DIR,
                                    max_age_days=max_age_days,
                                    grace_days=grace_days)
         # allow_live=False makes this crawler provably incapable of generating
@@ -84,6 +92,10 @@ class SimahCrawler(FormfillCrawler):
         # is chasing an allowlist.
         self.allow_live = allow_live
         self.headed = headed
+        # What this source is called in log lines and errors. The POLICY here is
+        # generic -- it keys on the form's own name -- so Saudi Exchange reuses it
+        # rather than copying it, and a copy is what would drift.
+        self.label = label
         self.last_capture: dict = {}
         # Optional: with a repo, fetch_documents() classifies each document as
         # new or modified (see _classify). Without one it behaves exactly as
@@ -105,18 +117,18 @@ class SimahCrawler(FormfillCrawler):
 
         allowed, why = self.store.may_attempt()
         if not allowed:
-            logger.warning("SIMAH: not attempting a refresh — %s", why)
+            logger.warning("%s: not attempting a refresh — %s", self.label, why)
             return {"result": "refused", "state": state, "reason": why}
 
-        logger.warning("SIMAH: snapshot is %s, spending ONE live attempt", state)
+        logger.warning("%s: snapshot is %s, spending ONE live attempt", self.label, state)
         res = capture(self.hints, self.store, headed=self.headed)
         self.last_capture = res
         if res["result"] == "ok":
-            logger.warning("SIMAH: refreshed (%s bytes, changed=%s)",
-                           res.get("bytes"), res.get("changed"))
+            logger.warning("%s: refreshed (%s bytes, changed=%s)",
+                           self.label, res.get("bytes"), res.get("changed"))
         elif res["result"] == "blocked":
-            logger.error("SIMAH: BLOCKED (%s). Next attempt after %s. Falling back "
-                         "to the stored snapshot.", res.get("reason"),
+            logger.error("%s: BLOCKED (%s). Next attempt after %s. Falling back "
+                         "to the stored snapshot.", self.label, res.get("reason"),
                          res.get("next_attempt_after"))
         return res
 
@@ -126,7 +138,7 @@ class SimahCrawler(FormfillCrawler):
 
         if state == "missing":
             raise RuntimeError(
-                f"SIMAH has no snapshot at {self.store.html_path} and the live page "
+                f"{self.label} has no snapshot at {self.store.html_path} and the live page "
                 f"is not available ({refresh.get('result')}: "
                 f"{refresh.get('reason', '')}). Capture one from a network the site "
                 f"accepts:\n  python -m dynamic_crawler.formfill snapshot "
@@ -137,7 +149,7 @@ class SimahCrawler(FormfillCrawler):
             # current. See rule 5.
             m = self.store.manifest()
             raise RuntimeError(
-                f"SIMAH's snapshot is STALE: captured {m.get('captured_at')} "
+                f"{self.label}'s snapshot is STALE: captured {m.get('captured_at')} "
                 f"({self.store.age_days():.0f} days ago), past the {self.store.grace_days}-day "
                 f"grace period, and every refresh since has been blocked "
                 f"({m.get('consecutive_blocks')} in a row). Refusing to publish it as "
@@ -150,8 +162,12 @@ class SimahCrawler(FormfillCrawler):
         out = Path(self.out_dir) if self.out_dir else Path(
             tempfile.mkdtemp(prefix="simah_"))
         from dynamic_crawler.formfill import runner
-        runner.run(self.hints, out, fetch_details=self.fetch_details,
-                   snapshot=self.store.html_path)
+        from utils.event_loop import proactor_event_loop
+        # runner.run launches Playwright IN THIS PROCESS, which under the API
+        # server on Windows fails with NotImplementedError -- see the module.
+        with proactor_event_loop():
+            runner.run(self.hints, out, fetch_details=self.fetch_details,
+                       snapshot=self.store.html_path)
 
         pages_json = out / "pages.json"
         if not pages_json.exists():
@@ -196,7 +212,7 @@ class SimahCrawler(FormfillCrawler):
         """
         docs = super().fetch_documents(*a, **kw)
         if self.repo is None:
-            logger.info("SIMAH: no repo supplied — every document arrives as `new`")
+            logger.info("%s: no repo supplied — every document arrives as `new`", self.label)
             return docs
         return [self._classify(d) for d in docs if d is not None]
 
@@ -226,8 +242,8 @@ class SimahCrawler(FormfillCrawler):
             rid = self.repo.get_regulation_id_by_document_url(
                 doc.document_url, self.regulator)
         except Exception as e:                       # a lookup failure must not
-            logger.error("SIMAH: id lookup failed for %s: %s",  # lose the document
-                         doc.document_url, e)
+            logger.error("%s: id lookup failed for %s: %s",  # lose the document
+                         self.label, doc.document_url, e)
 
         if not rid:
             meta["monitoring_status"] = "new"
@@ -237,7 +253,7 @@ class SimahCrawler(FormfillCrawler):
         try:
             stored = self.repo.get_cbb_content_hash(rid)   # generic despite the name:
         except Exception as e:                             # plain content_hash on
-            logger.error("SIMAH: hash read failed for %s: %s", rid, e)  # regulations
+            logger.error("%s: hash read failed for %s: %s", self.label, rid, e)  # regulations
 
         meta["existing_regulation_id"] = rid
         meta["content_hash"] = new_hash
@@ -245,19 +261,19 @@ class SimahCrawler(FormfillCrawler):
 
         if stored and new_hash and stored == new_hash:
             meta["monitoring_status"] = "unchanged"
-            logger.info("SIMAH: unchanged — %s", (doc.title or "")[:60])
+            logger.info("%s: unchanged — %s", self.label, (doc.title or "")[:60])
         elif not stored:
             # Known to us but never hashed — a row inserted before change
             # detection existed. Record the hash without claiming an amendment
             # we cannot evidence.
             meta["monitoring_status"] = "unchanged"
             meta["hash_backfill"] = True
-            logger.info("SIMAH: no stored hash, backfilling — %s",
-                        (doc.title or "")[:60])
+            logger.info("%s: no stored hash, backfilling — %s",
+                        self.label, (doc.title or "")[:60])
         else:
             meta["monitoring_status"] = "modified"
-            logger.warning("SIMAH: MODIFIED — %s (%s -> %s)",
-                           (doc.title or "")[:60], (stored or "")[:12],
+            logger.warning("%s: MODIFIED — %s (%s -> %s)",
+                           self.label, (doc.title or "")[:60], (stored or "")[:12],
                            new_hash[:12])
         return doc
 

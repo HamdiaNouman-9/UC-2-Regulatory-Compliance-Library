@@ -56,6 +56,19 @@ sources:
     mode: custom
     crawler_class: "crawler.cma_crawler_wrapper.CMACrawler"
     init_kwargs:
+      # MUST MATCH THE TOP-LEVEL `regulator:` ABOVE, EXACTLY.
+      #
+      # Without this, CMACrawler.__init__'s own default ("CMA", the bare
+      # acronym) wins, and every document it produces carries
+      # doc.regulator = "CMA" while all 1979 stored rows carry
+      # "Capital Market Authority (CMA)". Confirmed 2026-09-18: that
+      # mismatch broke completeness-gate matching ("1979 stored row(s)...
+      # none of them under regulator 'CMA'"), sent every folder to the tree
+      # ROOT instead of under Kingdom of Saudi Arabia (country_for() keys on
+      # the full name from config/countries.yml), and 19 documents that the
+      # run classified as "new" logged insert SUCCESS with regulation_id
+      # NULL and were never actually written to `regulations` at all.
+      regulator: "Capital Market Authority (CMA)"
       headless: true
       source_system: "CMA-RULES"
       tabs:

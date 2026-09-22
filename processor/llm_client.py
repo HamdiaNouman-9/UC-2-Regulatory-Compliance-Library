@@ -130,7 +130,9 @@ class LLMClient:
         self.referer = referer
         self.title = title
         self.timeout = timeout
-
+        # Called with one dict per successful response -- see complete(). Set by
+        # whoever owns a database; this module stays DB-free.
+        self.on_usage = None
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("Missing OPENROUTER_API_KEY environment variable")
@@ -151,9 +153,16 @@ class LLMClient:
         }
         if expect_json:
             payload["response_format"] = {"type": "json_object"}
+        # Ask OpenRouter to include the dollar cost in `usage`.
+        payload["usage"] = {"include": True}
         if self.deterministic:
             payload["top_p"] = 1
             payload["seed"] = self.seed
+        # The provider pin (AtlasCloud, fp8) was chosen for DEFAULT_MODEL. Another
+        # model is usually not served there, so pinning it fails every call with
+        # "no endpoints found". Seed and temperature 0 still apply; only the
+        # engine is left to OpenRouter, so run-to-run determinism is weaker.
+        if self.deterministic and self.model == DEFAULT_MODEL:
             payload["provider"] = {
                 "order": [self.provider],
                 "allow_fallbacks": self.allow_fallbacks,
@@ -209,6 +218,17 @@ class LLMClient:
                         f"out={usage.get('completion_tokens')}"
                         + (f" cached={cached}" if cached else "")
                         + f" provider={body.get('provider')}")
+                    if self.on_usage:
+                        try:
+                            self.on_usage({
+                                "model": body.get("model") or self.model,
+                                "provider": body.get("provider"),
+                                "prompt_tokens": usage.get("prompt_tokens"),
+                                "completion_tokens": usage.get("completion_tokens"),
+                                "cached_tokens": cached,
+                                "cost": usage.get("cost")})
+                        except Exception as e:
+                            logger.warning(f"{tag}usage callback failed: {e}")
 
                 if choice.get("finish_reason") == "length":
                     raise TruncatedResponseError(

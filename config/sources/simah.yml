@@ -1,6 +1,6 @@
 # SIMAH — Saudi Credit Bureau
 #
-# ⚠ DISABLED ON PURPOSE. Uncomment the source below only when BOTH are true:
+# DISABLED ON PURPOSE. Uncomment the source below only when BOTH are true:
 #     1. a snapshot exists            (formfill snapshot dynamic_crawler/hints/simah.rules.yml)
 #     2. a human has approved the form after seeing a real capture
 #   Until then this file documents the intent and nothing runs — the same pattern
@@ -42,7 +42,7 @@
 # scopes by regulator and would have found no rows under the short name.
 # Corrected 2026-08-20, before any such run.
 regulator: "Saudi Credit Bureau (SIMAH)"
-owner: ai.team
+owner: Fakih
 
 # Read by build_regulator_crawler, which refuses rather than composing an empty
 # crawl. Delete this key to enable, once both gates at the top of this file are
@@ -74,7 +74,7 @@ sources:
       # bypass.
       require_approved: true
       # Refresh the snapshot after this many days; refuse to publish past grace.
-      max_age_days: 30
+      max_age_days: 25   # monthly cron: 30 could read 'fresh' on day 29 and skip a whole month
       grace_days: 90
       # FALSE, and this is the important line. It makes the crawler provably
       # incapable of generating traffic whatever the snapshot clock says. The
@@ -83,5 +83,15 @@ sources:
       #
       # Flip it only when someone has decided the block is over — that is the
       # 2026-09-04 review, not a code change.
+      #
+      # THE ORDER (2026-09-21), same as config/sources/saudi_exchange.yml:
+      #   1. approve the form (it must pass the gate before ANY run, live or not);
+      #   2. ONE visit by hand from the machine that will run the job:
+      #        python -m dynamic_crawler.formfill snapshot dynamic_crawler/hints/simah.rules.yml
+      #      `... snapshot <hints> --status` reports the state and makes NO request;
+      #   3. only after that says `ok`, set allow_live: true and deploy. A block
+      #      is recorded with its backoff and allow_live stays false.
+      # From then on the job refreshes itself when the saved page is older than
+      # max_age_days, one visit, no retry -- the schedule cannot cause more traffic.
       allow_live: false
       headed: true

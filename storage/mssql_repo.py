@@ -2571,6 +2571,109 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to mark activity {activity_id} superseded: {e}")
             raise
 
+    def get_requirements_for_regulation(self, regulation_id: int,
+                                        active_only: bool = True) -> List[dict]:
+        """Full Requirement rows for one regulation, each carrying its span
+        dates -- what GET /regulation/{id}/requirements returns."""
+        query = """
+            SELECT r.requirement_id, r.regulation_id, r.ref_key, r.title, r.description,
+                   r.source_reference, r.source_refs, rt.name AS requirement_type,
+                   r.actor, r.nature, r.condition_text, r.cross_references,
+                   r.disposition, r.disposition_reason, r.status,
+                   r.created_on, r.updated_on,
+                   s.introduced_in_version_id, s.superseded_in_version_id
+            FROM Requirement r
+            JOIN RequirementSpan s ON s.requirement_id = r.requirement_id
+            LEFT JOIN RequirementType rt ON rt.requirement_type_id = r.requirement_type_id
+            WHERE r.regulation_id = ?
+        """
+        if active_only:
+            query += " AND s.superseded_in_version_id IS NULL"
+        query += " ORDER BY r.requirement_id"
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (regulation_id,))
+                columns = [c[0] for c in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                for r in rows:
+                    for key in ("source_refs", "cross_references"):
+                        if r.get(key):
+                            try:
+                                r[key] = json.loads(r[key])
+                            except Exception:
+                                pass
+                return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch requirements for regulation {regulation_id}: {e}")
+            raise
+
+    def get_activities_for_requirement_full(self, requirement_id: int,
+                                            active_only: bool = True) -> List[dict]:
+        """Full Activity rows for one requirement -- the per-requirement
+        drill-down, and what GET /regulation/{id}/requirements nests under
+        each requirement it returns."""
+        query = """
+            SELECT a.activity_id, a.requirement_id, a.ref_key, a.title, a.description,
+                   a.suggested_department, a.suggested_activity_type, a.frequency,
+                   a.frequency_type, a.priority, a.evidence_expected, a.status,
+                   a.created_on, a.updated_on,
+                   s.introduced_in_version_id, s.superseded_in_version_id
+            FROM Activity a
+            JOIN ActivitySpan s ON s.activity_id = a.activity_id
+            WHERE a.requirement_id = ?
+        """
+        if active_only:
+            query += " AND s.superseded_in_version_id IS NULL"
+        query += " ORDER BY a.activity_id"
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (requirement_id,))
+                columns = [c[0] for c in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                for a in rows:
+                    a["evidence_expected"] = (a["evidence_expected"].split("; ")
+                                              if a.get("evidence_expected") else [])
+                return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch activities for requirement {requirement_id}: {e}")
+            raise
+
+    def get_activities_for_regulation(self, regulation_id: int,
+                                      active_only: bool = True) -> List[dict]:
+        """Every activity under every requirement of one regulation, flat --
+        what GET /regulation/{id}/activities returns. Each row keeps its
+        requirement's ref_key so the flat list can still be traced back to
+        the requirement it belongs to."""
+        query = """
+            SELECT a.activity_id, a.requirement_id, r.ref_key AS requirement_ref_key,
+                   a.ref_key, a.title, a.description, a.suggested_department,
+                   a.suggested_activity_type, a.frequency, a.frequency_type, a.priority,
+                   a.evidence_expected, a.status, a.created_on, a.updated_on,
+                   s.introduced_in_version_id, s.superseded_in_version_id
+            FROM Activity a
+            JOIN ActivitySpan s ON s.activity_id = a.activity_id
+            JOIN Requirement r ON r.requirement_id = a.requirement_id
+            WHERE r.regulation_id = ?
+        """
+        if active_only:
+            query += " AND s.superseded_in_version_id IS NULL"
+        query += " ORDER BY a.requirement_id, a.activity_id"
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (regulation_id,))
+                columns = [c[0] for c in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                for a in rows:
+                    a["evidence_expected"] = (a["evidence_expected"].split("; ")
+                                              if a.get("evidence_expected") else [])
+                return rows
+        except Exception as e:
+            logger.error(f"Failed to fetch activities for regulation {regulation_id}: {e}")
+            raise
+
     # ================================================================== #
     #  UTILITY                                                             #
     # ================================================================== #

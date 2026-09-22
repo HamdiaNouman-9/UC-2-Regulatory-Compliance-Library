@@ -62,7 +62,8 @@ def build_orchestrator(crawler):
         crawler=crawler,
         repo=repo,
         downloader=Downloader(),
-        ocr_engine=HTMLFallbackEngine()
+        ocr_engine=HTMLFallbackEngine(),
+        analyse=True
     )
 
 
@@ -115,29 +116,6 @@ def run_sama_pipeline():
         logger.info("SAMA pipeline completed successfully")
     except Exception as e:
         logger.error(f"SAMA pipeline failed: {e}", exc_info=True)
-
-def run_cbb_monitoring(from_date=None, to_date=None):
-    """
-    Run CBB monitoring pipeline via the main orchestrator.
-
-    Parameters
-    ----------
-    from_date : str | None  e.g. "2026-05-25"  (default: auto from DB)
-    to_date   : str | None  e.g. "2026-07-16"  (default: today)
-    """
-    logger.info("=" * 60)
-    logger.info("Starting CBB Monitoring Pipeline (via Orchestrator)")
-    if from_date or to_date:
-        logger.info(f"  Date range: {from_date} -> {to_date or 'today'}")
-    logger.info("=" * 60)
-    try:
-        orch = build_orchestrator(crawler=None)
-        orch.run_for_cbb(mode="monitoring", from_date=from_date, to_date=to_date)
-        logger.info("CBB monitoring pipeline completed successfully")
-    except Exception as e:
-        logger.error(f"CBB monitoring failed: {e}", exc_info=True)
-        raise
-
 
 # ==============================================================
 # OPTION 2: API-BASED EXECUTION (Trigger via API)
@@ -217,11 +195,6 @@ def trigger_full_pipeline_via_api():
         logger.error(f"Error triggering full pipeline: {e}", exc_info=True)
         raise
 
-def trigger_cbb_via_api():
-    """Trigger CBB monitoring via API"""
-    trigger_via_api("CBB")
-
-
 def trigger_monitor_via_api(job: str):
     """Start a monitor_* job through the API and return once it has STARTED.
 
@@ -258,6 +231,47 @@ def trigger_monitor_via_api(job: str):
 
 
 # ==============================================================
+# STALENESS CHECK
+# ==============================================================
+
+def _log_staleness(result: dict):
+    """Stale regulators go to the log at ERROR, one line each, so they stand out
+    in scheduler.log. Nothing is sent anywhere yet -- see GET /monitoring/staleness."""
+    stale = result.get("stale", [])
+    if not stale:
+        logger.info("Staleness check: every regulator is within its interval")
+        return
+    logger.error("Staleness check: %d regulator(s) have had no update within "
+                 "their interval", len(stale))
+    for r in stale:
+        logger.error("  STALE %s: last update %s (%s days ago, allowed %s)",
+                     r["regulator"], r["last_update"] or "never",
+                     r["days_since"], r["limit_days"])
+
+
+def run_staleness_check():
+    """DIRECT mode: run the check in this process."""
+    from jobs.staleness_alert import check_staleness
+    repo = MSSQLRepository({
+        "server": os.getenv("MSSQL_SERVER"),
+        "database": os.getenv("MSSQL_DATABASE"),
+        "username": os.getenv("MSSQL_USERNAME"),
+        "password": os.getenv("MSSQL_PASSWORD"),
+        "driver": os.getenv("MSSQL_DRIVER")
+    })
+    _log_staleness(check_staleness(repo))
+
+
+def trigger_staleness_via_api():
+    """API mode: call GET /monitoring/staleness."""
+    api_base_url = os.getenv("PIPELINE_API_URL", "http://localhost:8000")
+    response = requests.get(f"{api_base_url}/monitoring/staleness", timeout=60)
+    if response.status_code != 200:
+        raise RuntimeError(f"API returned status {response.status_code}")
+    _log_staleness(response.json())
+
+
+# ==============================================================
 # CONFIGURATION LOADER
 # ==============================================================
 
@@ -282,15 +296,19 @@ def load_scheduler_config():
 # The KSA monitoring jobs. Imported lazily inside the mapping build so a broken
 # import here cannot stop the existing SBP/SECP jobs from being scheduled.
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
-                               monitor_cbe, monitor_cheap_probes, monitor_cma,
-                               monitor_lloc, monitor_mc, monitor_mlcu,
-                               monitor_rera, monitor_sama, monitor_sio)
+                               monitor_cbe, monitor_cbj, monitor_cheap_probes,
+                               monitor_cma, monitor_edb, monitor_lloc,
+                               monitor_lmra, monitor_mc, monitor_mlcu,
+                               monitor_mlsd, monitor_moic, monitor_justice_canada,
+                               monitor_nbr, monitor_pdpa, monitor_rera,
+                               monitor_sama, monitor_saudi_exchange,
+                               monitor_sio, monitor_simah)
 
 DIRECT_JOB_MAPPING = {
+    "staleness_check": run_staleness_check,
     "sbp_pipeline": run_sbp_pipeline,
     "secp_pipeline": run_secp_pipeline,
     "sama_pipeline": run_sama_pipeline,
-    "cbb_monitoring": run_cbb_monitoring,
 
     # ---- KSA monitoring -------------------------------------------------- #
     # Grouped by what each site will answer, not by regulator. See
@@ -319,13 +337,44 @@ DIRECT_JOB_MAPPING = {
     "monitor_rera": monitor_rera,
     "monitor_sio": monitor_sio,
     "monitor_lloc": monitor_lloc,
+
+    # ---- Jordan, onboarded 2026-09-16 ------------------------------------ #
+    # Ships DISABLED in config/scheduler.yml: CBJ's workbook has been exported
+    # and checked but not yet read or promoted, and this path writes straight to
+    # MSSQL. See config/change_signals.yml for why the crawl is its signal.
+    "monitor_cbj": monitor_cbj,
+    # ---- Bahrain, onboarded on feature/crawler-dev-fakih, merged 2026-08-28 ---- #
+    # Same rule as the three above: all three ship DISABLED in
+    # config/scheduler.yml until a person has read their workbook.
+    "monitor_edb": monitor_edb,
+    "monitor_mlsd": monitor_mlsd,
+    "monitor_lmra": monitor_lmra,
+    "monitor_nbr": monitor_nbr,
+    # Canada's first. Same rule: DISABLED in config/scheduler.yml until a person
+    # has read its workbook. Its signal is a cheap probe, so once it is trusted
+    # the better home is CHEAP_PROBE_SOURCES and this entry goes away.
+    "monitor_justice_canada": monitor_justice_canada,
+
+    # monitor_moic and monitor_pdpa existed in jobs/monitor_jobs.py but were
+    # never added here or to config/scheduler.yml -- unreachable by cron OR by
+    # API_JOB_MAPPING below, found during the 2026-09-17 regulator-reachability
+    # audit. Same rule as every other new regulator: DISABLED until a person
+    # has read their workbook.
+    "monitor_moic": monitor_moic,
+    "monitor_pdpa": monitor_pdpa,
+
+    # SIMAH and Saudi Exchange, added 2026-09-21. They now HAVE jobs because the
+    # jobs read a saved page and cannot iterate against the site -- see
+    # jobs/monitor_jobs.py. Blocked hosts are still never retried by a machine.
+    "monitor_simah": monitor_simah,
+    "monitor_saudi_exchange": monitor_saudi_exchange,
 }
 
 API_JOB_MAPPING = {
+    "staleness_check": trigger_staleness_via_api,
     "sbp_pipeline": trigger_sbp_via_api,
     "secp_pipeline": trigger_secp_via_api,
     "sama_pipeline": trigger_sama_via_api,
-    "cbb_monitoring": trigger_cbb_via_api,
     "full_pipeline": trigger_full_pipeline_via_api,
 
     # ---- monitoring, reachable in API mode as of 2026-08-20 --------------- #
@@ -348,6 +397,16 @@ API_JOB_MAPPING = {
     "monitor_rera": lambda: trigger_monitor_via_api("monitor_rera"),
     "monitor_sio": lambda: trigger_monitor_via_api("monitor_sio"),
     "monitor_lloc": lambda: trigger_monitor_via_api("monitor_lloc"),
+    "monitor_cbj": lambda: trigger_monitor_via_api("monitor_cbj"),
+    "monitor_edb": lambda: trigger_monitor_via_api("monitor_edb"),
+    "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),
+    "monitor_lmra": lambda: trigger_monitor_via_api("monitor_lmra"),
+    "monitor_nbr": lambda: trigger_monitor_via_api("monitor_nbr"),
+    "monitor_justice_canada": lambda: trigger_monitor_via_api("monitor_justice_canada"),
+    "monitor_moic": lambda: trigger_monitor_via_api("monitor_moic"),
+    "monitor_pdpa": lambda: trigger_monitor_via_api("monitor_pdpa"),
+    "monitor_simah": lambda: trigger_monitor_via_api("monitor_simah"),
+    "monitor_saudi_exchange": lambda: trigger_monitor_via_api("monitor_saudi_exchange"),
 }
 
 # Choose which mode to use (set via environment variable or hardcode)

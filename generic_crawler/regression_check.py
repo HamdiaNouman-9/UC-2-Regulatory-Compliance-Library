@@ -56,6 +56,37 @@ SEEDS = {
     "sbp_circulars":  "https://www.sbp.org.pk/circulars/cir.asp",
     "cma_regs":       "https://cma.org.sa/en/RulesRegulations/Regulations/Pages/default.aspx",
     "aml_rules":      "https://www.aml.gov.sa/en-us/Pages/RulesandRegulations.aspx",
+    # Added 2026-08-18 when CBE was onboarded. One representative seed: the
+    # laws-regulations landing page, which is the shape the eleven generic CBE
+    # sources all share (breadcrumb + card grid + /-/media/ document links).
+    # Its own crawl is NOT a source — cbe.yml seeds the three subtrees beneath
+    # it instead, because prefix scope here sweeps in circulars the API owns.
+    "cbe_lawsreg":    "https://www.cbe.org.eg/en/laws-regulations",
+    # Added 2026-08-27. Every one of these hosts has a SITE_PROFILES entry, and
+    # until now nothing guarded them: a change to the shared junk list, the
+    # breadcrumb reader or _SIZE_TAIL could move their output and this check
+    # would still have said "All 8 regulators unchanged".
+    #
+    # One representative seed each, chosen as the page whose shape the rest of
+    # that regulator's sources share:
+    #
+    #   rera        content_selector #page-content + drop_selectors
+    #   sio         keep_modals — a section page whose laws are Bootstrap modals
+    #   lloc        content_selector div.bodycontent + drop_selectors; the
+    #               narrative page, not /Legislation/Latest, because that one is
+    #               a POST-driven listing a browser walk cannot read
+    #   pdpa        breadcrumb_li + keep_buttons + unhide_animated, all three at
+    #               once on the accordion page
+    #   moic        group_headings + drop_selectors .Itemlang
+    #
+    # NOTE lloc.gov.bh THROTTLES WITH A 1,245-BYTE 404. If this seed comes back
+    # `CHANGED` with an empty content_text_len, re-run after a minute before
+    # believing it — that is the host, not the crawler.
+    "rera_regs":      "https://www.rera.gov.bh/en/regulations",
+    "sio_orders":     "https://www.sio.gov.bh/en/ministerial-orders",
+    "lloc_page":      "https://www.lloc.gov.bh/en/page/Legal%20instruments%20in%20Bahraini%20legislation",
+    "pdpa_law":       "https://www.pdp.gov.bh/en/regulations.html",
+    "moic_regs":      "https://www.moic.gov.bh/en/regulations",
 }
 
 

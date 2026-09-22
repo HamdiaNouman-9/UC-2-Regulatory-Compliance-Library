@@ -27,8 +27,9 @@ def run_sama_job():
     orchestrator = Orchestrator(
         crawler=crawler,
         repo=repo,
-        downloader=downloader
+        downloader=downloader,
         # ocr_engine and llm_analyzer are optional and handled internally
+        analyse=True
     )
 
     orchestrator.run_for_regulator("SAMA")

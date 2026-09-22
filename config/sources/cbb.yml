@@ -1,3 +1,5 @@
+# 2026-09-21: cbb_others.yml was merged back into this file. Every source below is
+# active.
 # CBB — Central Bank of Bahrain
 #
 # Migrated onto the source-config flow 2026-08-20. Before that CBB was the only
@@ -75,36 +77,149 @@ sources:
   - name: "Regulations and Resolutions"
     mode: custom
     crawler_class: "crawler.cbb_source.CBBSource"
+    # ONE INSTRUMENT IN TWO LANGUAGES IS ONE ROW. MEASURED on the 2026-09-04
+    # export of this source, 71 rows: three pairs are the same instrument
+    # published twice.
+    #
+    #   Resolution No. (22) of 2021   same title, same doc_path, SAME
+    #   Resolution No. (23) of 2021   content_hash; the urls differ only by an
+    #                                 "_Arabic" suffix
+    #   Resolution No. (34) of 2010   "(Arabic)" / "(English)" trails the title
+    #                                 AND the last doc_path crumb
+    #
+    # They survived as six rows because document_url is a third of the default
+    # identity. This folds each pair into the C19 multi-attachment shape --
+    # document_url empty, both files in extra_meta.attachment_links, identity
+    # declared as (doc_path, attachment_links, title). 71 rows -> 68.
+    #
+    # READ BY CompositeCrawler, NOT by the crawler class:  returns
+    # at  before any wrapper key is read, so this key would be
+    # invisible if the merge still lived on GenericSiteCrawler.
+    #
+    # IT DOES NOT TOUCH THE CONTAMINATED PAIRS. Five hashes are shared by ten
+    # rows here while only three titles are, so two pairs are different
+    # instruments carrying each other's text. Grouping on title means those never
+    # fuse -- merging them would hide the fingerprint bug rather than fix it.
+    merge_files_at_same_path: true
     init_kwargs:
       mode: "1"
       source_system: "CBB-Regulations-and-Resolutions"
 
-  # Mode 2c. The rulebook volumes, walked from the site's own sidebar
-  # (cbb_test_crawlers/cbb_rulebook_crawler.py). The largest of the seven.
-  # CAPPED WHILE THE FLOW IS BEING PROVEN. MEASURED 2026-08-20: the uncapped
-  # sidebar walk ran 80 minutes without finishing and the export was killed with
-  # nothing written, because `export` only writes the workbook at the very end.
-  # The sidebar has 30 top-level entries and every folder node costs its own
-  # request at REQUEST_DELAY=1.2s.
+  # ---- Mode 2c. The rulebook, ONE SOURCE PER VOLUME ----------------------
   #
-  # REMOVE `max_volumes` FOR THE REAL RUN, and give it a long evening. A capped
-  # run is a proof, not an inventory: it under-reports by design, so it must
-  # never be promoted as if it were the whole rulebook.
-  - name: "Rulebook"
+  # SPLIT 2026-09-07, from a single "Rulebook" source writing "CBB-Rulebook".
+  #
+  # Section 3 above argues that CBB must be seven sources and not one, so that a
+  # section returning nothing is VISIBLE rather than absorbed into a bigger
+  # number. That argument was never carried one level down: mode 2c walks eight
+  # volumes into a single flat list, so the whole rulebook shared one baseline
+  # and one completeness gate. MEASURED on a 2026-09-07 run:
+  #
+  #   Common Volume   153 docs in ~6 minutes
+  #   Volume 1        still running at 18 minutes
+  #
+  # Three costs, and the split answers all three:
+  #
+  #   1. NOTHING IS USABLE UNTIL THE LAST VOLUME LANDS. The run is the sum of
+  #      eight walks, each thousands of sequential requests at 1.2s.
+  #   2. ONE FAILURE COSTS EVERYTHING. A drop anywhere leaves the single
+  #      baseline short, so the gate quarantines the run and seven good volumes
+  #      go down with the eighth. Split, only the volume that actually came
+  #      back short is quarantined; the rest keep their baselines.
+  #   3. AN EMPTY VOLUME WAS INVISIBLE. `orch._docs_by_source` gives every
+  #      declared source a row even when it produced nothing -- but only if it
+  #      IS a source. Under one name, a volume returning zero just made the
+  #      total smaller.
+  #
+  # `max_volumes` could not do this: it is `volumes[:n]`, a PREFIX, so there was
+  # no way to say "Volume 5". `volume:` names one, matched case-insensitively on
+  # the sidebar title; CBBSource raises unless the name matches exactly one.
+  #
+  # THE SOURCE_SYSTEMS MUST STAY DISTINCT. They are what scopes `disappeared`
+  # and the gate, and what would make `only_sources` narrowing safe if it is
+  # ever exposed on `export` -- narrowing is unsafe where the sources left out
+  # share a source_system with the ones kept.
+  #
+  # RUNTIME IS UNCHANGED: all eight still run in one `export`. What changed is
+  # that the eight are now measured, quarantined and reported separately.
+  - name: "Rulebook — Common Volume"
     mode: custom
     crawler_class: "crawler.cbb_source.CBBSource"
     init_kwargs:
       mode: "2c"
-      source_system: "CBB-Rulebook"
-      # UNCAPPED as of 2026-08-24. The cap existed to prove the flow; the proof
-      # is done (1,464 documents, 7/7 sources PASS). A full walk is thousands of
-      # sequential requests at REQUEST_DELAY=1.2s -- give it hours, and run it
-      # with `-u` so its progress is visible rather than buffered.
-      # max_volumes: 1
+      volume: "Common Volume"
+      source_system: "CBB-Rulebook-Common"
 
-  # ---- cbb.gov.bh ---------------------------------------------------------
-  # Modes 2a and 2b share a crawler (Aml_crawler_v2) but write under different
-  # names, which is exactly why they are two sources rather than one.
+  - name: "Rulebook — Volume 1 Conventional Banks"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 1"
+      source_system: "CBB-Rulebook-Vol-1"
+
+  - name: "Rulebook — Volume 2 Islamic Banks"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 2"
+      source_system: "CBB-Rulebook-Vol-2"
+
+  - name: "Rulebook — Volume 3 Insurance"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 3"
+      source_system: "CBB-Rulebook-Vol-3"
+
+  - name: "Rulebook — Volume 4 Investment Business"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 4"
+      source_system: "CBB-Rulebook-Vol-4"
+
+  - name: "Rulebook — Volume 5 Specialised Licensees"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 5"
+      source_system: "CBB-Rulebook-Vol-5"
+
+  - name: "Rulebook — Volume 6 Capital Markets"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 6"
+      source_system: "CBB-Rulebook-Vol-6"
+
+  # OVERLAPS THE CAPITAL MARKET SOURCE. Volume 7 is Collective Investment
+  # Undertakings, and `cbb-capital-market-regulations` links the same volume --
+  # where it is crawled through a stale endpoint that yields the superseded BDE
+  # module (see the KNOWN GAP note in crawler/cbb_source.py). Whichever of the
+  # two ends up owning this content, it must not be BOTH: two source_systems
+  # holding one instrument means two identities and two review queues for it.
+  # KEPT ALONGSIDE `CBB-Capital-Market-Regulations` ON PURPOSE (decided 2026-09-21: both
+  # are on the website). Volume 7 is Collective Investment Undertakings, and the
+  # capital-market source links the same volume through an older endpoint, so the same
+  # instrument can be stored under BOTH source_systems -- two identities, two review
+  # queues. Accepted; if it becomes a nuisance, narrow one of the two.
+  - name: "Rulebook — Volume 7 Collective Investment Undertakings"
+    mode: custom
+    crawler_class: "crawler.cbb_source.CBBSource"
+    init_kwargs:
+      mode: "2c"
+      volume: "Volume 7"
+      source_system: "CBB-Rulebook-Vol-7"
+
+  # # ---- cbb.gov.bh ---------------------------------------------------------
+  # # Modes 2a and 2b share a crawler (Aml_crawler_v2) but write under different
+  # # names, which is exactly why they are two sources rather than one.
   - name: "AML Law"
     mode: custom
     crawler_class: "crawler.cbb_source.CBBSource"

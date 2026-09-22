@@ -1,0 +1,165 @@
+# LMRA — Bahrain's labour-market legislation. CUSTOM, like MOH, MLCU and EDB.
+#
+#   Measured 2026-08-20, cached in UC-2-Scratch/LMRA/. SIX entries, 46 documents:
+#   1 + 7 + 18 + 5 + 14 + 1, which is exactly the four tabs asked for.
+#
+# An instrument here is normally an HTML PAGE, not a file: `/en/legal/show/<id>`
+# carries the whole text of its decree or resolution. Two of the six entries are
+# different and are handled by a different class — see "TWO SHAPES" below.
+#
+# NO ETag and NO Last-Modified on any dynamic page. robots.txt and sitemap.xml
+# are both 404. Every cheap signal was measured and ruled out, so this source is
+# `signal: crawl`; full measurements on the change_signals.yml entry.
+#
+# IDENTITY IS THE DEFAULT, deliberately. Every `/en/legal/show/<id>` and
+# `/en/page/show/<id>` url is unique and stable, no title repeats within a
+# folder, and no url carries a version suffix — nothing behaves like MLCU's
+# `_v2`. So no `identity:` key, which also means change_signals.yml has nothing
+# to keep in step.
+
+regulator: "Labour Market Regulatory Authority (LMRA)"
+owner: Fakih
+
+# THE FINGERPRINT is the instrument's visible text, NFKC-normalised.
+#
+# Measured across three fetches a second apart on a listing page, a detail page
+# and an article page: the RAW BODY was byte-identical every time and so was the
+# `#page_content` text. There is no per-request token to defeat here — no
+# __VIEWSTATE, no CSRF meta, no nonce. Text is therefore a CHOICE, not a
+# necessity, and it is chosen for the reason the onboarding doc gives: raw HTML
+# moves whenever LMRA redeploys a template, which would report all 46 documents
+# modified for a footer change.
+#
+# `#page_content` is the scope. The page's chrome — the nav, the footer, and a
+# SERVICE-OUTAGE MODAL THAT CARRIES ITS OWN DATES — sits outside it. Hashing the
+# whole body would have moved every one of the 46 fingerprints the next time
+# LMRA scheduled maintenance.
+#
+# "LAST UPDATE: <date>" IS INSIDE THE HASHED TEXT, deliberately. It is the site's
+# own change stamp, it is visible text on the page, and it is stable (measured:
+# `Thursday 8 February 2024` on a document badged 08-02-2024, identical across
+# three fetches — it is stored, not rendered from `now`). It is ALSO reported on
+# its own as extra_meta["last_update"], so a reviewer looking at a `modified` row
+# can see whether the stamp is the only thing that moved. Cutting it out of the
+# text instead would make the fingerprint no longer reproducible from what a
+# reader sees, which is the property that makes a text hash checkable at all.
+
+# DEVELOPMENT-ONLY FLAG, DELIBERATELY ABSENT: `page_cache_dir`, also read from
+# LMRA_PAGE_CACHE_DIR. A cache serving production is a stale law reporting
+# `unchanged` after an amendment. This config crawls live, every run.
+
+# TWO SHAPES, TWO CLASSES.
+#
+#   LMRALegalCategoryCrawler   the four `/en/legal/category/<id>` listings. Each
+#                              row's own page holds the full instrument.
+#
+#   LMRAInstrumentCrawler      the two `/en/page/show/<id>` landing pages that
+#                              each ARE one law. `text_from` says where the text
+#                              comes from, because the two differ:
+#                                LMRA Law    — 47 `Article N` sub-pages, which is
+#                                  the site's ONLY rendering of the law's text.
+#                                  Walking them means an article amended IN PLACE
+#                                  moves the fingerprint. Costs 48 requests.
+#                                Labour Law  — the landing page carries a summary
+#                                  and nothing else; the law is its PDF.
+#                              ONE ROW EACH, not 47 and not 0. An article is not
+#                              an instrument, and the library stores instruments.
+#
+# SIX ENTRIES, NOT ONE CRAWLER WALKING SIX. The completeness gate groups on
+# extra_meta["crawl_source"] and re-keys per source, so six categories inside one
+# class would share ONE baseline and be measured against another category's count
+# — the ZATCA pathology, which quarantines every run. Six sources also give each
+# category its own folder, which is what scopes `disappeared`.
+#
+# `init_kwargs.regulator` is set on EVERY entry because for mode: custom
+# build_source passes only init_kwargs (generic_crawler_wrapper.py:553); the
+# top-level `regulator:` reaches the report label, not the stored rows. That is
+# how CMA's stored name and its change_signals.yml entry came to disagree while
+# both looked right.
+sources:
+  - name: "LMRA Law"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRAInstrumentCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      page_url: "https://www.lmra.gov.bh/en/page/show/5"
+      instrument_title: "ACT NO. (19) (2006) WITH REGARD TO THE REGULATION OF THE LABOUR MARKET"
+      folder_title: "LMRA Law"
+      text_from: articles
+      # A FLOOR, NOT THE COUNT. 47 articles were measured; naming 47 here would
+      # turn LMRA adding an article into a crawl failure. Zero is the failure.
+      min_articles: 20
+
+  - name: "Decrees"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRALegalCategoryCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      category_id: "2"
+      category_url: "https://www.lmra.gov.bh/en/legal/category/2"
+      category_title: "Decrees"
+
+  - name: "Board of Directors Resolutions"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRALegalCategoryCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      category_id: "1"
+      category_url: "https://www.lmra.gov.bh/en/legal/category/1"
+      category_title: "Board of Directors Resolutions"
+
+  - name: "Cabinet Resolutions Regarding LMRA Fees"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRALegalCategoryCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      category_id: "3"
+      category_url: "https://www.lmra.gov.bh/en/legal/category/3"
+      category_title: "Cabinet Resolutions Regarding LMRA Fees"
+
+  - name: "Resolutions of Other Entities Related to LMRA Duties"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRALegalCategoryCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      category_id: "4"
+      category_url: "https://www.lmra.gov.bh/en/legal/category/4"
+      category_title: "Resolutions of Other Entities Related to LMRA Duties"
+
+  - name: "Labour Law"
+    mode: custom
+    crawler_class: "crawler.lmra_crawler.LMRAInstrumentCrawler"
+    init_kwargs:
+      regulator: "Labour Market Regulatory Authority (LMRA)"
+      source_system: "LMRA Legislations"
+      page_url: "https://www.lmra.gov.bh/en/page/show/199"
+      instrument_title: "LAW NO. 36 OF 2012 PROMULGATING THE LABOUR LAW FOR THE PRIVATE SECTOR"
+      folder_title: "Labour Law"
+      text_from: pdf
+      # LMRA headings this page `Labour Law`; the instrument is Law 36/2012 and
+      # is titled as such above. The guard asks whether the PAGE has moved, so it
+      # is given what the page says — otherwise it warns on every run about a
+      # difference that is permanent and correct.
+      expected_heading: "Labour Law"
+
+# NOT LISTED, DELIBERATELY. The Legislations page carries EIGHT tiles; the four
+# tabs asked for cover six of them. The other two are:
+#
+#   "Legislations on Cybersecurity"  /en/legal/category/5, THREE documents. Real
+#     legislation on this site, outside the tabs scoped on 2026-08-20. Adding it
+#     is ONE more entry above, not a rethink.
+#   "Personal Data Protection Law"   a link off to pdp.gov.bh — a DIFFERENT
+#     regulator on a different domain. It needs its own onboarding, its own
+#     change signal and its own name; crawling it from here would file another
+#     authority's law under LMRA.
+#
+#   /ar/*  is a COMPLETE ARABIC MIRROR. Arabic is the authoritative text in
+#     Bahrain and English is a translation — the Labour Law PDF says so in its
+#     own words — so this is a real gap, not an oversight. It doubles the corpus
+#     and was scoped out on 2026-08-20.
+#   blog.lmra.gov.bh, /en/announcement  news, not instruments.

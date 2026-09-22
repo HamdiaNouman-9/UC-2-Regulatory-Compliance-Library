@@ -68,7 +68,7 @@ class FormfillCrawler(GenericSiteCrawler):
                  category: Optional[str] = None, out_dir: Optional[str] = None,
                  require_approved: bool = True, fetch_details: Optional[bool] = None,
                  in_process: bool = False, timeout: int = 14400,
-                 only_urls: Optional[list] = None):
+                 only_urls: Optional[list] = None, headed: bool = False):
         self.hints_path = str(hints_path)
         self.hints = load_hints(self.hints_path)
         ok, why = approval_state(self.hints)
@@ -102,6 +102,11 @@ class FormfillCrawler(GenericSiteCrawler):
         # and never reached the orchestrator, so a targeted crawl produced no
         # versioned rows and nothing was stored. This carries it through.
         self.only_urls = list(only_urls) if only_urls else None
+        # For a live demo: --headed pops a real, visible browser window on
+        # THIS machine's desktop instead of running invisibly. Only takes
+        # effect on an actual crawl -- reuse_last skips _run_crawl entirely
+        # (it reads a stored pages.json instead), so no browser opens then.
+        self.headed = headed
 
     def _run_crawl(self) -> dict:
         """Run the form instead of the generic engine. Everything downstream —
@@ -122,6 +127,8 @@ class FormfillCrawler(GenericSiteCrawler):
                    self.hints_path, "--out", str(out)]
             if self.fetch_details is False:
                 cmd.append("--no-details")
+            if self.headed:
+                cmd.insert(3, "--headed")  # a top-level flag, before the "run" subcommand
             if self.only_urls:
                 # --only-urls takes a FILE of urls, one per line. Written beside
                 # the run's output so a failed run can be re-read to see exactly

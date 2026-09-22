@@ -1,0 +1,278 @@
+# PDPA — Personal Data Protection Authority, Bahrain
+#
+# CONFIRM THE REGULATOR STRING BEFORE THE FIRST PROMOTE. Taken from the site's
+# own wording plus the acronym in its domain, not from an existing library row.
+# Config lookups match this string exactly and fall back to defaults SILENTLY.
+#
+# ---------------------------------------------------------------------------
+# 1. SCOPE: THE LAW AND EXECUTIVE DECISIONS/ORDERS
+# ---------------------------------------------------------------------------
+# The site has three sections worth holding. Two are configured here:
+#
+#   /en/regulations.html           62 rows  <- 60 articles + 2 files, source 1
+#   /en/executive-decisions.html   20 rows  <- 20 documents in 10 decisions,
+#                                              source 2
+#   /en/forms.html                  6 documents  NOT CONFIGURED
+#
+# CORRECTED 2026-08-28. Section 1 used to say "Executive Decisions only" and that
+# The Law was deliberately left out. It is in, and section 4 records what changed
+# and why the original reasoning was wrong. `/en/forms.html` is still out, and
+# that one is genuinely a decision rather than an oversight: it is application
+# forms, not instruments.
+#
+# 82 rows, 109 folders, `check` verdict OK.
+#
+# ---------------------------------------------------------------------------
+# 2. THE FOLDER PER DECISION COMES FROM `heading_selector`
+# ---------------------------------------------------------------------------
+# Each decision is a pair of pdfs — the Arabic original and its English
+# translation — under a name that is NOT a heading element:
+#
+#   <div class="executive-decisions-pdf">
+#     <div class="block">Regarding Data Protection Guardians</div>
+#     <div class="block"> <a>تحميل باللغة العربية</a> <a>Download in English</a> </div>
+#   </div>
+#
+# JS_LINKS read h1-h4/legend/caption only, so before `heading_selector` was set
+# for this host in generic_crawler/crawler.py SITE_PROFILES all twenty documents
+# came back under the single page heading — one folder, twenty files, the ten
+# decisions invisible. Measured after the change:
+#
+#   Home > Executive Decisions/Orders > Regarding Data Protection Guardians    2
+#   Home > Executive Decisions/Orders > Regarding the Data Subject's rights    2
+#   Home > Executive Decisions/Orders > Regarding the transfer of personal ... 2
+#   ... ten decisions, two documents each, 20 total
+#
+# The selector ends `> .block:first-child` on purpose: BOTH children carry class
+# `block`, and the second holds the download links, so naming `.block` alone
+# would make a link's nearest heading its own container and every decision would
+# be called "تحميل باللغة العربية Download in English".
+#
+# ---------------------------------------------------------------------------
+# 3. THE TITLES ARE SLUGS, AND THAT IS THE BEST THE PAGE OFFERS
+# ---------------------------------------------------------------------------
+# The two links say only "تحميل باللغة العربية" and "Download in English", which
+# `best_doc_title` correctly rejects as generic, so titles fall back to the file
+# slug: "Trans Order Auditor Tasks", "Trans Order Auditor Tasks En".
+#
+# THE ORDER NUMBER IS NOT ON THE PAGE. "Order No. (46) of 2022" — the name these
+# documents should carry — appears ZERO times in the html; it is inside the pdfs.
+# So a workbook from this source will show slug titles, and getting the real
+# numbers means reading the files or entering them by hand. Do not approve these
+# titles as final without looking at them.
+#
+# The Arabic/English pair is visible in the row: the English file is the one
+# whose slug ends `-en`, and both sit in the same decision folder.
+#
+# ---------------------------------------------------------------------------
+# 4. THE LAW: ONE ROW PER ARTICLE, FOLDERED PART > SECTION
+# ---------------------------------------------------------------------------
+# CORRECTED 2026-08-28. This section previously said the Law could not be a
+# source. That was half right and the half that was wrong mattered.
+#
+# WHAT IS TRUE: the articles carry no file link. All 60 are text, and the page
+# offers exactly two downloadable documents (regulations.pdf and the Official
+# Gazette copy). Nothing about that changed.
+#
+# WHAT WAS WRONG: I read that as "the articles cannot be rows". They can — they
+# are already the shape `keep_modals` reads:
+#     <button data-target="#faqOne">Article (1) Definitions</button>
+#     <div class="collapse" id="faqOne"> ...the article text... </div>
+# Measured: 61 panels found, 60 kept, bodies of 1,292-4,017 characters, each
+# stored at `regulations.html#faqOne`.
+#
+# THE PART AND SECTION FOLDERS come from h4/h5 elements that precede each
+# accordion. JS_MODALS now walks backwards for them and reads textContent rather
+# than innerText, which is the only reason it works: those headings are exactly
+# the ones WOW.js leaves at `visibility: hidden`, and innerText returns "" for a
+# hidden element. Measured distribution:
+#
+#   Personal Data Protection Law > Section One..Five   26 articles
+#   Part II                      > Section One..Three  20
+#   Part 3                       > Section One..three  14
+#                                                      60
+#
+# THE PAGE'S OWN LABELS ARE INCONSISTENTLY NUMBERED. The site writes the first
+# part as "Personal Data Protection Law" with no "Part I" at all, then "Part II",
+# then "Part 3", and its sections vary in case ("Section two"). What the tree
+# shows is the site's own wording, verbatim; renaming it to match the pdf would
+# be inventing folders the site does not publish.
+#
+# CORRECTED 2026-08-31. This paragraph used to say the fuller names — "Part I -
+# Provisions with respect to processing" — "live in the pdf, not the html". They
+# are in the html, in the <p> that follows each heading:
+#     <h5>Section Three</h5><p>Transfer of Personal Data outside the Kingdom</p>
+# and all eleven divisions are written that way. `heading_subtitle` in the host
+# profile joins the two, which is why the folders now read
+#
+#   Personal Data Protection Law - Provisions with respect to processing
+#     Section One - Introductory Provisions                     2
+#     Section Two - General rules for legitimate Processing     9
+#     Section Three - Transfer of Personal Data outside ...     2
+#     Section Four - Notifications and Authorizations           3
+#     Section Five - Rights of the Data Subject                10
+#
+# rather than five folders called "Section One" through "Section Five" repeated
+# once per Part. The subtitle is appended only when it immediately follows the
+# heading, is short, and differs from it.
+#
+# THE PAGE RECORD IS THE PREAMBLE, NOT THE WHOLE PAGE. `include_pages: always`
+# stores this page as a row of its own, and it used to hold all 119,277 captured
+# characters — every article of the law a second time, on top of the 60 article
+# rows. `page_text_stops_at_children` in the host profile ends the page's text at
+# the heading block that opens the accordion, leaving the 3,277 characters that
+# are the law's own preamble: the royal citation list, First through Fourth
+# Article, and the enactment date. Everything after it is in the folders.
+#
+# ---------------------------------------------------------------------------
+# 4b. WHAT WOULD STILL NOT WORK
+# ---------------------------------------------------------------------------
+# The articles are TEXT, not files, so a row's `document_url` is its fragment
+# (`regulations.html#faqOne`) and there is nothing to download per article. The
+# two real files stay as their own rows. Anyone expecting a pdf per article will
+# not find one, and that is the site, not the crawl.
+#
+# ---------------------------------------------------------------------------
+# 5. THE HOST PROFILE DOES THE REST
+# ---------------------------------------------------------------------------
+# generic_crawler/crawler.py SITE_PROFILES["www.pdp.gov.bh"] carries NINE
+# settings, every one of them measured on this host. Each has a docstring at its
+# DEFAULT_PROFILE entry; the one-liners here are a map, not the argument:
+#
+#   breadcrumb_li                the crumbs are bare <li>s, so section_path
+#                                read "Home"
+#   keep_buttons                 the accordion headings on the Law page ARE
+#                                <button>s — 62 of them, 2,848 characters
+#   unhide_animated              WOW.js left 58 of 68 elements at
+#                                visibility:hidden, most of the law among them
+#   keep_modals                  each accordion panel becomes its own record:
+#                                61 panels found, 60 kept
+#   page_text_stops_at_children  the page's own text ends where its children
+#                                begin — 119,277 -> 3,618 captured characters
+#   group_headings               a record's folder trail comes from the headings
+#                                above it, not just the breadcrumb
+#   heading_subtitle             "Section Three" + "Transfer of Personal Data
+#                                outside the Kingdom" are one folder name
+#   heading_selector             .executive-decisions-pdf > .block:first-child —
+#                                see section 2
+#   drop_selectors               .breadcrumb-area — the banner and its repeated
+#                                title
+#
+# ---------------------------------------------------------------------------
+# 6. WHY THE RUN REPORTS `incomplete`
+# ---------------------------------------------------------------------------
+# `max_pages: 1` is deliberate — the seed IS the section. The six urls left
+# queued are the site's own nav (index, about-PDPA, royal-decree, regulations,
+# forms), not part of this section. `incomplete` here means "did not walk the
+# rest of the site".
+#
+# ---------------------------------------------------------------------------
+# 7. MONITORING: `crawl`, AND HERE THAT IS THE CHEAPEST QUESTION
+# ---------------------------------------------------------------------------
+# config/change_signals.yml carries both sources as `signal: crawl`, and
+# jobs/monitor_jobs.py has monitor_pdpa(). Usually `crawl` means "no cheap
+# question is possible". Here it means the opposite: both sources are
+# `max_pages: 1`, so THE WHOLE REGULATOR IS TWO PAGE LOADS, and nothing a probe
+# loop could ask is cheaper. Measured 2026-08-31:
+#
+#   sitemap            does not exist. /sitemap.xml, /sitemap_index.xml and
+#                      /en/sitemap.xml all answer 403 in 111 bytes from
+#                      `server: AmazonS3`, and so does a control path that cannot
+#                      exist — S3's answer for a missing key. NOT a block:
+#                      /en/regulations.html answers 200 in 163,302 bytes to a
+#                      plain request carrying only a User-Agent.
+#   stored-inventory   available — every document returns a stable opaque ETag —
+#                      and wrong for both sources. On The Law, 60 of 62 rows are
+#                      anchors into ONE page and share one ETag (`#faqOne` and
+#                      `#faqTwo` both return 35237d1023d5c414d38d47a2c379fbae),
+#                      so it would call all 60 articles modified on any edit to
+#                      that page. On Executive Decisions the 20 pdfs each have
+#                      their own honest ETag, but InventorySweep is
+#                      covers_inventory = False: it re-reads only urls we already
+#                      store and can never see a NEW decision.
+#   snapshot-articles  right shape, wrong plumbing. The page parses into 60
+#                      labelled articles with 60 distinct hashes — but only with
+#                      Bootstrap 4 class names (`card-header`/`card-body`); the
+#                      module's defaults are Bootstrap 5 and parse 0 items, and
+#                      snapshot_sweep() does not thread the names through. It
+#                      also reads a saved snapshot, because it exists for SIMAH —
+#                      a host we are blocked from. We can crawl this one.
+#   sama-feed          no "what changed" page on the site.
+#
+# The crawl already gives what snapshot-articles would: 82 rows with 82 DISTINCT
+# content_hash values, one per article, each over that article's own text.
+#
+# KNOWN GAP. A pdf silently REPLACED at the same url with the same link text is
+# invisible. For a discovered document the engine stamps
+# content_hash = hash("<url>|<title>") (generic_crawler/crawler.py:3476); the
+# ETag-reading stamp_declared() path runs only for --documents entries, which this
+# config does not use. So the crawl sees additions, removals and retitles, and not
+# that.
+#
+# monitor_pdpa is `enabled: false` in config/scheduler.yml until PDPA has a
+# baseline in the library — without one, all 82 rows read as new.
+
+regulator: "Personal Data Protection Authority (PDPA)"
+owner: lead
+
+sources:
+  # ---- the Law, one row per article -------------------------------------- #
+  # `include_pages: always` because the ARTICLES ARE PAGE RECORDS here — each
+  # accordion panel is stored as its own `#fragment` url, and `auto` would judge
+  # them by the page-text rule instead of keeping them all.
+  #
+  # `min_page_text: 50` for the same reason SIO needs it: a short article is
+  # still an article. The shortest measured body is well above this, so the
+  # threshold is headroom rather than a fix.
+  - name: "The Law"
+    mode: generic
+    seed_url: "https://www.pdp.gov.bh/en/regulations.html"
+    scope: prefix
+    strategy: generic
+    # source_system IS "The Law", THE PAGE'S OWN TITLE, and it has to be.
+    #
+    # It first read "Personal Data Protection Law" — which is ALSO the <h4> the
+    # site puts above Part I. `_clean_trail` drops a crumb that repeats one
+    # already in the trail, so that h4 was deleted as a duplicate of the source
+    # system and Part I's five sections lost their parent: they sat beside
+    # Part II and Part 3 instead of inside a Part of their own.
+    #
+    # Naming the source after the page instead leaves the h4 free to be a folder:
+    #   PDPA | The Law | Personal Data Protection Law | Section One | Article (1)
+    #   PDPA | The Law | Part II                      | Section One | Article (27)
+    #   PDPA | The Law | Part 3                       | Section One | ...
+    # which is the law's own three-part shape.
+    source_system: "The Law"
+    include_pages: always
+    min_page_text: 50
+    doc_path_title: true
+    max_pages: 1
+    max_depth: 1
+
+  - name: "Executive Decisions/Orders"
+    mode: generic
+    seed_url: "https://www.pdp.gov.bh/en/executive-decisions.html"
+    scope: prefix
+    strategy: generic
+    source_system: "Executive Decisions/Orders"
+    include_pages: never       # the page is the index, not a document
+    doc_path_title: true       # never promoted, so the order can be the leaf
+    # ONE ROW PER DECISION, CARRYING BOTH LANGUAGES.
+    #
+    # Each decision is published twice — an Arabic original directly under
+    # /executive-decisions/ and an English translation under
+    # /executive-decisions/eng/. MEASURED: 20 files, /eng/ separates them exactly
+    # (10 of 20), and no two urls in a folder are identical.
+    #
+    # Stored two rows deep they read as two documents with the same title,
+    # distinguishable only by url. The sanctioned shape is docs/final_changes.md
+    # C19: document_url empty, both files in extra_meta.attachment_links, and
+    # identity DECLARED as doc_path + attachment_links + title, since an empty
+    # url collapses the default identity.
+    #
+    # ACCEPTED COST, from C19: a decision that gains or loses a pdf changes
+    # identity, so it reads as one `new` plus one `disappeared` rather than
+    # `modified`. That is the price of not letting file order name the row.
+    merge_files_at_same_path: true
+    max_pages: 1
+    max_depth: 1

@@ -32,7 +32,8 @@ def run_secp_job():
         repo=repo,
         downloader=downloader,
         #ocr_engine=ocr_engine
-        ocr_engine=None
+        ocr_engine=None,
+        analyse=True
     )
 
     orchestrator.run_for_regulator("SECP")

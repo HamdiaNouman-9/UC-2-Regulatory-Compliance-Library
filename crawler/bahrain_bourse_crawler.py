@@ -108,8 +108,6 @@ BASE = "https://bahrainbourse.com"
 LISTING_PAGE = f"{BASE}/EN/RULES%20AND%20REGULATIONS/LEGALFRAMEWORK"
 API = "https://webapi.bahrainbourse.com/api/data/GetFaq"
 
-# See "THE DOUBLE-ENCODING TRAP" above — do not replace with a single
-# urlencode of the plain list path, it returns an empty result.
 LIST_URL_PARAM = "%2Fen%2FRules%2520and%2520Regulations%2FLegalFramework%2FLists%2FFAQ"
 
 # Embedded in every page of this site (var APIKey = '...' in the page HTML) —

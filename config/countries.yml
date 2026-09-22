@@ -48,9 +48,28 @@ countries:
     - "Anti-Money Laundering Permanent Committee (AML)"
     - "Zakat, Tax and Customs Authority (ZATCA)"
 
+  # Onboarded 2026-09-08 with config/sources/cbj.yml. Listed at onboarding
+  # rather than at first crawl for the reason the Bahrain block below records:
+  # an unlisted regulator keeps its folders at the TREE ROOT, and every document
+  # is still correct, so nothing else complains.
+  "Jordan":
+    - "Central Bank of Jordan (CBJ)"
+
   "Egypt":
     - "Central Bank of Egypt (CBE)"
     - "Egyptian Anti-Money Laundering and Counter-Terrorism Financing Unit (MLCU)"
+
+  # Onboarded 2026-09-07. A `mode: declared` single-instrument source.
+  # Listed here at onboarding rather than at first crawl for the reason the
+  # Bahrain block below records: an unlisted regulator keeps its folders at the
+  # TREE ROOT, and the documents are all correct, so nothing else complains.
+  # NAME IS THE ONBOARDING SHEET'S, column "Regulator / Framework", verbatim.
+  # It names an instrument rather than an authority, so it does not carry the
+  # "Full Name (ACRONYM)" shape the rest of this file uses. That is deliberate:
+  # this string is identity, it must match config/sources/kdipa.yml exactly, and
+  # a near miss falls back to defaults silently rather than erroring.
+  "Kuwait":
+    - "REGULATION GOVERNING COLLECTIVE INVESTMENT SCHEME JUNE 2013"
 
   "Bahrain":
     - "Central Bank of Bahrain"
@@ -62,4 +81,18 @@ countries:
     - "Real Estate Regulatory Authority (RERA)"
     - "Social Insurance Organisation (SIO)"
     - "Legislation and Legal Opinion Commission (LLOC)"
+    # NBR onboarded 2026-08-31. Listed at onboarding rather than at promote:
+    # an unlisted regulator keeps its folders at the TREE ROOT, and nothing
+    # else complains because every document is otherwise correct.
+    - "National Bureau for Revenue (NBR)"
+
+  # Canada's first entry, onboarded 2026-09-09.
+  #
+  # ONE REGULATOR, NOT ONE PER ACT. The client list names each Act separately
+  # (Bankruptcy and Insolvency, Canadian Payments, Auditor General, Income Tax,
+  # ...) but all nine of its federal Acts are published by ONE publisher, the
+  # Justice Laws Website. They are one crawler and one regulator, with each Act
+  # its own source entry and its own folder in config/sources/justice_canada.yml.
+  "Canada":
+    - "Department of Justice Canada (JUS)"
 
