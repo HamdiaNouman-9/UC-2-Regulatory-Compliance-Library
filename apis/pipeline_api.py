@@ -2182,7 +2182,16 @@ def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> Non
             except Exception:
                 meta = {}
 
-        from scripts.run_regulation_by_id import fetch_attachment_text
+        # scripts.run_regulation_by_id no longer exists (its .pyc in scripts/__pycache__
+        # is the only trace left -- the .py was never committed, so this import broke
+        # silently for every caller: POST /regulation/{id}/analyze, /analysis/trigger,
+        # /analysis/trigger/run/{run_id}). Same download+OCR/office-extract logic already
+        # lives on the orchestrator (_download_and_extract_file dispatches by extension:
+        # .pdf through OCR, .docx/.xlsx/.xls through processor/office_text_extractor).
+        # crawler=None is fine -- this helper never calls fetch_documents().
+        from processor.downloader import Downloader
+        _fetch_orch = Orchestrator(crawler=None, repo=repo, downloader=Downloader())
+        fetch_attachment_text = _fetch_orch._download_and_extract_file
 
         _set_analysis_stage(regulation_id, "extracting_text")
         documents = []

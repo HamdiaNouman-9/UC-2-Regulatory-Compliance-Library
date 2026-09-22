@@ -1493,6 +1493,14 @@ class Orchestrator:
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    #: File extensions _download_and_extract_file routes to the office-text
+    #: extractor rather than the OCR-aware PDF path. Dropped during the
+    #: 2026-09-21 orchestrator merge and restored 2026-09-22: without it,
+    #: every .docx/.xlsx/.xls attachment raised AttributeError on
+    #: self._OFFICE_EXTS instead of extracting, which broke every caller of
+    #: _download_and_extract_file (including the API's own analysis runner).
+    _OFFICE_EXTS = (".docx", ".xlsx", ".xls")
+
     def _download_and_extract_file(
         self,
         url: str,
