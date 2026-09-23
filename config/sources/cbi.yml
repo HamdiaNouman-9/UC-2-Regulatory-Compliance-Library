@@ -1,0 +1,342 @@
+# CBI — Central Bank of the Islamic Republic of Iran
+#
+# Seed, given directly:
+#   https://www.cbi.ir/section/1454.aspx      "Laws & Regulations"
+#
+# ---------------------------------------------------------------------------
+# 1. THE TREE
+# ---------------------------------------------------------------------------
+#   Iran                                      <- config/countries.yml
+#     Central Bank of Iran (CBI)              <- regulator, doc_path[0]
+#       Laws and Regulations                  <- source_system
+#         Laws                                <- the site's three listings,
+#         Regulations                            each a `category`
+#         Circulars
+#
+# THE SAME SHAPE config/sources/cbj.yml RUNS UNDER: the section is the parent
+# folder and is the `source_system`, each of the site's listings is a child and
+# is a `category`. CBJ calls its parent "Legislation" over ten listings; CBI's
+# section is called "Laws & Regulations", so that is what this one is called.
+# CBJ gets the category into the trail with `doc_path_category: true` on the
+# generic engine; this source builds `doc_path` itself, from `doc_path_prefix` +
+# [category, title], which comes out identical.
+#
+# The reference screenshot draws it one level flatter -- "Laws and Regulations
+# by Central Bank of Iran" directly under Iran -- because that library has no
+# separate regulator node. Here the regulator is doc_path[0] for every regulator
+# in the library, so the bank's name stays where the rest of the tree keeps it
+# and the section keeps the site's own wording.
+#
+# THESE NAMES ARE AN IDENTITY KEY. `doc_path` is one of
+# DEFAULT_IDENTITY = (document_url, doc_path, title), and `disappeared` is
+# scoped on (regulator, source_system). They are free to change while the
+# database holds zero rows under them, which is true today, and expensive after
+# the first promote.
+#
+# ONE SOURCE COVERS ALL THREE LISTINGS, which is the difference from CBJ's ten
+# entries under one `source_system`. `disappeared` is scoped on
+# (regulator, source_system), so sources sharing one can only ever be run
+# together -- and `only_sources` narrowing to a subset of them leaves the rest's
+# stored documents absent from a run that still claims that bucket, with only
+# the completeness gate between that and a withdrawal proposal. Reading all
+# three listings inside one object removes the hazard rather than documenting
+# it.
+#
+# ---------------------------------------------------------------------------
+# 2. WHAT THE SITE HOLDS
+# ---------------------------------------------------------------------------
+# MEASURED 2026-09-23. The section is three `simplelist` pages:
+#
+#   /simplelist/1457.aspx   Laws          5 rows
+#   /simplelist/1458.aspx   Regulations   6 rows
+#   /simplelist/1459.aspx   Circulars     0 rows
+#                                        --
+#                                        11
+#
+# Laws, verbatim, with the page id each row links to:
+#   2234   The Monetary and Banking Act                          781 KB
+#   5320   Anti-Money Laundering Law                              19 KB
+#   2235   The Law for Usury (Interest) Free Banking             105 KB
+#   5298   The Banking and Monetary Act (1339)                   117 KB
+#   2560   The Law for the Issuance of Participation Papers      130 KB
+#
+# Regulations:
+#   2483   Regulations on Monetary and Banking Operations in Free
+#          Trade-Industrial Zone of the Islamic Republic of Iran 104 KB
+#  17538   The limit of Iranian currency carried by passengers    51 KB
+#  17545   Executive Guideline for the Monetary and Banking
+#          operations in the free Trade-Industrial zones         177 KB
+#  17546   By laws for Import and Export and Deals in gold,
+#          silver and platinum                                   132 KB
+#  17547   Regulations Governing the Import of Jewelry by
+#          Travelers and Export of Personal Jewelry and
+#          Silver Products                                       107 KB
+#  17548   Regulations concerning prevention of Money Laundering
+#          through Financial Institutions                        147 KB
+#
+# The breadcrumb, verbatim: `Home » Laws & Regulations » Laws`.
+#
+# CIRCULARS IS EMPTY ON THE SITE -- the page renders its heading, its visit
+# counter and no rows. The reference screenshot shows five circulars, and four
+# of them are rows CBI now publishes under Regulations (17545, 17546, 17547,
+# 17548): that library split one list across two folders. Nothing is cross-filed
+# here. The listing is still read every run, so the folder fills itself the day
+# CBI publishes into it, and the emptiness is reported in
+# `last_result["empty_listings"]` rather than passing unremarked.
+#
+# ---------------------------------------------------------------------------
+# 3. WHY custom, AND NOT generic -- THIS WAS TESTED, NOT ASSUMED
+# ---------------------------------------------------------------------------
+# EVERY ROW LINKS TO AN .aspx THAT SERVES A PDF:
+#
+#     GET https://www.cbi.ir/page/2234.aspx -> 200, application/pdf, 780.8 KB
+#
+# and the engine judges a link by its extension, its query string and a
+# `document`/`download` path segment. Checked against this branch:
+#
+#     is_document_link("https://www.cbi.ir/page/2234.aspx") -> False
+#     doc_type_of(...)                                      -> "ASPX"
+#
+# So on the generic engine the eleven instruments are not documents at all: the
+# crawl records the listing page and harvests nothing from it. This config was
+# written as three generic sources FIRST and exported; that is what it did.
+#
+# A HOST RULE IN `is_document_link` WOULD HAVE BEEN WORSE, and that function's
+# own docstring says why. ZATCA, 2026-08-12: marking host-matching links
+# terminal gave n_pages=1, n_documents=38, and the 38 were Contact Us, Careers,
+# News, Magazine and Brand Identity -- "the crawl also never went deeper,
+# because every link it could have followed had been marked terminal". CBI
+# reproduces that exactly: its SIDEBAR is /page/<digits>.aspx too -- Executive
+# Board 1389, Treasury of National Jewels 1475, Library 1450 -- so any rule
+# broad enough to catch the five laws catches the bank's org chart, in shared
+# code, for every regulator that ever crawls a host with that url shape.
+#
+# `mode: declared` was the other candidate and is genuinely close: eleven named
+# entries, no python, and `stamp_declared` fingerprints on the server's own
+# ETag. It was rejected on two counts -- it DISCOVERS NOTHING, so a twelfth law
+# is invisible until somebody looks, and `file_type` comes out "ASPX" from
+# doc_type_of with no hook to override it. The custom source stamps file_type
+# PDF from the ROW and re-reads the listings every run.
+#
+# ---------------------------------------------------------------------------
+# 4. THE CLIENT HAS TO BE A REAL BROWSER, AND IT HAS TO ASK TWICE
+# ---------------------------------------------------------------------------
+# www.cbi.ir sits behind F5/Shape and refuses with HTTP 200 AND AN HTML BODY --
+# the CBE trap (a 269-byte "Request Rejected" served as 200) and the LLOC trap
+# (a throttle arriving as an empty-parsing 404) in one host.
+#
+# MEASURED 2026-09-23, seven client shapes, in the order they were tried:
+#
+#   curl, browser headers                 200, 40 KB  -> TSPD js challenge
+#   requests.Session, browser headers     200, 5.5 KB -> the same challenge
+#   Playwright bundled chromium, headless 200, 125 B  -> "Request Rejected"
+#   Playwright bundled chromium, HEADFUL  200, 125 B  -> "Request Rejected"
+#   generic_crawler.crawler, depth 0      status ZERO -> "Request Rejected"
+#   ---- and then, after the site was confirmed to load by hand ----
+#   real Chrome, persistent profile       200         -> challenge, no block
+#   the same, RELOADED once               200, 58 KB  -> THE PAGE
+#
+# AN EARLIER VERSION OF THIS FILE CONCLUDED "it is the address being judged and
+# not the client", from headful being refused exactly as headless was. THAT WAS
+# WRONG. The site loads by hand on this very network, which is what disproved
+# it; what the first five clients share is not an address but that each is
+# detectable as automation. Three changes fix it and the crawler makes all
+# three -- `channel="chrome"` (the INSTALLED browser, not Playwright's bundled
+# build), a persistent profile that keeps the TSPD cookie, and
+# `--disable-blink-features=AutomationControlled`.
+#
+# AND IT MUST ASK TWICE. The first request for a url returns the challenge: F5
+# runs its javascript, sets TSPD_101, and does not swap the document. The second
+# carries the cookie and returns the page. The crawler reloads rather than
+# giving up, and the listings after the first come back on their first attempt
+# because one browser is used for all three.
+#
+# TWO THINGS NOT TO "FIX":
+#   * DO NOT WAIT ON networkidle. It never settles here -- 90s timeout on a page
+#     that had already rendered. The crawler waits for the page's own "Visits"
+#     counter, which is also absent from the challenge page.
+#   * DO NOT RUN IT HEADLESS without re-measuring. Headless was refused even
+#     before the channel/profile fix, and it has not been retried since.
+#
+# The browser profile lives under output/.browser/cbi, which .gitignore already
+# covers. It is a cache: delete it and the next run pays the challenge again.
+#
+# THE RUN CAME BACK `zero`, NOT `blocked`, on the generic engine.
+# `generic_crawler/blockcheck.py`'s BLOCK_RE carries Cloudflare, Akamai and
+# generic-challenge wording and nothing for F5's "the requested URL was
+# rejected" --
+#
+#   text_is_blocked("Request Rejected", "The requested URL was rejected...")
+#   -> ""     (checked on this branch)
+#
+# Both statuses are fatal, so nothing false is stored either way -- but `zero`
+# prints "a failed extraction, check the scope and the shape first" and points
+# at calibrate_shape.py, which is the wrong place to send whoever reads it.
+# Adding that phrase to BLOCK_RE would fix the diagnosis; BLOCK_RE is shared by
+# every regulator, so it is not changed from here.
+#
+# ---------------------------------------------------------------------------
+# 5. HOW TO PROVE IT
+# ---------------------------------------------------------------------------
+#   python -m tools.workbook export cbi
+#   python -m tools.workbook check output/workbooks/cbi.xlsx
+#   # read the 11 titles, the file_type column and the doc_path tree against
+#   # §2 and §3, THEN export a second time and expect every row `unchanged`
+#
+# From this address the export RAISES CBIBlocked and writes no workbook, which
+# is the correct outcome and the reason the custom source judges the body rather
+# than the status line. The generic version of this config did the other thing:
+# it produced a workbook of 0 rows, which `check` PASSES -- the shape is valid,
+# there is simply nothing in it. That is the failure ONBOARDING says only a
+# person catches, and not producing it is half of what this source is for.
+
+regulator: "Central Bank of Iran (CBI)"
+owner: abeeraslam
+
+sources:
+  # ONE SOURCE, THREE CATEGORIES -- not three sources sharing a source_system.
+  # `disappeared` is scoped on (regulator, source_system), so three entries
+  # under one source_system could only ever be run together anyway, and
+  # `only_sources` would be a live hazard on them
+  # (crawler/generic_crawler_wrapper.py::build_regulator_crawler). Reading all
+  # three in one object removes the question: the source produces the whole
+  # section or it raises.
+  #
+  # There is no `exclude:` here and no seed to fence. The source reads three
+  # named listing urls and takes rows only from each page's content container,
+  # so the sidebar's /page/<digits>.aspx links (§3) are never in scope in the
+  # first place -- the walk that needed fencing does not happen.
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.cbi_crawler.CBIListingSource"
+    init_kwargs:
+      regulator: "Central Bank of Iran (CBI)"
+      source_system: "Laws and Regulations"
+      doc_path_prefix:
+        - "Central Bank of Iran (CBI)"
+        - "Laws and Regulations"
+
+      # category -> the site's listing id. The ORDER IS THE SITE'S, and it is
+      # the order rows land in the workbook.
+      listings:
+        Laws: 1457
+        Regulations: 1458
+        Circulars: 1459
+
+      # The floor measured 2026-09-23 (§2). A listing under its floor raises a
+      # COVERAGE GAP, which the composite forwards to the completeness gate --
+      # that is how a short read becomes visible instead of becoming the new
+      # baseline. Circulars is 0 because the site publishes nothing there;
+      # raise it the day CBI does, or the emptiness stops being reported.
+      min_rows:
+        Laws: 5
+        Regulations: 6
+        Circulars: 0
+
+      # MEASURED, not a candidate. The listing is `<ul class="simplelist">`
+      # -- which is also what the url path is named after. Captured 2026-09-23
+      # through the client in §4; crawler/cbi_crawler.py §3 has the markup.
+      # The crawler keeps its other selectors as fallbacks and records which
+      # one fired in `last_result["container"]`.
+      content_selector: "ul.simplelist"
+
+      # THE CLIENT -- §4. Each of these three is load-bearing; the host refuses
+      # the run without them, and it refuses with HTTP 200.
+      #
+      #   browser_channel  the INSTALLED Chrome, not Playwright's bundled build
+      #   headless         false; headless was refused and has not been retried
+      #   user_data_dir    where the TSPD cookie survives between the first
+      #                    request and the second. Defaults under output/.browser
+      #                    (gitignored) when left empty. It is a cache: delete it
+      #                    and the next run simply pays the challenge again.
+      browser_channel: "chrome"
+      headless: false
+      user_data_dir: ""
+
+      # Attempt 1 gets the challenge BY DESIGN and attempt 2 gets the page, so
+      # anything below 2 can never succeed on a cold profile.
+      max_attempts: 3
+
+      # OFF, AND MEASURED OFF. `_stamp` asks each document url for an ETag or
+      # Last-Modified -- ONBOARDING's second-preference fingerprint, and the
+      # difference between noticing a replaced PDF and reporting `unchanged`
+      # forever. It goes through `requests`, and §4 shows this host refuses
+      # `requests` while answering the browser.
+      #
+      # MEASURED on the 2026-09-23 export with this set TRUE: all 11 rows came
+      # back `hash_basis: url|title|size`. Every stamp was correctly refused by
+      # the content-type guard -- the responses were the WAF, not the files --
+      # so it cost 11 requests to a protected host and changed no fingerprint.
+      #
+      # THE UPGRADE, when someone wants it: give `_stamp` the browser context's
+      # cookies (TSPD_101 is the one that matters) instead of a bare `requests`
+      # call, and the stamps become real. Until then this stays false and every
+      # row's `hash_basis` says url|title|size, honestly.
+      fetch_stamps: false
+
+      # Three listing loads plus one per row, on a host that answers a refused
+      # request with a 200. Politeness, not throttle protection -- but read §4
+      # before lowering it.
+      request_delay: 3.0
+
+  # ---- Prudential Regulations --------------------------------------------
+  # A SECOND source_system, sibling of "Laws and Regulations" under the
+  # regulator -- which is how the reference library draws it:
+  #
+  #   Iran
+  #     Central Bank of Iran (CBI)
+  #       Laws and Regulations
+  #       Prudential Regulations          <- here
+  #         Know Your Customer Guideline for Credit Institutions
+  #         ...
+  #
+  # SEPARATE ENTRY, NOT A FOURTH CATEGORY, because `disappeared` is scoped on
+  # (regulator, source_system): sharing a bucket with Laws and Regulations would
+  # let a failure in one propose the other's documents for withdrawal.
+  #
+  # ONE LISTING, SO THE DOCUMENTS SIT DIRECTLY UNDER IT. The category repeats the
+  # source_system, and `_clean_trail` drops the repeat (crawler/cbi_crawler.py
+  # §4), so the trail is CBI | Prudential Regulations | <title> -- three crumbs,
+  # matching the reference tree, rather than four with the name said twice.
+  #
+  # MEASURED 2026-09-23 through the same client, first attempt, 59,885 bytes:
+  #   /simplelist/1463.aspx   15 rows, every one `ul.simplelist` + PDF icon
+  #
+  # THE SITE FILES THIS UNDER BANK SUPERVISION, NOT LAWS & REGULATIONS. Its own
+  # breadcrumb reads `Home » Bank Supervision » Prudential Regulations`, and that
+  # trail is stored raw in `extra_meta.section_path`. The library's tree is the
+  # reference library's, the workbook reports what the site shows; same rule the
+  # QCB and CBJ sources run under.
+  #
+  # TWO NEAR-DUPLICATE TITLES TO READ IN THE EXPORT, and they are NOT errors --
+  # different page ids, so different instruments with almost the same name:
+  #   15114 Regulations on Monetary and Banking Operations in the Free
+  #         Trade-Industrial Zones ...   vs  2483 under Laws and Regulations
+  #   15115 Executive Guideline for the Monetary and Banking Operations in the
+  #         Free Trade-Industrial Zones ...  vs  17545 under Laws and Regulations
+  # Identity is (document_url, doc_path, title) and all four differ on url and
+  # on doc_path, so nothing collides. Worth a human eye before promote.
+  - name: "Prudential Regulations"
+    mode: custom
+    crawler_class: "crawler.cbi_crawler.CBIListingSource"
+    init_kwargs:
+      regulator: "Central Bank of Iran (CBI)"
+      source_system: "Prudential Regulations"
+      doc_path_prefix:
+        - "Central Bank of Iran (CBI)"
+        - "Prudential Regulations"
+      listings:
+        Prudential Regulations: 1463
+      # MEASURED 2026-09-23. Under this is a coverage gap, not a result.
+      min_rows:
+        Prudential Regulations: 15
+      content_selector: "ul.simplelist"
+      browser_channel: "chrome"
+      headless: false
+      # SHARED WITH THE OTHER SOURCE ON PURPOSE -- the challenge is paid once and
+      # the cookie carries. Safe only because the composite runs sources
+      # sequentially; Chrome locks a profile directory (crawler/cbi_crawler.py §4).
+      user_data_dir: ""
+      max_attempts: 3
+      fetch_stamps: false
+      request_delay: 3.0

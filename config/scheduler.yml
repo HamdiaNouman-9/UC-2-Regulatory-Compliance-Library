@@ -321,6 +321,29 @@ jobs:
       hour: 13
       minute: 0
 
+  # CBI, added 2026-09-23. Four page loads for 26 rows -- the crawl is the
+  # signal, and on this host it is the only signal that can run at all
+  # (config/change_signals.yml carries the measurement for the three ruled out).
+  #
+  # 21:00 because every earlier Sunday hour is taken and 20:00/20:30 collide
+  # with the daily monitor_simah and monitor_saudi_exchange slots.
+  #
+  # OFF, AND NOT MERELY BECAUSE CBI IS UNREVIEWED. Two reasons, either enough:
+  #   1. this path writes straight to MSSQL and no person has read the workbook
+  #      yet -- the same rule the monitor_edb slot runs under;
+  #   2. THE JOB NEEDS A REAL BROWSER ON A DESKTOP SESSION. Alone among the
+  #      CRAWL_AS_SIGNAL entries it runs Chrome headFUL with a persistent
+  #      profile, because headless is refused by the bot wall. On a headless
+  #      server this job fails every week until somebody looks. Re-measure
+  #      headless, or give the box a session, BEFORE enabling.
+  monitor_cbi:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 21
+      minute: 0
+
   # EDB (BAHRAIN) — 72 requests: 8 category pages plus 64 law pages. Every
   # cheaper signal was measured and ruled out; see the change_signals.yml entry.
   #

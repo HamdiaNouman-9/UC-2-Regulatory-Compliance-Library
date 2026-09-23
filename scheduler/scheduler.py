@@ -296,7 +296,8 @@ def load_scheduler_config():
 # The KSA monitoring jobs. Imported lazily inside the mapping build so a broken
 # import here cannot stop the existing SBP/SECP jobs from being scheduled.
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
-                               monitor_cbe, monitor_cbj, monitor_cheap_probes,
+                               monitor_cbe, monitor_cbi, monitor_cbj,
+                               monitor_cheap_probes,
                                monitor_cma, monitor_edb, monitor_lloc,
                                monitor_lmra, monitor_mc, monitor_mlcu,
                                monitor_mlsd, monitor_moic, monitor_justice_canada,
@@ -342,6 +343,7 @@ DIRECT_JOB_MAPPING = {
     # Ships DISABLED in config/scheduler.yml: CBJ's workbook has been exported
     # and checked but not yet read or promoted, and this path writes straight to
     # MSSQL. See config/change_signals.yml for why the crawl is its signal.
+    "monitor_cbi": monitor_cbi,
     "monitor_cbj": monitor_cbj,
     # ---- Bahrain, onboarded on feature/crawler-dev-fakih, merged 2026-08-28 ---- #
     # Same rule as the three above: all three ship DISABLED in
@@ -397,6 +399,7 @@ API_JOB_MAPPING = {
     "monitor_rera": lambda: trigger_monitor_via_api("monitor_rera"),
     "monitor_sio": lambda: trigger_monitor_via_api("monitor_sio"),
     "monitor_lloc": lambda: trigger_monitor_via_api("monitor_lloc"),
+    "monitor_cbi": lambda: trigger_monitor_via_api("monitor_cbi"),
     "monitor_cbj": lambda: trigger_monitor_via_api("monitor_cbj"),
     "monitor_edb": lambda: trigger_monitor_via_api("monitor_edb"),
     "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),

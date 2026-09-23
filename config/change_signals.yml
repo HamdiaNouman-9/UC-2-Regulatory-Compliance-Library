@@ -1319,5 +1319,69 @@ sources:
     signal: stored-inventory
     confirm: true
 
+  # CENTRAL BANK OF IRAN -- THE CRAWL IS THE SIGNAL, AND IT IS FOUR PAGE LOADS.
+  #
+  # config/sources/cbi.yml holds two sources over four `simplelist` pages for 26
+  # documents. The whole regulator is FOUR page loads, ~85 seconds measured
+  # 2026-09-23. Nothing cheaper exists, and on this host nothing cheaper CAN
+  # exist -- which is the unusual part and the reason this comment is long.
+  #
+  # 1. stored-inventory IS NOT MERELY EXPENSIVE HERE, IT CANNOT RUN.
+  #    `dynamic_crawler/inventory_sweep.py` probes with
+  #    `requests.get(..., stream=True)`, and www.cbi.ir refuses `requests`
+  #    (config/sources/cbi.yml section 4) -- HTTP 200 carrying an F5 challenge,
+  #    never the file. MEASURED on the 2026-09-23 export with the crawler's own
+  #    equivalent probe turned on: 26 of 26 rows came back
+  #    `hash_basis: url|title|size`, every stamp refused by the content-type
+  #    guard because the response was the WAF and not the PDF.
+  #
+  #    That is worse than costly. A probe that always answers `unknown` looks
+  #    like a site that never changes -- the CBE lesson inverted, and the one
+  #    ONBOARDING calls out: "a signal that never fires is indistinguishable
+  #    from a site that never changes."
+  #
+  #    It would also lose on arithmetic even if it worked: 26 probes against 4
+  #    page loads, and `InventorySweep` is covers_inventory = False, so it
+  #    re-reads only rows we already hold and could never see a new instrument.
+  #
+  # 2. NO SITEMAP. MEASURED 2026-09-23 through the browser that DOES work:
+  #      /robots.txt    200, 245 bytes  -> the WAF's rejection page
+  #      /sitemap.xml   200, 927 bytes  -> the Persian rejection page,
+  #                                        "درخواست رد شد", 0 <loc>, 0 <lastmod>
+  #
+  # 3. NO `sama-feed`. Looked for first, as the onboarding directs. CBI
+  #    publishes a News Archive, which is news about the bank rather than a
+  #    revision feed over instruments, and neither listing carries a date
+  #    column to build one from.
+  #
+  # 4. snapshot-articles parses 0 items: these rows are links to PDFs, not
+  #    article text on a page.
+  #
+  # confirm: false -- and here that is not a measurement deferred, it is a
+  # setting with nothing to measure. `confirm` re-fetches a document to hash its
+  # bytes before trusting a version token, and this source has no version token
+  # to distrust: the fingerprint is `url|title|size` built from the listing row
+  # itself. CMA's 1,134 false changes came from believing a Last-Modified that
+  # lied; there is no Last-Modified in this path to believe.
+  #
+  # TWO ENTRIES, because `disappeared` is scoped by (regulator, source_system)
+  # and cbi.yml stores two. They always run together -- one crawl covers both.
+  #
+  # KNOWN GAP, stated rather than hidden: a PDF replaced at the same url, with
+  # the same title AND the same rounded file size, is invisible. The size is the
+  # only field on the listing row that moves, so it is the whole of the change
+  # detection. The fix is a real ETag, which needs `_stamp` to carry the
+  # browser's cookies rather than a bare `requests` call -- written up in
+  # config/sources/cbi.yml under `fetch_stamps`.
+  - regulator: "Central Bank of Iran (CBI)"
+    source_system: "Laws and Regulations"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Central Bank of Iran (CBI)"
+    source_system: "Prudential Regulations"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

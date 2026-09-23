@@ -297,6 +297,16 @@ CRAWL_AS_SIGNAL = {
     # measurement for all four alternatives, including why stored-inventory is
     # ruled out on evidence rather than on availability: it genuinely works here.
     "Central Bank of Jordan (CBJ)": ("cbj", False),
+    # CBI joined 2026-09-23. Four page loads for 26 rows across two sections --
+    # the cheapest entry on this list after PDPA. It is here not merely because
+    # the crawl is cheapest but because NOTHING ELSE CAN RUN: the sweep probes
+    # with `requests`, and www.cbi.ir refuses `requests` with an HTTP 200
+    # challenge, so a stored-inventory probe would answer `unknown` for all 26
+    # rows and read as a site that never changes. config/change_signals.yml
+    # carries that measurement and the three other signals ruled out.
+    #
+    # THIS JOB NEEDS A REAL BROWSER ON A DESKTOP SESSION -- see monitor_cbi.
+    "Central Bank of Iran (CBI)": ("cbi", False),
     #: EDB joined 2026-08-19. Every cheaper signal was measured and ruled out —
     #: no ETag, no Last-Modified, no sitemap or robots.txt (both 404), no 304 on
     #: a conditional GET, and a HEAD that returns no Content-Length at all. Full
@@ -1055,6 +1065,71 @@ def _monitor_cbj_impl() -> dict:
     rep = _crawl_into_db("cbj", False)
     logger.info("Central Bank of Jordan (CBJ): %s", rep)
     return {"Central Bank of Jordan (CBJ)": rep}
+
+
+def monitor_cbi() -> dict:
+    """WEEKLY, AND OFF. The Central Bank of Iran, both sections.
+
+    THE CRAWL IS THE SIGNAL, and unusually it is not merely the cheapest
+    question -- it is the only one that can be asked at all. Four page loads for
+    26 rows, ~85 seconds measured 2026-09-23.
+
+    WHY NOTHING CHEAPER EXISTS, measured rather than assumed:
+
+      * stored-inventory CANNOT RUN. `inventory_sweep` probes with
+        `requests.get(stream=True)`, and this host refuses `requests` with an
+        HTTP 200 carrying an F5 challenge. On the 2026-09-23 export with the
+        crawler's own equivalent probe enabled, 26 of 26 rows came back
+        `hash_basis: url|title|size` -- every stamp correctly refused because the
+        response was the WAF, not the PDF. A probe that always answers `unknown`
+        reads as a site that never changes, which is the failure ONBOARDING
+        names. It also loses on arithmetic: 26 probes against 4 page loads, and
+        InventorySweep is covers_inventory = False so it could never see a new
+        instrument anyway.
+      * no sitemap: /robots.txt and /sitemap.xml both return the WAF's rejection
+        page (the Persian one), 0 <loc>, 0 <lastmod>.
+      * no revision feed of SAMA's kind; CBI's News Archive is news about the
+        bank, and neither listing carries a date column.
+      * snapshot-articles parses 0 items -- these rows are links to PDFs.
+
+    THIS JOB NEEDS A REAL BROWSER, AND THAT IS THE OPERATIONAL CATCH. Every
+    other entry on CRAWL_AS_SIGNAL runs headless. CBI does not: `channel:
+    chrome` plus a persistent profile plus `headless: false` is what gets past
+    the bot wall, and headless was refused even with the real Chrome channel
+    (config/sources/cbi.yml section 4). So this cannot be scheduled on a
+    headless server as-is. Either give the box a desktop session, or re-measure
+    headless before enabling -- do not simply flip `enabled: true` and assume.
+
+    AND IT HOLDS A BROWSER PROFILE. output/.browser/cbi carries the TSPD cookie
+    between the first request and the second; Chrome takes an exclusive lock on
+    it, so this job must never run concurrently with a manual `export cbi`.
+    `_run_exclusive` already prevents two monitor jobs overlapping; it does not
+    know about a person at a terminal.
+
+    BOTH SOURCES RUN TOGETHER and cannot be gated apart in a useful way -- one
+    crawl covers all four listings, and `disappeared` is scoped per
+    (regulator, source_system), so the two sections keep separate buckets while
+    sharing one run.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: this
+    path writes straight to MSSQL and CBI has never been promoted. Same rule the
+    EDB slot runs under.
+
+    KNOWN GAP: a PDF replaced at the same url with the same title and the same
+    rounded size is invisible, because the size is the only field on the listing
+    row that moves. The fix is a real ETag, which needs the stamp request to
+    carry the browser's cookies -- see `fetch_stamps` in config/sources/cbi.yml.
+    """
+    return _run_exclusive("monitor_cbi", _monitor_cbi_impl)
+
+
+def _monitor_cbi_impl() -> dict:
+    # No `only_sources`: both sections share one browser profile and one crawl,
+    # and narrowing would leave the other section's stored rows absent from a run
+    # that still claims its bucket.
+    rep = _crawl_into_db("cbi", False)
+    logger.info("Central Bank of Iran (CBI): %s", rep)
+    return {"Central Bank of Iran (CBI)": rep}
 
 
 def monitor_edb() -> dict:
