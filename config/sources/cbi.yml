@@ -303,10 +303,18 @@ sources:
   #   /simplelist/1463.aspx   15 rows, every one `ul.simplelist` + PDF icon
   #
   # THE SITE FILES THIS UNDER BANK SUPERVISION, NOT LAWS & REGULATIONS. Its own
-  # breadcrumb reads `Home » Bank Supervision » Prudential Regulations`, and that
-  # trail is stored raw in `extra_meta.section_path`. The library's tree is the
-  # reference library's, the workbook reports what the site shows; same rule the
-  # QCB and CBJ sources run under.
+  # breadcrumb reads `Home » Bank Supervision » Prudential Regulations`, and the
+  # crawler READS that trail off `div.breadcrumb` rather than building one, so
+  # `extra_meta.section_path` really is what the site shows. The library's tree
+  # is the reference library's; the workbook reports CBI's. They disagree here on
+  # purpose, and both are recorded.
+  #
+  # THAT WAS A BUG UNTIL 2026-09-23. `section_path` was assembled from a constant
+  # fixed at "Laws & Regulations", so these 15 rows claimed
+  # `Home > Laws & Regulations > Prudential Regulations` -- a section CBI does
+  # not file them in -- while this file asserted the value was the site's raw
+  # trail. A constructed string is worth nothing here: the only reason to store
+  # this field is that it is evidence of what the site shows.
   #
   # TWO NEAR-DUPLICATE TITLES TO READ IN THE EXPORT, and they are NOT errors --
   # different page ids, so different instruments with almost the same name:

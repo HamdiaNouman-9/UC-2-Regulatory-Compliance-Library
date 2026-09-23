@@ -189,10 +189,36 @@ SITE_URL = "https://www.cbi.ir"
 _DEFAULT_PROFILE = str(
     Path(__file__).resolve().parents[1] / "output" / ".browser" / "cbi")
 
-#: The section the three listings hang off. Stored on every row as the site's
-#: own name for the folder; `doc_path` is the library's tree, not this.
-SECTION_URL = f"{SITE_URL}/section/1454.aspx"
-SECTION_NAME = "Laws & Regulations"
+#: The breadcrumb, which is READ and never constructed.
+#:
+#: An earlier version of this file built `section_path` as
+#: f"Home > {SECTION_NAME} > {category}" off a SECTION_NAME constant fixed at
+#: "Laws & Regulations". That was wrong the moment a second section existed:
+#: Prudential Regulations was reported as
+#:     Home > Laws & Regulations > Prudential Regulations
+#: where the site's own trail reads
+#:     Home » Bank Supervision » Prudential Regulations
+#: -- and the config claimed the field held the site's raw trail, which made a
+#: constructed string look like evidence. `section_path` is only worth storing
+#: BECAUSE it is what the site shows; a value we invent belongs nowhere.
+#:
+#: The markup is uniform across all four listings, measured 2026-09-23:
+#:
+#:   <div class="breadcrumb">
+#:     <i class="icon-home"></i>
+#:     <a href="/default_en.aspx"> Home </a>
+#:     <span class="divid">»</span>
+#:     <a href="/section/1460.aspx"> Bank Supervision </a>
+#:     <span class="divid">»</span>
+#:     <span id="ctl00_ucPageNavigator_lblCurrent">Prudential Regulations</span>
+#:   </div>
+#:
+#: THE LAST CRUMB IS A SPAN, NOT AN ANCHOR -- the QCB `breadcrumb_current`
+#: problem. Reading anchors only would drop the page's own name and report the
+#: same two-crumb trail for every listing on the host.
+_BREADCRUMB_SEL = "div.breadcrumb"
+#: The separator spans, which are chrome rather than crumbs.
+_CRUMB_SKIP_CLASS = "divid"
 
 #: category -> the site's listing id. The ORDER IS THE SITE'S, and it is the
 #: order rows land in the workbook. Overridable from the YAML.
@@ -567,11 +593,35 @@ class CBIListingSource:
             return soup, "fallback:whole-document (0 rows)"
         return best, f"fallback:structural ({best_n} rows)"
 
+    def _breadcrumb(self, soup, listing_url: str) -> Tuple[str, str]:
+        """(the site's trail, the parent section's url) -- READ, never built.
+
+        Returns ("", "") when the page carries no breadcrumb, and the caller
+        stores nothing rather than inventing a trail. A missing breadcrumb is
+        worth seeing in the export; a plausible-looking guess is not.
+        """
+        bc = soup.select_one(_BREADCRUMB_SEL)
+        if bc is None:
+            return "", ""
+        crumbs, section_url = [], ""
+        for el in bc.find_all(["a", "span"]):
+            if el.name == "span" and _CRUMB_SKIP_CLASS in (el.get("class") or []):
+                continue                      # the » separators
+            text = _clean(el.get_text(" ", strip=True))
+            if not text:
+                continue
+            crumbs.append(text)
+            href = el.get("href") or ""
+            if el.name == "a" and "/section/" in href and not section_url:
+                section_url = urllib.parse.urljoin(listing_url, href)
+        return " > ".join(crumbs), section_url
+
     def _rows(self, html: str, listing_url: str) -> Tuple[List[dict], str]:
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(html, "html.parser")
         container, how = self._container(soup)
+        trail, section_url = self._breadcrumb(soup, listing_url)
 
         rows, seen = [], set()
         for a in container.find_all("a", href=_ROW_HREF):
@@ -609,7 +659,7 @@ class CBIListingSource:
             seen.add(url)
             rows.append({"url": url, "title": title, "size": size,
                          "file_type": self._file_type(row_el)})
-        return rows, how
+        return rows, how, trail, section_url
 
     @staticmethod
     def _file_type(row_el) -> str:
@@ -690,7 +740,8 @@ class CBIListingSource:
     # ------------------------------------------------------------------ #
 
     def _to_regulatory(self, row: dict, category: str, listing_url: str,
-                       stamp: Tuple[str, str]) -> RegulatoryDocument:
+                       stamp: Tuple[str, str], trail: str = "",
+                       section_url: str = "") -> RegulatoryDocument:
         token, basis = stamp
         doc = RegulatoryDocument(
             regulator=self.regulator,
@@ -725,9 +776,14 @@ class CBIListingSource:
             doc_path=_clean_trail(self.doc_path_prefix + [category]) + [row["title"]],
             extra_meta={
                 "record_kind": "file",
-                # The site's own trail, stored raw. doc_path is the library's.
-                "section_path": f"Home > {SECTION_NAME} > {category}",
-                "section_url": SECTION_URL,
+                # THE SITE'S OWN TRAIL, READ OFF THE PAGE. doc_path is the
+                # library's tree; this is CBI's, and the two deliberately
+                # disagree for Prudential Regulations -- the site files it
+                # under Bank Supervision, the library under the regulator.
+                # Empty when the page carried no breadcrumb: a missing trail is
+                # reported as missing rather than invented.
+                "section_path": trail,
+                "section_url": section_url,
                 "listing_url": listing_url,
                 "cbi_page_id": _ROW_HREF.search(row["url"]).group(1),
                 "file_size_text": row["size"],
@@ -788,8 +844,11 @@ class CBIListingSource:
         # start a browser.
         for i, (category, list_id, html) in enumerate(self._pages()):
             url = self._listing_url(list_id)
-            rows, how = self._rows(html, url)
+            rows, how, trail, section_url = self._rows(html, url)
             containers[category] = how
+            if not trail:
+                logger.warning("CBI %s: no breadcrumb on %s -- section_path "
+                               "will be empty for its rows", category, url)
             by_category[category] = len(rows)
 
             floor = int(self.min_rows.get(category, 0))
@@ -807,7 +866,8 @@ class CBIListingSource:
                 stamp = self._stamp(row["url"]) if self.fetch_stamps else ("", "")
                 if self.fetch_stamps and self.request_delay:
                     time.sleep(self.request_delay)
-                doc = self._to_regulatory(row, category, url, stamp)
+                doc = self._to_regulatory(row, category, url, stamp,
+                                          trail, section_url)
                 if "WEAK" in doc.extra_meta["hash_basis"]:
                     weak.append(f"{doc.title} [{doc.extra_meta['hash_basis']}]")
                 docs.append(doc)
@@ -850,4 +910,4 @@ class CBIListingSource:
 
 
 __all__ = ["CBIListingSource", "CBIBlocked", "REGULATOR", "SITE_URL",
-           "SECTION_URL", "SECTION_NAME", "LISTINGS", "MIN_ROWS"]
+           "LISTINGS", "MIN_ROWS"]

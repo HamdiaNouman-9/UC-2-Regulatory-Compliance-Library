@@ -132,7 +132,7 @@ def test_the_block_page_would_otherwise_parse_as_an_empty_listing():
     """The point of the guard, stated as a test: the block page is valid HTML
     and yields zero rows, which is indistinguishable from an empty section."""
     src = CBIListingSource(request_delay=0)
-    rows, _ = src._rows(REQUEST_REJECTED, "https://www.cbi.ir/simplelist/1457.aspx")
+    rows, _, _, _ = src._rows(REQUEST_REJECTED, "https://www.cbi.ir/simplelist/1457.aspx")
     assert rows == []
 
 
@@ -151,7 +151,7 @@ def test_sidebar_page_links_are_not_legislation():
     /page/<digits>.aspx too. This is the ZATCA failure the module header cites:
     a rule broad enough to catch the laws files the org chart as law."""
     src = CBIListingSource(request_delay=0)
-    rows, how = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
+    rows, how, _, _ = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
     titles = [r["title"] for r in rows]
     assert len(rows) == 5, how
     for chrome in ("Executive Board", "The Treasury of National Jewels", "Library"):
@@ -403,7 +403,7 @@ def test_the_size_comes_from_the_row_not_the_anchor():
     not.
     """
     src = CBIListingSource(request_delay=0)
-    rows, _ = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
+    rows, _, _, _ = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
     by_title = {r["title"]: r for r in rows}
     assert by_title["The Monetary and Banking Act"]["size"] == "781 KB"
     assert by_title["Anti-Money Laundering Law"]["size"] == "19 KB"
@@ -415,7 +415,7 @@ def test_the_file_type_comes_from_the_row_s_own_icon():
     """<img alt="PDF icon">. The SITE declares the type; the url says ASPX and a
     hardcoded "PDF" would mislabel the first DOC CBI publishes."""
     src = CBIListingSource(request_delay=0)
-    rows, _ = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
+    rows, _, _, _ = src._rows(LAWS_PAGE, "https://www.cbi.ir/simplelist/1457.aspx")
     assert {r["file_type"] for r in rows} == {"PDF"}
 
 
@@ -526,3 +526,80 @@ def test_the_site_trail_is_stored_raw_even_though_the_tree_differs():
     d = _prudential().fetch_documents()[0]
     assert d.extra_meta["section_path"].startswith("Home > ")
     assert d.source_system == "Prudential Regulations"
+
+
+# --------------------------------------------------------------------------- #
+#  the breadcrumb is READ, never constructed                                   #
+# --------------------------------------------------------------------------- #
+
+def test_the_breadcrumb_is_the_site_s_own_trail():
+    """THE BUG THIS PINS.
+
+    An earlier version built section_path as
+        f"Home > {SECTION_NAME} > {category}"
+    off a constant fixed at "Laws & Regulations", so Prudential Regulations was
+    reported under a section CBI does not file it in. The config meanwhile said
+    the field held the site's raw trail -- a constructed string wearing the
+    clothes of evidence.
+    """
+    pru = _prudential().fetch_documents()
+    assert all(d.extra_meta["section_path"] ==
+               "Home > Bank Supervision > Prudential Regulations" for d in pru)
+    assert all(d.extra_meta["section_url"] ==
+               "https://www.cbi.ir/section/1460.aspx" for d in pru)
+
+
+def test_each_listing_keeps_its_own_trail():
+    """The three Laws and Regulations listings share a parent but not a trail:
+    the last crumb is the page itself."""
+    docs = _source().fetch_documents()
+    by_cat = {}
+    for d in docs:
+        by_cat.setdefault(d.category, set()).add(d.extra_meta["section_path"])
+    assert by_cat["Laws"] == {"Home > Laws & Regulations > Laws"}
+    assert by_cat["Regulations"] == {"Home > Laws & Regulations > Regulations"}
+    assert all(d.extra_meta["section_url"] == "https://www.cbi.ir/section/1454.aspx"
+               for d in docs)
+
+
+def test_the_last_crumb_is_a_span_and_is_still_read():
+    """`<span id="ctl00_ucPageNavigator_lblCurrent">` holds the current page --
+    the QCB `breadcrumb_current` shape. Reading anchors only would give every
+    listing on the host the same two-crumb trail."""
+    from bs4 import BeautifulSoup
+    src = CBIListingSource(request_delay=0)
+    soup = BeautifulSoup(LAWS_PAGE, "html.parser")
+    trail, url = src._breadcrumb(soup, "https://www.cbi.ir/simplelist/1457.aspx")
+    assert trail.endswith("> Laws"), trail
+    assert trail.count(">") == 2, trail
+
+
+def test_the_separator_spans_are_not_crumbs():
+    from bs4 import BeautifulSoup
+    src = CBIListingSource(request_delay=0)
+    trail, _ = src._breadcrumb(BeautifulSoup(PRUDENTIAL_PAGE, "html.parser"), "u")
+    assert "\u00bb" not in trail and "divid" not in trail
+    assert trail == "Home > Bank Supervision > Prudential Regulations"
+
+
+def test_a_missing_breadcrumb_stores_nothing_rather_than_a_guess():
+    """A trail we could not read is reported empty. The whole value of this
+    field is that it is what the SITE shows."""
+    from bs4 import BeautifulSoup
+    src = CBIListingSource(request_delay=0)
+    assert src._breadcrumb(BeautifulSoup("<div>no crumb</div>", "html.parser"),
+                           "u") == ("", "")
+    d = src._to_regulatory(
+        {"url": "https://www.cbi.ir/page/1.aspx", "title": "X", "size": "1 KB",
+         "file_type": "PDF"}, "Laws", "u", ("", ""), "", "")
+    assert d.extra_meta["section_path"] == ""
+    assert d.extra_meta["section_url"] == ""
+
+
+def test_the_library_tree_and_the_site_trail_disagree_on_purpose():
+    """Prudential Regulations is filed under the regulator in the library and
+    under Bank Supervision on the site. Both are recorded, and they differ."""
+    d = _prudential().fetch_documents()[0]
+    assert d.doc_path[:2] == ["Central Bank of Iran (CBI)", "Prudential Regulations"]
+    assert "Bank Supervision" in d.extra_meta["section_path"]
+    assert "Bank Supervision" not in " | ".join(d.doc_path)
