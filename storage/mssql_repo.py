@@ -9,6 +9,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _fit_column(value, width: int, what: str):
+    """Model text into a bounded nvarchar column.
+
+    SQL Server rejects an over-long value outright ("String or binary data would
+    be truncated"), and one rejected row aborts the whole regulation's analysis.
+    MEASURED 2026-09-25 on NCA's Data Cybersecurity Controls (regulation 47881):
+    a 100+ character Activity.frequency -- "At least every 2 years for Public
+    data, at least annually for Confidential, Secret, and Top Secret data" --
+    against nvarchar(100) left 33 of 141 requirements stored and no activities.
+    The full value is logged, so a clipped one can still be recovered.
+    """
+    if value is None or len(str(value)) <= width:
+        return value
+    logger.warning(f"{what} clipped to {width} chars (was {len(str(value))}): {value!r}")
+    return str(value)[:width - 1] + "…"
+
 # ---------------------------------------------------------------------- #
 #  regulations.ref_key -- REG-{country}-{regulator}-{source}-{id}         #
 #  e.g. REG-SAU-SAMA-RUL-104. {country} is ISO 3166-1 alpha-3, derived    #
@@ -2385,6 +2402,14 @@ class MSSQLRepository(DocumentRepository):
         source_refs_json = json.dumps(source_refs, ensure_ascii=False) if source_refs else None
         cross_refs_json = (json.dumps(cross_references, ensure_ascii=False)
                            if cross_references else None)
+        # Widths are the live Requirement columns (nvarchar); see _fit_column.
+        what = f"Requirement {ref_key!r}"
+        title = _fit_column(title, 500, f"{what} title")
+        source_reference = _fit_column(source_reference, 500, f"{what} source_reference")
+        actor = _fit_column(actor, 500, f"{what} actor")
+        nature = _fit_column(nature, 50, f"{what} nature")
+        disposition = _fit_column(disposition, 10, f"{what} disposition")
+        disposition_reason = _fit_column(disposition_reason, 1000, f"{what} disposition_reason")
         req_query = """
             INSERT INTO Requirement
                 (regulation_id, ref_key, title, description, source_reference,
@@ -2515,6 +2540,15 @@ class MSSQLRepository(DocumentRepository):
         module docstring for why: the model suggests both itself, and neither
         is sent to it as a controlled list any more."""
         evidence_text = "; ".join(evidence_expected) if evidence_expected else None
+        # Widths are the live Activity columns (nvarchar); see _fit_column.
+        what = f"Activity {ref_key!r}"
+        title = _fit_column(title, 500, f"{what} title")
+        suggested_department = _fit_column(suggested_department, 255, f"{what} suggested_department")
+        frequency = _fit_column(frequency, 100, f"{what} frequency")
+        frequency_type = _fit_column(frequency_type, 20, f"{what} frequency_type")
+        priority = _fit_column(priority, 50, f"{what} priority")
+        suggested_activity_type = _fit_column(suggested_activity_type, 200,
+                                              f"{what} suggested_activity_type")
         act_query = """
             INSERT INTO Activity
                 (requirement_id, ref_key, title, description, suggested_department, frequency,
