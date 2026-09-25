@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Regulatory Compliance Library</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div class="app">
@@ -129,36 +129,33 @@
         </div>
       </section>
 
-      <!-- Model & usage view -->
+      <!-- Model & usage dashboard -->
       <section id="modelView" class="panel hidden">
-        <div class="pipeline-card">
-          <div class="section-label">&#129302; Analysis model</div>
-          <p class="pipeline-hint">
-            The OpenRouter model used for requirement and activity analysis. A change applies
-            to analyses that start after you save it. Non-default models run without provider
-            pinning, so results are less reproducible run to run.
-          </p>
-          <div class="pipeline-form">
-            <span>Current: <b id="currentModel">&hellip;</b></span>
+        <div class="dash-hero">
+          <div class="dash-hero-main">
+            <div class="dash-eyebrow">Analysis model in use</div>
+            <div class="dash-model" id="modelName">...</div>
+            <div class="dash-chips" id="modelTiles"></div>
           </div>
-          <div class="pipeline-form">
-            <input id="modelSearchInput" class="api-base-input" style="width:240px;"
-                   placeholder="Search models (e.g. claude, gpt, deepseek)" spellcheck="false">
-            <select id="modelSelect" style="max-width:420px;"></select>
-            <button class="btn-sm primary" id="saveModelBtn">Save model</button>
+          <div class="dash-hero-side">
+            <div class="dash-eyebrow">Change model</div>
+            <input id="modelSearchInput" class="api-base-input dash-full" placeholder="Search models (claude, gpt, deepseek...)" spellcheck="false">
+            <select id="modelSelect" class="dash-full"></select>
+            <div id="modelPreview" class="muted-note"></div>
+            <div class="dash-actions">
+              <button class="btn-sm primary" id="saveModelBtn">Save model</button>
+              <span id="modelMsg" class="muted-note"></span>
+            </div>
           </div>
-          <div id="modelMsg" class="muted-note"></div>
         </div>
 
-        <div class="pipeline-card" style="margin-top:14px;">
-          <div class="section-label">&#128176; Token usage</div>
-          <p class="pipeline-hint">
-            <b>This app</b> counts only the analysis calls made by this system, from when
-            recording was added. <b>Whole API key</b> is OpenRouter's own all-time figure for
-            the key, so it includes anything else using it.
-          </p>
+        <div class="dash-head">
+          <div>
+            <div class="dash-title">Usage</div>
+            <div class="muted-note">Analysis calls made by this system only.</div>
+          </div>
           <div class="pipeline-form">
-            <label class="muted-note">Group this app's usage by
+            <label class="muted-note">Break down by
               <select id="usageGroupSelect">
                 <option value="model">model</option>
                 <option value="day">day</option>
@@ -167,13 +164,13 @@
               </select></label>
             <button class="btn-sm" id="refreshUsageBtn">Refresh</button>
           </div>
-          <div id="usageResult"></div>
         </div>
+        <div id="usageResult"></div>
       </section>
     </main>
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

@@ -1345,6 +1345,8 @@ _MONITOR_JOBS = {
     # Snapshot-first jobs (2026-09-21): they read a saved page, never the site,
     # unless allow_live is on and the saved page is due. See jobs/monitor_jobs.py.
     "monitor_simah", "monitor_saudi_exchange",
+    # NCA, 2026-09-25.
+    "monitor_nca",
 }
 
 _monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -1437,7 +1439,7 @@ def trigger_monitor_job(job: str):
 def monitor_job_status(job: str):
     """What this API process last saw of one monitoring job."""
     if job not in _MONITOR_JOBS:
-        raise HTTPException(status_code=404, detail={
+        raise HTTPException(status_code=200, detail={
             "error": f"unknown monitoring job {job!r}",
             "available": sorted(_MONITOR_JOBS)})
     with _monitor_lock:
@@ -1504,22 +1506,25 @@ def llm_put_settings(body: LLMSettingsBody):
 
 @app.get("/llm/usage", tags=["LLM"])
 def llm_usage(since: Optional[str] = None, until: Optional[str] = None,
-              group_by: str = "model"):
+              group_by: str = "model", include_openrouter: bool = True):
     """Token usage, two views.
 
     `uc`: calls made by this app's analysis, from our own records (counts from
     when recording was added; group_by is model, day, step or regulation;
     since/until are ISO dates, until exclusive).
     `openrouter`: everything on the API key, per OpenRouter, all-time. Sections
-    OpenRouter refuses are listed under `openrouter.errors`."""
+    OpenRouter refuses are listed under `openrouter.errors`. Pass
+    include_openrouter=false to skip it (null in the response) -- it costs two
+    outbound calls per request, and the web dashboard only shows `uc`."""
     from storage import llm_settings
     try:
         uc = llm_settings.usage_summary(repo, since, until, group_by)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(200, str(e))
     except Exception as e:
         raise HTTPException(500, f"could not read usage records: {e}")
-    return {"uc": uc, "openrouter": llm_settings.openrouter_usage()}
+    return {"uc": uc,
+            "openrouter": llm_settings.openrouter_usage() if include_openrouter else None}
 
 
 @app.get("/monitoring/staleness", tags=["Monitoring"])
@@ -1595,6 +1600,7 @@ REGULATOR_REGISTRY: Dict[str, Dict[str, Any]] = {
     "JUSTICE_CANADA": {"job": "monitor_justice_canada", "display": "Department of Justice Canada (JUS)", "status": "active"},
     "MOIC": {"job": "monitor_moic", "display": "Ministry of Industry and Commerce (MOIC)", "status": "active"},
     "PDPA": {"job": "monitor_pdpa", "display": "Personal Data Protection Authority (PDPA)", "status": "active"},
+    "NCA":  {"job": "monitor_nca",  "display": "National Cybersecurity Authority (NCA)", "status": "active"},
 
     # Bundled into ONE shared job with MOH -- see CHEAP_PROBE_SOURCES in
     # jobs/monitor_jobs.py. Requesting any one (or several) of these six plus
@@ -1880,7 +1886,7 @@ def get_regulations(
             resolved_country = resolve_country(country)
             if not resolved_country:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=200,
                     detail=f"Unknown country: {country!r}. Use a name from "
                           f"config/countries.yml or its alpha-3 code.")
 
@@ -2097,7 +2103,7 @@ def get_regulation_detail(
             cursor.execute(query, [regulation_id])
             row = cursor.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="Regulation not found")
+                raise HTTPException(status_code=200, detail="Regulation not found")
             columns  = [col[0] for col in cursor.description]
             reg_dict = row_to_dict(row, columns)
             if reg_dict.get("document_html"):
@@ -2461,7 +2467,7 @@ def analysis_batch_status(batch_id: str):
     with _batch_lock:
         batch = _analysis_batches.get(batch_id)
         if not batch:
-            raise HTTPException(404, f"batch {batch_id!r} not found (they are kept in memory, last 50)")
+            raise HTTPException(200, f"batch {batch_id!r} not found (they are kept in memory, last 50)")
         return _batch_view(batch)
 
 
@@ -2474,7 +2480,7 @@ def get_regulation_requirements(regulation_id: int,
     under it. active_only=True (default) is what's in force right now."""
     row = repo.get_regulation_by_id(regulation_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Regulation not found")
+        raise HTTPException(status_code=200, detail="Regulation not found")
     try:
         requirements = repo.get_requirements_for_regulation(
             regulation_id, active_only=active_only)
@@ -2499,7 +2505,7 @@ def get_regulation_activities(regulation_id: int,
     each row keeps requirement_ref_key so it can still be traced back."""
     row = repo.get_regulation_by_id(regulation_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Regulation not found")
+        raise HTTPException(status_code=200, detail="Regulation not found")
     try:
         activities = repo.get_activities_for_regulation(
             regulation_id, active_only=active_only)
@@ -2851,7 +2857,7 @@ def get_gap_session(session_id: int, lang: str = Query("en")):
 
     result = repo.get_gap_results_by_session(session_id)
     if not result:
-        raise HTTPException(404, f"No gap analysis session found for ID {session_id}")
+        raise HTTPException(200, f"No gap analysis session found for ID {session_id}")
 
     regulations = []
     for reg in result["regulations"]:
@@ -3821,7 +3827,7 @@ def get_compliance_analysis_v2(
     if not rows:
         reg = repo.get_regulation_by_id(regulation_id)
         if not reg:
-            raise HTTPException(404, f"Regulation {regulation_id} not found")
+            raise HTTPException(200, f"Regulation {regulation_id} not found")
         return {
             "success": True, "regulation_id": regulation_id, "schema_version": "v2",
             "has_analysis": False,
@@ -3893,7 +3899,7 @@ def get_requirement_detail_v2(
 
     if not row:
         raise HTTPException(
-            404,
+            200,
             f"Requirement '{requirement_id}' not found for regulation {regulation_id}. "
             f"Available: {[r.get('requirement_id') for r in rows]}",
         )
@@ -3948,8 +3954,8 @@ def get_executive_summary_v2(regulation_id: int, lang: str = Query("en")):
     if not md:
         rows = repo.get_compliance_analysis(regulation_id)
         if not rows:
-            raise HTTPException(404, f"No analysis for regulation {regulation_id}.")
-        raise HTTPException(404, "Analysis exists but executive summary is empty.")
+            raise HTTPException(200, f"No analysis for regulation {regulation_id}.")
+        raise HTTPException(200, "Analysis exists but executive summary is empty.")
  
     if lang == "ar":
         cache_key = f"GET /compliance-analysis-v2/{regulation_id}/executive-summary"
@@ -4005,7 +4011,7 @@ def get_regulation_versions(
     """
     regulation = repo.get_regulation_by_id(regulation_id)
     if not regulation:
-        raise HTTPException(404, f"Regulation {regulation_id} not found")
+        raise HTTPException(200, f"Regulation {regulation_id} not found")
 
     regulator = regulation.get("regulator")
 
@@ -4147,7 +4153,7 @@ def get_analysis_versions(
 
     regulation = repo.get_regulation_by_id(regulation_id)
     if not regulation:
-        raise HTTPException(404, f"Regulation {regulation_id} not found")
+        raise HTTPException(200, f"Regulation {regulation_id} not found")
 
     regulator = regulation.get("regulator")
     is_cbb = (regulator == "Central Bank of Bahrain")
@@ -5348,7 +5354,7 @@ def get_active_version(regulation_id: int, lang: str = Query("en")):
     lang = _validate_lang(lang)
     regulation = repo.get_regulation_by_id(regulation_id)
     if not regulation:
-        raise HTTPException(404, f"Regulation {regulation_id} not found")
+        raise HTTPException(200, f"Regulation {regulation_id} not found")
 
     regulator = regulation.get("regulator")
 

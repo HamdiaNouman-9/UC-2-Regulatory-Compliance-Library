@@ -308,3 +308,28 @@ html, body {
 .usage-table th, .usage-table td { border: 1px solid var(--border); padding: 6px 12px; text-align: right; }
 .usage-table th:first-child, .usage-table td:first-child { text-align: left; }
 .usage-table th { background: var(--bg); font-size: 11.5px; text-transform: uppercase; color: var(--muted); }
+
+/* Model & usage dashboard */
+.dash-hero { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; padding: 22px 24px; margin-bottom: 26px;
+  border: 1px solid var(--border); border-radius: 12px; background: linear-gradient(135deg, #f3fbfb, #fff 60%); }
+.dash-eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.dash-model { font-size: 26px; font-weight: 700; color: var(--accent-dark); word-break: break-all; margin-bottom: 16px; }
+.dash-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.dash-chip { display: flex; flex-direction: column; padding: 8px 14px; border-radius: 8px; background: #fff; border: 1px solid var(--border); min-width: 110px; }
+.dash-chip .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+.dash-chip .v { font-size: 16px; font-weight: 700; margin-top: 2px; }
+.dash-hero-side { display: flex; flex-direction: column; gap: 8px; border-left: 1px solid var(--border); padding-left: 24px; }
+.dash-full { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: #fff; }
+.dash-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.dash-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.dash-title { font-size: 18px; font-weight: 700; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.kpi { padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.kpi .v { font-size: 24px; font-weight: 700; }
+.kpi .k { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin-top: 4px; }
+.kpi:last-child .v { color: var(--accent-dark); }
+.usage-table.wide { width: 100%; border-radius: 10px; overflow: hidden; }
+.usage-table .costcol { min-width: 150px; }
+.usage-table .bar { height: 5px; background: var(--accent-soft); border-radius: 3px; margin-bottom: 4px; }
+.usage-table .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+@media (max-width: 900px) { .dash-hero { grid-template-columns: 1fr; } .dash-hero-side { border-left: 0; padding-left: 0; } }

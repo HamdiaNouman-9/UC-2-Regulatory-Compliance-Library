@@ -113,7 +113,8 @@ try:
         api._analysis_state.pop(d, None)
 
     check("empty list is 422", client.post("/analysis/trigger", json={"regulation_ids": []}).status_code == 422)
-    check("unknown batch is 404", client.get("/analysis/batches/nope").status_code == 404)
+    r = client.get("/analysis/batches/nope")
+    check("unknown batch is 200 with an error detail", r.status_code == 200 and "not found" in r.json().get("detail", ""))
 
     # ---- 2. by run ---------------------------------------------------------
     changes = {"new": [{"type": "new", "regulation_id": a, "version_id": None, "previous_version_id": None, "title": "n", "source_system": "s", "document_url": "u", "detail": {}}],

@@ -21,6 +21,7 @@ const state = {
   sidebarManuallyHidden: false,
   mode: "library", // "library" | "pipeline" | "alerts" | "model"
   currentModel: null,
+  currentModelSpend: null, // this app's spend on currentModel, from /llm/usage
   modelList: [],
 };
 
@@ -1012,15 +1013,45 @@ async function loadAlerts() {
  *  Model & usage view                                               *
  * ---------------------------------------------------------------- */
 
+// OpenRouter prices are USD per token; show them per million, the unit everyone quotes.
+const per1m = v => (v == null || v === "" ? "?" : "$" + (parseFloat(v) * 1e6).toFixed(2));
+const fmtCtx = n => (n ? (n >= 1000 ? Math.round(n / 1000) + "K" : String(n)) + " tokens" : "n/a");
+const modelInfo = id => state.modelList.find(m => m.id === id) || null;
+
+// The dashboard's top row: what the model is and what it costs.
+function renderModelTiles() {
+  const m = modelInfo(state.currentModel);
+  const spend = state.currentModelSpend;
+  $("#modelName").textContent = state.currentModel || "...";
+  const chip = ([k, v]) =>
+    `<div class="dash-chip"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`;
+  $("#modelTiles").innerHTML = [
+    ["Input / 1M", m ? per1m(m.prompt_price) : "n/a"],
+    ["Output / 1M", m ? per1m(m.completion_price) : "n/a"],
+    ["Context", m ? fmtCtx(m.context_length) : "n/a"],
+    ["Spent by this app", spend == null ? "n/a" : "$" + Number(spend).toFixed(4)],
+  ].map(chip).join("");
+}
+
+// Price of whatever is highlighted in the picker, before it is saved.
+function renderModelPreview() {
+  const id = $("#modelSelect").value;
+  const m = modelInfo(id);
+  $("#modelPreview").textContent = m
+    ? `${m.id}: input ${per1m(m.prompt_price)} / output ${per1m(m.completion_price)} per 1M tokens, ` +
+      `${fmtCtx(m.context_length)} context`
+    : "";
+}
+
 function fillModelSelect() {
   const q = $("#modelSearchInput").value.trim().toLowerCase();
   const list = state.modelList.filter(m =>
     !q || m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q));
-  const per1m = v => (v == null || v === "" ? "?" : "$" + (parseFloat(v) * 1e6).toFixed(2));
   $("#modelSelect").innerHTML = list.slice(0, 300).map(m =>
     `<option value="${esc(m.id)}"${m.id === state.currentModel ? " selected" : ""}>` +
     `${esc(m.id)}  (in ${per1m(m.prompt_price)} / out ${per1m(m.completion_price)} per 1M)</option>`
   ).join("") || '<option value="">No matches</option>';
+  renderModelPreview();
 }
 
 async function loadModelPanel() {
@@ -1028,7 +1059,6 @@ async function loadModelPanel() {
   msg.textContent = "";
   try {
     state.currentModel = (await api("/llm/settings")).model;
-    $("#currentModel").textContent = state.currentModel;
   } catch (e) {
     msg.textContent = "Could not read current model: " + e.message;
   }
@@ -1038,6 +1068,7 @@ async function loadModelPanel() {
   } catch (e) {
     msg.textContent = "Could not load OpenRouter model list: " + e.message;
   }
+  renderModelTiles();
   loadUsage();
 }
 
@@ -1050,8 +1081,8 @@ async function saveModel() {
   try {
     const r = await apiPut("/llm/settings", { model: id });
     state.currentModel = r.model;
-    $("#currentModel").textContent = r.model;
     msg.textContent = "Saved. " + (r.note || "");
+    loadUsage(); // re-derive "spent on it" for the newly chosen model
   } catch (e) {
     msg.textContent = "Not saved: " + e.message;
   } finally {
@@ -1064,48 +1095,41 @@ async function loadUsage() {
   box.innerHTML = '<div class="muted-note">Loading&hellip;</div>';
   try {
     const group = $("#usageGroupSelect").value;
-    const u = await api("/llm/usage", { group_by: group });
+    // This app's usage only. include_openrouter=false skips the whole-key
+    // figures, which the dashboard doesn't show, so there is no reason to
+    // spend two outbound OpenRouter calls on every refresh.
+    const fetchUsage = g => api("/llm/usage", { group_by: g, include_openrouter: false });
+    const byModel = await fetchUsage("model");
+    const u = group === "model" ? byModel : await fetchUsage(group);
     const usd = v => (v == null ? "n/a" : "$" + Number(v).toFixed(4));
     const num = v => Number(v || 0).toLocaleString();
     const tile = ([k, v]) =>
-      `<div class="usage-tile"><div class="v">${esc(String(v))}</div><div class="k">${esc(k)}</div></div>`;
+      `<div class="kpi"><div class="v">${esc(String(v))}</div><div class="k">${esc(k)}</div></div>`;
 
-    // --- this app only
+    // Feed the model hero: what this app has spent on the model in use now.
+    const spent = byModel.uc.rows.find(r => r.group === state.currentModel);
+    state.currentModelSpend = spent ? spent.cost_usd : 0;
+    renderModelTiles();
+
     const uc = u.uc, t = uc.total;
-    let html = '<div class="section-label" style="margin-top:6px;">This app</div>';
-    html += '<div class="usage-grid">' + [
+    let html = '<div class="kpi-row">' + [
       ["Calls", num(t.calls)], ["Prompt tokens", num(t.prompt_tokens)],
       ["Completion tokens", num(t.completion_tokens)], ["Cached tokens", num(t.cached_tokens)],
-      ["Cost", usd(t.cost_usd)],
+      ["Total cost", usd(t.cost_usd)],
     ].map(tile).join("") + "</div>";
-    html += `<div class="muted-note" style="margin:6px 0;">${uc.tracking_since
-      ? "Recorded since " + esc(new Date(uc.tracking_since + "Z").toLocaleString())
-      : "Nothing recorded yet -- usage appears after the next analysis."}</div>`;
     if (uc.rows.length) {
-      html += `<table class="usage-table"><thead><tr><th>${esc(group)}</th><th>Calls</th>
-        <th>Prompt</th><th>Completion</th><th>Cached</th><th>Cost</th></tr></thead><tbody>` +
+      const max = Math.max(...uc.rows.map(r => Number(r.cost_usd) || 0), 1e-12);
+      html += `<table class="usage-table wide"><thead><tr><th>${esc(group)}</th><th>Calls</th>
+        <th>Prompt</th><th>Completion</th><th>Cached</th><th class="costcol">Cost</th></tr></thead><tbody>` +
         uc.rows.map(r => `<tr><td>${esc(r.group == null ? "(none)" : String(r.group))}</td>
           <td>${num(r.calls)}</td><td>${num(r.prompt_tokens)}</td><td>${num(r.completion_tokens)}</td>
-          <td>${num(r.cached_tokens)}</td><td>${usd(r.cost_usd)}</td></tr>`).join("") +
+          <td>${num(r.cached_tokens)}</td><td class="costcol"><div class="bar"><i style="width:${
+            Math.max(2, Math.round((Number(r.cost_usd) || 0) / max * 100))}%"></i></div>${usd(r.cost_usd)}</td></tr>`).join("") +
         "</tbody></table>";
     }
-
-    // --- whole key, per OpenRouter
-    const o = u.openrouter || {};
-    const tiles = [];
-    if (o.key) {
-      tiles.push(["Key total", usd(o.key.usage)], ["Today", usd(o.key.usage_daily)],
-                 ["This week", usd(o.key.usage_weekly)], ["This month", usd(o.key.usage_monthly)]);
-      if (o.key.limit != null) tiles.push(["Key limit", usd(o.key.limit)]);
-    }
-    if (o.credits) {
-      tiles.push(["Credits bought", usd(o.credits.total_credits)],
-                 ["Credits used", usd(o.credits.total_usage)]);
-    }
-    html += '<div class="section-label" style="margin-top:18px;">Whole API key (OpenRouter)</div>';
-    html += tiles.length ? '<div class="usage-grid">' + tiles.map(tile).join("") + "</div>" : "";
-    html += Object.entries(o.errors || {}).map(([k, v]) =>
-      `<div class="muted-note" style="margin-top:8px;">${esc(k)} unavailable: ${esc(v)}</div>`).join("");
+    html += `<div class="muted-note" style="margin-top:8px;">${uc.tracking_since
+      ? "Recorded since " + esc(new Date(uc.tracking_since + "Z").toLocaleString())
+      : "Nothing recorded yet -- usage appears after the next analysis."}</div>`;
     box.innerHTML = html;
   } catch (e) {
     box.innerHTML = `<div class="err-banner">Could not load usage: ${esc(e.message)}</div>`;
@@ -1117,6 +1141,7 @@ $("#saveModelBtn").addEventListener("click", saveModel);
 $("#refreshUsageBtn").addEventListener("click", loadUsage);
 $("#usageGroupSelect").addEventListener("change", loadUsage);
 $("#modelSearchInput").addEventListener("input", fillModelSelect);
+$("#modelSelect").addEventListener("change", renderModelPreview);
 
 /* ---------------------------------------------------------------- *
  *  Mode switching                                                   *

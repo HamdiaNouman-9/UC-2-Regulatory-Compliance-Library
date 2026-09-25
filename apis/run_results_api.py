@@ -63,7 +63,7 @@ def list_runs(regulator: Optional[str] = None, job: Optional[str] = None, state:
 def get_run(run_id: int):
     run = _guard(run_store.get_run, run_id)
     if not run:
-        raise HTTPException(404, f"run {run_id} not found")
+        raise HTTPException(200, f"run {run_id} not found")
     return run
 
 
@@ -72,12 +72,12 @@ def run_changes(run_id: int, type: Optional[str] = Query(None, description="new 
                 decision: Optional[str] = Query(None, description="pending | accepted | rejected"),
                 limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     if type and type not in run_store.CHANGE_TYPES:
-        raise HTTPException(422, f"type must be one of {run_store.CHANGE_TYPES}")
+        raise HTTPException(200, f"type must be one of {run_store.CHANGE_TYPES}")
     if decision and decision not in ("pending",) + run_store.DECISIONS:
-        raise HTTPException(422, "decision must be pending, accepted or rejected")
+        raise HTTPException(200, "decision must be pending, accepted or rejected")
     out = _guard(run_store.list_changes, run_id, change_type=type, decision=decision, limit=limit, offset=offset)
     if out is None:
-        raise HTTPException(404, f"run {run_id} not found")
+        raise HTTPException(200, f"run {run_id} not found")
     return out
 
 
@@ -104,7 +104,7 @@ def alerts(level: Optional[str] = Query(None, description="warning | critical (d
            since: Optional[str] = Query(None, description="ISO date/time"),
            limit: int = Query(50, ge=1, le=200)):
     if level and level not in ("warning", "critical"):
-        raise HTTPException(422, "level must be warning or critical")
+        raise HTTPException(200, "level must be warning or critical")
     return _guard(run_store.alerts_feed, level=level, since=since, limit=limit)
 
 

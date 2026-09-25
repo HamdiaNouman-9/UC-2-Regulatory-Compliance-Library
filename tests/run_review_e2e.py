@@ -109,14 +109,16 @@ try:
           and {a["code"] for a in j["alerts"]} >= {"empty_content_versions", "withdrawals_proposed", "changes_pending_review"}, str(j)[:300])
     check("alert level is warning", j["alert_level"] == "warning", j["alert_level"])
     check("GET /runs/{id} carries the run's own report, minus the change rows", j["summary"].get("crawled") == 3 and "changes" not in j["summary"])
-    check("unknown run is 404", client.get("/runs/99999999").status_code == 404)
+    check("unknown run is 200 with an error detail", client.get("/runs/99999999").status_code == 200
+          and "not found" in client.get("/runs/99999999").json().get("detail", ""))
     ch = client.get(f"/runs/{run_id}/changes").json()["changes"]
     by = {c["type"]: c for c in ch}
     check("three changes listed", len(ch) == 3)
     check("`new` carries NO updated_at", "updated_at" not in by["new"])
     check("`modified` and `deleted` carry updated_at", "updated_at" in by["modified"] and "updated_at" in by["deleted"])
     check("type filter", [c["type"] for c in client.get(f"/runs/{run_id}/changes?type=deleted").json()["changes"]] == ["deleted"])
-    check("bad type is 422", client.get(f"/runs/{run_id}/changes?type=bogus").status_code == 422)
+    r = client.get(f"/runs/{run_id}/changes?type=bogus")
+    check("bad type is 200 with an error detail", r.status_code == 200 and "type must be" in r.json().get("detail", ""))
     al = client.get("/alerts").json()
     check("alerts feed lists the warning run and the critical failed run",
           {a["run_id"] for a in al["alerts"]} >= {run_id, failed_id}, str(al)[:300])
