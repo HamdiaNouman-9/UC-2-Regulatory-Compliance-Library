@@ -47,6 +47,8 @@ countries:
     - "Saudi Exchange"
     - "Anti-Money Laundering Permanent Committee (AML)"
     - "Zakat, Tax and Customs Authority (ZATCA)"
+    # Onboarded 2026-09-24 with config/sources/nca.yml.
+    - "National Cybersecurity Authority (NCA)"
 
   # Onboarded 2026-09-08 with config/sources/cbj.yml. Listed at onboarding
   # rather than at first crawl for the reason the Bahrain block below records:

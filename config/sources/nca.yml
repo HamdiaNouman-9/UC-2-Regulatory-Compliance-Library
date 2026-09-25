@@ -1,0 +1,120 @@
+# NCA — National Cybersecurity Authority (Saudi Arabia). CUSTOM, like MOH and MLSD.
+#
+# Scope: the five tabs of the site's "Cyber Regulations and Operations" menu —
+#   Laws and Regulations        /en/laws-and-regulations/     <- wired
+#   Regulatory Documents        /en/regulatory-documents/     <- wired
+#   Registrations and Licensing /en/registration-and-licensing/ <- wired
+#   Cyber Enablement            /en/enablement/               <- wired (generic)
+#   Cyber Threats and Incidents /en/cyber-operations/         <- wired (generic)
+#
+# WHY CUSTOM. Measured 2026-09-24: Laws and Regulations is one CMS rich-text
+# block with each instrument written as flat siblings — bold heading, paragraph,
+# "View" button to a cdn.nca.gov.sa PDF — and no container per instrument. The
+# generic crawler found both PDFs but titled them by the button ("View the
+# Statute ...") and could only attach the whole page as HTML. crawler/nca_crawler.py
+# splits the block on its bold headings: title = heading, document_html = the
+# text under it, document_url = the button's file. See its module docstring.
+#
+# No browser: server-rendered, plain GET returns the content, no bot wall.
+#
+# REGULATORY DOCUMENTS is a card listing paginated by JavaScript (8 per page, 3
+# pages, 17 cards on 2026-09-24). The cards come from a public CMS API whose
+# response already holds each "Read More" page's content — title, date, HTML and
+# the button's file links — so the crawler makes ONE request and opens no detail
+# page. Checked against the rendered detail pages; see NCACardListCrawler.
+#
+# CYBER ENABLEMENT and CYBER THREATS AND INCIDENTS are single information pages
+# with no sub-pages, so the GENERIC crawler handles them as-is (2026-09-24):
+#   Enablement      the page itself, as HTML — descriptions of 13 NCA service
+#                   programmes (MDR, Deem, CISO Office Support ...). No files.
+#   Cyber Threats   the page as HTML; it links RFC 2350 (NCA's CERT profile, PDF).
+#                   "Public Key" is listed on the page but not linked.
+#                   RFC 2350 is kept as a link in the page, not its own entry.
+# Their HTML is trimmed by the `nca.gov.sa` profile in generic_crawler/crawler.py
+# (content wrapper, images, "Last Update" line, feedback widget).
+# doc_path_category + doc_path_title give these the same shape as the two
+# custom tabs: regulator > source_system > tab > title.
+#
+# REGISTRATION AND LICENSING (2026-09-25) is also one information page, but it is
+# CUSTOM (NCAPageCrawler): the page is ONE row and the two PDFs it links under
+# "To View" — the MSOC licensing framework and the Investor's Guide — are
+# ATTACHED to that row (extra_meta.attachment_links), a business decision. The
+# generic crawler would store each PDF as its own row. The "List of Registered
+# Service Providers" sub-page is a company directory and is NOT crawled — the
+# page crawler follows no links, so nothing needs excluding.
+
+regulator: "National Cybersecurity Authority (NCA)"
+owner: lead
+
+# One entry per tab. Two tabs sharing an entry would propose each other's
+# documents as withdrawn — add each new tab as its own source.
+sources:
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.nca_crawler.NCACrawler"
+    init_kwargs:
+      regulator: "National Cybersecurity Authority (NCA)"
+      source_system: "Cyber Regulations and Operations"
+      page_url: "https://nca.gov.sa/en/laws-and-regulations/"
+      page_title: "Laws and Regulations"
+
+  - name: "Regulatory Documents"
+    mode: custom
+    crawler_class: "crawler.nca_crawler.NCACardListCrawler"
+    init_kwargs:
+      regulator: "National Cybersecurity Authority (NCA)"
+      source_system: "Cyber Regulations and Operations"
+      page_url: "https://nca.gov.sa/en/regulatory-documents/"
+      page_title: "Regulatory Documents"
+      # The API's schemaSlug -> the tag printed on the card. The keys are also
+      # the API request, so this list IS the listing's scope. The page asks for
+      # "cyber-security-tools" too; it held 0 items on 2026-09-24 and is kept so
+      # a first item there is picked up rather than missed.
+      schema_slugs:
+        controls-list: "Policies and controls"
+        frameworks-and-standard-list: "Frameworks and standards"
+        guidelines-list: "Guidelines and support tools"
+        cyber-security-tools: "Cybersecurity tools"
+      # Business decisions, 2026-09-24:
+      #   Cybersecurity Toolkits — ONE entry; its 84-row template table (Word +
+      #     PDF per row, 162 links) stays inside document_html, no files stored.
+      html_only: ["cybersecurity-toolkits"]
+      #   Implementation Guides — each table row (one guide, one PDF) is its own
+      #     entry under the card, which keeps its description.
+      split_tables: ["igcc"]
+
+  - name: "Registration and Licensing"
+    mode: custom
+    crawler_class: "crawler.nca_crawler.NCAPageCrawler"
+    init_kwargs:
+      regulator: "National Cybersecurity Authority (NCA)"
+      source_system: "Cyber Regulations and Operations"
+      page_url: "https://nca.gov.sa/en/registration-and-licensing/"
+      page_title: "Registration and Licensing"
+
+  - name: "Cyber Enablement"
+    mode: generic
+    seed_url: "https://nca.gov.sa/en/enablement/"
+    scope: prefix
+    regulator: "National Cybersecurity Authority (NCA)"
+    source_system: "Cyber Regulations and Operations"
+    category: "Cyber Enablement"
+    doc_path_category: true
+    doc_path_title: true
+    max_pages: 20
+    max_depth: 2
+
+  - name: "Cyber Threats and Incidents"
+    mode: generic
+    seed_url: "https://nca.gov.sa/en/cyber-operations/"
+    scope: prefix
+    regulator: "National Cybersecurity Authority (NCA)"
+    source_system: "Cyber Regulations and Operations"
+    category: "Cyber Threats and Incidents"
+    # RFC 2350 (NCA's CERT profile) is a link on this page, not an entry of its
+    # own — business decision 2026-09-24. It stays in the page's HTML.
+    exclude_documents: ["RFC-2350"]
+    doc_path_category: true
+    doc_path_title: true
+    max_pages: 20
+    max_depth: 2

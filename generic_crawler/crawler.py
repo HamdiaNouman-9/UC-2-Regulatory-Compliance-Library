@@ -870,6 +870,29 @@ def best_doc_title(link: dict, url: str) -> str:
 # circulars, CBB, SECP acts, SBP circulars and CMA seeds: with the profile off,
 # breadcrumb and content output are unchanged on all six.
 SITE_PROFILES = {
+    "nca.gov.sa": {
+        # NCA (Next.js), MEASURED 2026-09-24 on /en/enablement/ and
+        # /en/cyber-operations/ — the two tabs crawled generically; the other
+        # NCA tabs are custom (crawler/nca_crawler.py) and never read this.
+        #
+        # <main> has exactly three children on both pages:
+        #   div.bg-primary-5         breadcrumb, <h1>, "Share the page" buttons
+        #   div.py-10                the content
+        #   div.full-container.py-6  "Was this page useful? ... from 1 Feedbacks"
+        # The default <main> capture kept all three, so the stored HTML opened
+        # with a bare "Home" list and closed on the feedback count. Naming the
+        # middle child excludes the other two by selection.
+        "content_selector": "main > div.py-10",
+        # INSIDE div.py-10:
+        #   * each picture is a Next.js <img> alone in its own <div>, pointing at
+        #     /_next/image/... — it renders as an empty gap once stored (2 per
+        #     page). The wrapper goes with it, or the gap stays.
+        #   * the last block is "Last Update at: 27/08/2025 - 11:33 am Saudi
+        #     time", a <p class="py-6"> alone in a div.full-container: page
+        #     furniture, same as the feedback widget below it.
+        "drop_selectors": "div:has(> img:only-child), img, "
+                          "div.full-container:has(> p.py-6:only-child)",
+    },
     "www.aml.gov.sa": {
         # The current crumb is a <span class="breadcrumbCurrent">, not an <a>, and
         # the Arabic home link ships in a display:none span. Anchors-only reading
