@@ -886,6 +886,60 @@ SITE_PROFILES = {
         # "FOLLOW US", on CMA they are the document titles — junk levels there.
         "group_headings": True,
     },
+    "www.qcb.gov.qa": {
+        # QCB IS SHAREPOINT, AND IT FAILED IN BOTH OF SHAREPOINT'S USUAL WAYS.
+        #
+        # MEASURED 2026-09-17, one plain GET of
+        # /en/FinancialStability/Pages/GreenFinance.aspx (48,431 bytes) plus the
+        # two capped crawls already in output/qbc_esg and output/qbc_leg:
+        #
+        #   id="aspnetForm"            present   -> whole page dropped as a <form>
+        #   [id*="PlaceHolderMain"]    present   -> the content wrapper to pick
+        #   crawled text_len                   0
+        #   crawled html file            235 bytes  <- <body></body>, nothing else
+        #
+        # The blank capture is NOT the .aspx being slow. The same run harvested
+        # 9 PDF links off that page, and JS_LINKS reads the live document — so
+        # the page had rendered. Only the CAPTURE was empty, which is the
+        # aml.gov.sa failure exactly: <form> is on the junk list, SharePoint
+        # wraps the entire document in one, and removing it removes the page.
+        "unwrap_forms": True,
+        "sharepoint_main": True,
+        # THE CURRENT CRUMB IS AN <li>, NOT AN <a>:
+        #   <li class="breadcrumb-item"><a ...>Home page</a></li>
+        #   <li class="lblCurrentbreadcrumb breadcrumb-item active"
+        #       aria-current="page">Sustainability &amp; Financial Inclusion</li>
+        # Anchors-only reading therefore returned ["Home page"] on every page of
+        # the site — one breadcrumb for the whole host, which is what the first
+        # test run reported.
+        "breadcrumb_current": True,
+        # THE FAQ ACCORDION ON /Digital-Currency.aspx, AND NOTHING ELSE.
+        #
+        # That page is one paragraph saying what a CBDC is, followed by 21
+        # <details>/<summary> question-and-answer blocks. The Q&A is the site
+        # explaining itself, not an instrument, and left in it is 95% of the
+        # stored text — 7,531 characters against 376 of actual statement.
+        #
+        # MEASURED across every QCB page in scope, 2026-09-17:
+        #   Digital-Currency        21 <details>
+        #   MonetaryPolicyTools      0
+        #   LegislationNew           0
+        #   Information-Security     0
+        #   FinancialTechnology      0
+        #   GreenFinance             0
+        # so naming the ELEMENT costs nothing anywhere else on this host, and
+        # needs no per-page setting the engine does not have.
+        #
+        # `drop_selectors` only edits the CAPTURED HTML. JS_LINKS reads the live
+        # document, so a file linked from inside an FAQ answer is still found and
+        # still recorded — this hides the prose, never a document.
+        #
+        # The 376 characters that remain clear MIN_PAGE_TEXT (200) with room to
+        # spare, so the page still registers as a document. If QCB ever trims
+        # that paragraph the page stops being stored at all, which will look like
+        # a disappearance and is worth knowing before it happens.
+        "drop_selectors": "details",
+    },
     "www.rera.gov.bh": {
         # RERA'S CURRENT CRUMB IS NOT A LINK.  MEASURED 2026-08-21 on
         # /en/regulations/circulars/circulars-issued-in-2020:

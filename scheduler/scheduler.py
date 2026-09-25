@@ -300,9 +300,10 @@ from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E40
                                monitor_cma, monitor_edb, monitor_lloc,
                                monitor_lmra, monitor_mc, monitor_mlcu,
                                monitor_mlsd, monitor_moic, monitor_justice_canada,
-                               monitor_nbr, monitor_pdpa, monitor_rera,
-                               monitor_sama, monitor_saudi_exchange,
-                               monitor_sio, monitor_simah)
+                               monitor_nbr, monitor_pdpa, monitor_qcb,
+                               monitor_qfcl, monitor_rera, monitor_sama,
+                               monitor_saudi_exchange, monitor_sio, monitor_simah,
+                               monitor_nca)
 
 DIRECT_JOB_MAPPING = {
     "staleness_check": run_staleness_check,
@@ -368,6 +369,18 @@ DIRECT_JOB_MAPPING = {
     # jobs/monitor_jobs.py. Blocked hosts are still never retried by a machine.
     "monitor_simah": monitor_simah,
     "monitor_saudi_exchange": monitor_saudi_exchange,
+
+    # ---- Qatar, onboarded 2026-09-17 ------------------------------------ #
+    # Ships DISABLED in config/scheduler.yml, for the reason the Bahrain
+    # three above ship disabled: this path writes straight to MSSQL, and a
+    # new regulator goes to a workbook for a person to read first.
+    "monitor_qcb": monitor_qcb,
+    "monitor_qfcl": monitor_qfcl,
+
+    # ---- Saudi Arabia, NCA onboarded 2026-09-24/25 ----------------------- #
+    # ENABLED from the start, by explicit decision 2026-09-25 -- its first
+    # scheduled run is the ingest. See jobs/monitor_jobs.py::monitor_nca.
+    "monitor_nca": monitor_nca,
 }
 
 API_JOB_MAPPING = {
@@ -407,6 +420,9 @@ API_JOB_MAPPING = {
     "monitor_pdpa": lambda: trigger_monitor_via_api("monitor_pdpa"),
     "monitor_simah": lambda: trigger_monitor_via_api("monitor_simah"),
     "monitor_saudi_exchange": lambda: trigger_monitor_via_api("monitor_saudi_exchange"),
+    "monitor_qcb": lambda: trigger_monitor_via_api("monitor_qcb"),
+    "monitor_qfcl": lambda: trigger_monitor_via_api("monitor_qfcl"),
+    "monitor_nca": lambda: trigger_monitor_via_api("monitor_nca"),
 }
 
 # Choose which mode to use (set via environment variable or hardcode)

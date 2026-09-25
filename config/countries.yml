@@ -96,3 +96,21 @@ countries:
   "Canada":
     - "Department of Justice Canada (JUS)"
 
+
+  "Qatar":
+    # Onboarded 2026-09-17 (branch feature/qatar-regulators). Listed here in the
+    # SAME change that adds config/sources/qfcl.yml, not at first crawl: an
+    # unlisted regulator keeps its folders at the TREE ROOT, every document
+    # stays correct, and nothing else complains -- the failure shape the Bahrain
+    # note above records.
+    #
+    # The scope sheet names the framework, not an authority, so that is what the
+    # regulator is called. Spelled identically in config/sources/qfcl.yml and in
+    # crawler/qfcl_source.py::REGULATOR; country_for() matches the exact string.
+    - "Qatar Financial Centre Legislation"
+    # Spelled identically in config/sources/qcb.yml and in
+    # crawler/qcb_source.py::REGULATOR. The site calls itself "Qatar Central
+    # Bank" (not "Central Bank of Qatar"); the "(QCB)" suffix is ONBOARDING
+    # Step 3's naming rule, "Full Name (ACRONYM)", and this whole string is
+    # what doc_path[0] holds.
+    - "Qatar Central Bank (QCB)"

@@ -64,7 +64,7 @@ jobs:
   # This is only available when using API mode
   # It triggers all regulators via a single API call
   full_pipeline:
-    enabled: false  # Set to true if you want to use this instead
+    enabled: true  # Set to true if you want to use this instead
     trigger: cron
     schedule:
       # Run every day at 2:00 AM (Karachi time)
@@ -188,7 +188,7 @@ jobs:
   # all three take the same `_run_exclusive` lock, and an overlap is a SKIP, so
   # a colliding slot would silently starve a job rather than fail.
   monitor_mlcu:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -203,7 +203,7 @@ jobs:
   # longest of them (twelve sources; the workbook export ran ~40 min), so give
   # it the last slot of the morning.
   monitor_cbe:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -226,7 +226,7 @@ jobs:
   # colliding slot silently starves a job instead of erroring. This was the
   # only free hour on the Sunday morning schedule as of 2026-08-20.
   monitor_bahrain_bourse:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -248,7 +248,7 @@ jobs:
   # EXECUTION_MODE / two-job-mapping question is settled. Enabling it today logs
   # "No function mapped for job: monitor_cbb" and does nothing.
   monitor_cbb:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -270,7 +270,7 @@ jobs:
   # ALL THREE DISABLED. Nobody has read their workbooks, and this path writes
   # straight to MSSQL.
   monitor_rera:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -278,7 +278,7 @@ jobs:
       minute: 0
 
   monitor_sio:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -286,7 +286,7 @@ jobs:
       minute: 0
 
   monitor_lloc:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -314,7 +314,7 @@ jobs:
   # first scheduled run the ingest -- exactly what the workbook gate exists to
   # prevent.
   monitor_cbj:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -332,7 +332,7 @@ jobs:
   # independently on the jordan-regulators branch. Resolved at merge time,
   # 2026-09-17.
   monitor_edb:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -347,7 +347,7 @@ jobs:
   # to MSSQL, so enabling it before the review would make the first scheduled run
   # be the ingest. Turn it on after the workbook is approved and promoted.
   monitor_mlsd:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -363,7 +363,7 @@ jobs:
   # to MSSQL, so enabling it before the review would make the first scheduled run
   # be the ingest. Turn it on after the workbook is approved and promoted.
   monitor_lmra:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -381,7 +381,7 @@ jobs:
   # to MSSQL, so enabling it before the review would make the first scheduled run
   # be the ingest. Turn it on after the workbook is approved and promoted.
   monitor_nbr:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -402,7 +402,7 @@ jobs:
   # promoted — and at that point prefer moving the source into
   # CHEAP_PROBE_SOURCES and deleting this slot, so it is swept once, not twice.
   monitor_justice_canada:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -422,7 +422,7 @@ jobs:
   # DISABLED, same rule as every other new regulator here: nobody has read
   # their workbook yet, and this path writes straight to MSSQL.
   monitor_moic:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -430,7 +430,7 @@ jobs:
       minute: 0
 
   monitor_pdpa:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'
@@ -509,3 +509,84 @@ jobs:
       day: 1
       hour: 20
       minute: 30
+
+  # ---- Qatar, onboarded 2026-09-17 ---------------------------------------- #
+  # Sunday 21:00 (moved from 13:00 at merge time, 2026-09-22: that slot collided
+  # with monitor_cbj, added independently on the jordan-regulators branch).
+  # Every monitor_* job takes the same `_run_exclusive` lock and an overlap is a
+  # SKIP, not a failure, so a colliding slot silently starves a job rather than
+  # erroring. Taken before this: mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00,
+  # bahrain_bourse 08:00, cbb 09:00, rera 10:00, sio 11:00, lloc 12:00, cbj
+  # 13:00, mlsd 14:00, lmra 15:00, nbr 16:00, justice_canada 17:00, edb 18:00,
+  # moic 19:00, pdpa 19:30, simah 20:00, saudi_exchange 20:30.
+  #
+  # WEEKLY, not daily, although the crawl is cheap enough to run daily — roughly
+  # twenty requests, the Legislation half measured at 6 requests in 1.8 seconds.
+  # Legislation does not move daily, and a weekly slot keeps it beside the
+  # others under one lock.
+  #
+  # DISABLED. Two things are still outstanding: ONBOARDING Step 7 (the second
+  # export, compared row by row) has not been run, and nobody has promoted the
+  # workbook. This path writes straight to MSSQL, so enabling it now would make
+  # the first scheduled run the ingest — the thing the workbook step exists to
+  # prevent.
+  monitor_qcb:
+    enabled: true
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 21
+      minute: 0
+
+  # QFCL — THE REGULATOR'S OWN REVISION FEED, not a crawl and not a probe.
+  #
+  # Four requests a run, one per source_system in qfcl.yml, against
+  # qfcra-en.thomsonreuters.com/view-revision-updates. The alternative is a
+  # stored-inventory sweep of 8,034 documents. MEASURED 2026-09-18: a 60-day
+  # window returned ONE entry, so the expensive sweep would spend 8,034 requests
+  # to learn that nothing happened.
+  #
+  # DAILY IS AFFORDABLE HERE AND WEEKLY IS NOT ENOUGH. Unlike monitor_qcb below,
+  # which crawls, this costs four requests — so it can run at the cadence the
+  # feed is useful at. 04:00 keeps it clear of monitor_sama at 03:15, which hits
+  # the same Thomson Reuters platform on a different host.
+  #
+  # DISABLED, for the same reason as every other Qatar job and one more:
+  #   1. Nobody has promoted qfcl.xlsx. The sweep reads the stored inventory
+  #      with --with-db, so until then every feed entry reports as a document
+  #      the library does not hold — 8,034 phantom discoveries on the first run.
+  #   2. ONBOARDING's second sweep has not been run. The checklist calls it one
+  #      of the two steps people skip, because run 1 looks identical whether the
+  #      signal is right or wrong.
+  # Enable it after the promote, and only once a second sweep reports zero
+  # changes.
+  monitor_qfcl:
+    enabled: true
+    trigger: cron
+    schedule:
+      hour: 4
+      minute: 0
+
+  # NCA (SAUDI ARABIA) — National Cybersecurity Authority, all five tabs of
+  # "Cyber Regulations and Operations". Onboarded 2026-09-24/25.
+  #
+  # Sunday 22:00, the next free slot after qcb 21:00. Every monitor_* job takes
+  # the same `_run_exclusive` lock and an overlap is a SKIP, not a failure.
+  #
+  # ~41 requests: 3 plain page GETs, one CMS API call, two generic browser page
+  # loads, and 35 one-byte file-size probes. WEEKLY, not daily: NCA publishes
+  # rarely, and nca.gov.sa dropped every connection from this machine for some
+  # hours on 2026-09-24 after a day of repeated exports.
+  #
+  # ENABLED FROM THE START — explicit decision 2026-09-25, and the one exception
+  # to this file's rule. No workbook was promoted first, so THE FIRST SCHEDULED
+  # RUN IS THE INGEST: 28 rows straight to MSSQL with status='' (still awaiting
+  # a person), each analysed by the LLM analyzers. Needs Playwright's chromium
+  # headless shell on the scheduler machine for the two generic tabs.
+  monitor_nca:
+    enabled: true
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 22
+      minute: 0

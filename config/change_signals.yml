@@ -1319,5 +1319,192 @@ sources:
     signal: stored-inventory
     confirm: true
 
+  # ---- Qatar, onboarded 2026-09-17 --------------------------------------- #
+  # THE CRAWL IS THE SIGNAL, and unusually the measurement is lopsided: the
+  # crawl is CHEAPER than the probe it would replace, so probing first would be
+  # pure overhead. Same conclusion MOH reached, against the same shape of API.
+  #
+  # MEASURED 2026-09-17 against www.qcb.gov.qa:
+  #
+  #   crawl             6 requests, 1.8 seconds for the whole Legislation half:
+  #                     the site's own SharePoint REST chain
+  #                     (CategoryHeaderLegislation -> ListNameSubCat ->
+  #                     DocName). 85 file rows, and 85 of 85 carry the list's
+  #                     own `Modified` — the tier-2 stamp crawler/qcb_source.py
+  #                     already hashes. The other five sources are single-page
+  #                     loads plus six linked-page reads.
+  #
+  #   stored-inventory  REFUSED, on cost and on honesty.
+  #                     COST: one request per stored document, and the library
+  #                     holds 463 — against a crawl of roughly twenty.
+  #                     HONESTY: the six .aspx pages carry NO ETag and a
+  #                     Last-Modified equal to the CURRENT TIME. Three of three
+  #                     moved between two identical calls two seconds apart,
+  #                     which is exactly the CMA failure recorded above — 1,134
+  #                     false changes until confirm: true.
+  #                     The PDFs answer honestly (annex160.pdf returns ETag
+  #                     "{BBE80AC3-...}", Last-Modified Wed, 26 Mar 2025), which
+  #                     matters for the note at the end of this block.
+  #
+  #   sitemap           NOTHING TO READ. robots.txt points at /sitemap.xml, a
+  #                     355-byte index naming /sitemap0.xml — which is 161 bytes
+  #                     and contains ZERO <loc> entries. Not one stored page
+  #                     appears in it.
+  #
+  #   sama-feed         NO FEED. /en/rss and /en/Pages/Circulars.aspx both
+  #                     return 44,843 bytes, byte-for-byte the size of a url
+  #                     invented to test the catch-all.
+  #                     /en/news/Pages/default.aspx IS a real page. It was read
+  #                     with a plain GET only, and every QCB page is
+  #                     JS-rendered, so it is UNPROVEN rather than empty — worth
+  #                     a rendered look before anyone re-measures this. It could
+  #                     not replace the crawl either way: a news page does not
+  #                     cover the 350 files hanging off the instruction pages.
+  #
+  # IDENTITY IS THE DEFAULT, AND THAT IS A DECISION. The file urls embed the
+  # edition year (/Documents/BankInstructions2024/AR/...), so next year's
+  # reissue moves all 162 of them at once and MLCU's `identity: [doc_path,
+  # title]` override looks like the answer. IT IS NOT AVAILABLE HERE: five
+  # doc_path values are already shared by more than one row — four of them QCB
+  # filing several circulars under one subcategory title, one a section heading
+  # that introduces two different parts of the Instructions to Banks book — so
+  # that identity would collide and `check` would refuse the workbook. The
+  # reissue therefore reads as ~162 new plus ~162 disappeared rather than
+  # modified. The withdrawal rule PROPOSES rather than withdraws, so nothing is
+  # lost; expect a large review queue on the day it lands.
+  #
+  # WHAT THIS SIGNAL CANNOT SEE. 350 of the 432 Legislation rows are files
+  # harvested off a captured page and hashed `url|title` — ONBOARDING's tier 3,
+  # "weak but honest". A file ADDED TO or REMOVED FROM a page is caught, because
+  # the page row's own hash moves. A PDF REPLACED AT THE SAME URL IS NOT. Those
+  # files do answer an ETag, so a stored-inventory sweep scoped to just those
+  # rows is the one place a probe here would earn its cost. Deliberately not
+  # wired: it supplements this signal rather than replacing it.
+  #
+  # Six entries because `disappeared` is scoped by (regulator, source_system)
+  # and qcb.yml stores six. One entry would leave five sources on the defaults.
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "Legislation"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "Information Security"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "Fintech and Innovation"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "ESG and Sustainability Strategy for the Financial Sector"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "Monetary Policy Tools"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Qatar Central Bank (QCB)"
+    source_system: "Digital Currency"
+    signal: crawl
+    confirm: false
+
+  # QFCL RUNS ON THE SAME THOMSON REUTERS PLATFORM AS SAMA AND CBB, and it
+  # publishes the same view: qfcra-en.thomsonreuters.com/view-revision-updates.
+  # That makes it the third `sama-feed` regulator and, per ONBOARDING, the class
+  # of signal to look for before building a probe.
+  #
+  # ONE REQUEST INSTEAD OF 8,034. MEASURED 2026-09-18: the feed holds 21,182
+  # revision entries, the date filter takes the same f_date / changed_1[min] /
+  # changed_1[max] params SAMA uses, and a 60-day window returned ONE entry. A
+  # stored-inventory sweep would spend 8,034 requests to learn that.
+  #
+  # AND IT DISCOVERS. A probe can only re-ask about rows we already hold. That
+  # matters here more than it did at SAMA: on 2026-09-18 this library was found
+  # to be missing 486 rules that live on folder pages, and no probe could ever
+  # have said so.
+  #
+  # FOUR ENTRIES, NOT ONE, because `disappeared` is scoped by (regulator,
+  # source_system) and qfcl.yml stores four. The feed is regulator-wide, so each
+  # sweep filters by the section its `book-trail` names — dynamic_crawler/
+  # tr_feed_signal.py::section_of. The section spelling is the SITE's and does
+  # not always equal the source_system: "QFC Regulations" (plural) routes to
+  # "QFC Regulation", and QFC Law has no section node of its own, so its entries
+  # are filed under the law's own title.
+  #
+  # confirm: false — the feed lists a document BECAUSE the regulator changed it,
+  # so there is no stamp to be fooled by. This is SAMA's setting on the same
+  # endpoint, but it should be re-measured on the second sweep here rather than
+  # inherited: ONBOARDING's warning is CMA, which reported 1,134 false changes
+  # until `confirm: true`.
+  #
+  # IT CANNOT SEE DELETIONS, same as SAMA. A withdrawn document stops being
+  # listed rather than saying it went. The feed makes the crawl RARE, not
+  # unnecessary, and `disappeared` still comes from the crawl.
+  - regulator: "Qatar Financial Centre Legislation"
+    source_system: "QFC Law"
+    signal: sama-feed
+    feed_days: 30
+    timeout: 45
+    confirm: false
+
+  - regulator: "Qatar Financial Centre Legislation"
+    source_system: "QFC Regulation"
+    signal: sama-feed
+    feed_days: 30
+    timeout: 45
+    confirm: false
+
+  - regulator: "Qatar Financial Centre Legislation"
+    source_system: "QFCA Rules"
+    signal: sama-feed
+    feed_days: 30
+    timeout: 45
+    confirm: false
+
+  - regulator: "Qatar Financial Centre Legislation"
+    source_system: "QFCRA Rules"
+    signal: sama-feed
+    feed_days: 30
+    timeout: 45
+    confirm: false
+
+  # NCA (SAUDI ARABIA) - `crawl`. MEASURED 2026-09-25, six requests in total.
+  #
+  #   sitemap.xml        USELESS. Every <lastmod> reads 2026-09-25T00:00:00.016Z,
+  #                      the build time, on every url -- the CMA trap in its
+  #                      "everything changed daily" form.
+  #   robots.txt         Allow: / (only /404 and /strategic disallowed).
+  #   cdn file headers   HONEST. ECC 2-2024 on cdn.nca.gov.sa: ETag
+  #                      "688b6434-12c9f3", Last-Modified 31 Jul 2025 = its
+  #                      publication. Fixed nca.gov.sa/*.pdf urls 308-redirect to
+  #                      cdn.nca.gov.sa/ar/... with the same kind of headers.
+  #   the listing        Regulatory Documents is ONE call to NCA's CMS API, each
+  #                      card carrying its own modifiedAt.
+  #
+  # WHY `crawl` AND NOT `stored-inventory`, although the files answer a probe:
+  #   1. the crawl is ~5 page loads for the whole regulator and it SEES A NEW
+  #      card or heading, which a probe over stored rows cannot;
+  #   2. a stored-inventory sweep probes document_url ONLY, and 9 of the 28
+  #      rows keep their files in extra_meta.attachment_links with document_url
+  #      empty -- including fixed-url files (tcc, otcc, scyberedu).
+  # The honest file headers are used anyway, INSIDE the crawl: the NCA crawler
+  # reads each stored file's size with a one-byte range request and folds it
+  # into content_hash, so a file replaced at the same url reads `modified`. Size,
+  # not ETag: the ETag is nginx mtime-size and mtime may differ between CDN
+  # nodes holding the same bytes.
+  #
+  # ONE source_system for all five tabs ("Cyber Regulations and Operations"),
+  # so `disappeared` is scoped to the whole regulator's crawl. Identity is the
+  # default; multi-file rows declare their own (doc_path + attachment_links).
+  - regulator: "National Cybersecurity Authority (NCA)"
+    source_system: "Cyber Regulations and Operations"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.
