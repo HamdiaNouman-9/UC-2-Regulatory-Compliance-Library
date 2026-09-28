@@ -1,6 +1,10 @@
 # ---- secrets: NEVER commit these ----
 .env
 .env.local
+# Any other copy of .env (backups like .env.local-backup-2026-09-28) holds the
+# same credentials. An example file with no secrets may still be committed.
+.env.*
+!.env.example
 *.pem
 *.key
 

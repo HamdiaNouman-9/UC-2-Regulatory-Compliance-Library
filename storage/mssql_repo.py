@@ -401,11 +401,19 @@ class MSSQLRepository(DocumentRepository):
                 department, year,
                 source_page_url, extra_meta,
                 compliancecategory_id, document_html,
-                type, status, content_hash
+                type, status, content_hash,
+                created_at, updated_at
             )
             OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET())
         """
+        # created_at / updated_at are SET HERE, not left to a column default.
+        # MEASURED 2026-09-25: the local uc2-db declares both NOT NULL DEFAULT
+        # sysdatetimeoffset(), but prod (regulatory_monitoring) declares them NOT
+        # NULL with NO default, so every promote there failed with "Cannot insert
+        # the value NULL into column 'created_at'". Supplying the value is correct
+        # on both.
         try:
             with self._get_conn() as conn:
                 cursor = conn.cursor()
@@ -808,9 +816,13 @@ class MSSQLRepository(DocumentRepository):
             with self._get_conn() as conn:
                 cursor = conn.cursor()
                 self._ensure_run_history(cursor)
+                # run_at is SET, not left to the DEFAULT above: prod
+                # (regulatory_monitoring) has run_at NOT NULL with no default,
+                # measured 2026-09-25, so relying on it failed every insert
+                # there -- caught below, and the gate silently kept no history.
                 cursor.execute(
                     "INSERT INTO run_history (source, row_count, inventory_hash, "
-                    "verdict, problems) VALUES (?, ?, ?, ?, ?)",
+                    "verdict, problems, run_at) VALUES (?, ?, ?, ?, ?, GETUTCDATE())",
                     (source, int(row_count), inventory_hash or "",
                      verdict, (problems or "")[:500]))
                 conn.commit()
