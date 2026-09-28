@@ -158,6 +158,13 @@ _COUNTRY_CODES: Dict[str, str] = {
     "Egypt": "EGY",
     "Bahrain": "BHR",
     "Qatar": "QAT",
+    # Added 2026-09-28 in the same change that adds the country to
+    # config/countries.yml, as the note above requires. Jordan, Kuwait and
+    # Canada are listed there but NOT here, so their ref_keys read
+    # REG-UNK-... today; deliberately left alone rather than fixed in passing,
+    # because filling them in changes the ref_key of every stored row under
+    # three other regulators.
+    "United States of America": "USA",
 }
 
 # Matches regulator_acronym()'s own "UNK" convention in mssql_repo.py, for a

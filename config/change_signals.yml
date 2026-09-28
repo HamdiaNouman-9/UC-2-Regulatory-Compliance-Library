@@ -1506,5 +1506,53 @@ sources:
     signal: crawl
     confirm: false
 
+  # ---- United States -----------------------------------------------------
+  # NO `signal:` KEY, because stored-inventory is the default and this is the
+  # cheapest possible instance of it -- the KDIPA entry above is the same shape
+  # and the same reasoning.
+  #
+  # config/sources/regulations_dd.yml declares ONE pdf (`mode: declared`) rather
+  # than crawling for it, so the sweep has exactly one url to ask about: one
+  # ranged GET per run, two bytes of body.
+  #
+  # MEASURED 2026-09-28 through dynamic_crawler/fingerprint.py::version_token
+  # itself, not a hand-rolled request, so this is the basis the monitor records:
+  #
+  #     probe 1   483 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
+  #     probe 2   210 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
+  #     probe 3   380 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
+  #
+  #     HTTP 206 (the Range: bytes=0-1 is honoured -- Content-Length 2 of
+  #     306,814), ETag "ed8226e119aca1:0", Last-Modified Wed, 20 Jan 2010
+  #     20:44:58 GMT, server cloudflare.
+  #
+  # `etag-opaque`, NOT `etag`, and that is not a fault. `_SP_ETAG` only matches
+  # SharePoint's `{guid},N`; this is an IIS ETag, so fingerprint.py reports it
+  # separately rather than pretending to understand it. It still detects a
+  # change, which is the whole job. The ETag wins over Last-Modified on tier
+  # order, so the 2010 date is not what is compared.
+  #
+  # CONFIRM IS FALSE BECAUSE THE TOKEN DOES NOT LIE -- measured, not assumed:
+  # identical across three probes above, and a real sweep run twice against the
+  # workbook reported `unchanged: 1, unknown: 0, without_token: 0` the second
+  # time. Nothing like CMA, whose Last-Modified is the CURRENT TIME and reported
+  # 1,134 false changes until `confirm: true` made it hash the visible text. A
+  # needless confirm here would download 306 KB every sweep to learn nothing.
+  #
+  # WHAT THIS CANNOT SEE: a new Federal Reserve instrument. A stored-inventory
+  # sweep reads only documents already stored, so it watches this one file and
+  # is structurally blind to anything else the Board publishes -- the sweep says
+  # so itself in `withdrawals.blocked_by`. That is the right trade for a source
+  # defined as one declared instrument; the day this library wants Fed material
+  # generally, that is a crawling source with its own entry, not a change here.
+  #
+  # THE TWO STRINGS ARE THE SAME ON PURPOSE, as with KDIPA: `source_system` was
+  # set to the regulator name so `_clean_trail` folds it out of doc_path.
+  # `settings_for` matches on BOTH halves, so this still resolves to exactly
+  # this source.
+  - regulator: "Regulations DD"
+    source_system: "Regulations DD"
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

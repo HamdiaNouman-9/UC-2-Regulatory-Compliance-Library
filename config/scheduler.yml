@@ -590,3 +590,38 @@ jobs:
       day_of_week: 'sun'
       hour: 22
       minute: 0
+
+  # ---- United States, onboarded 2026-09-28 -------------------------------- #
+  # REGULATIONS DD — one declared PDF on federalreserve.gov, and a CHEAP PROBE
+  # rather than a crawl: ONE ranged GET (Range: bytes=0-1, two bytes of body,
+  # measured 210–483 ms) against the single stored url. A crawl follows only if
+  # the ETag moved, and that crawl is one more request for the same file.
+  #
+  # Sunday 23:00, the next free slot after nca 22:00. Every monitor_* job takes
+  # the same `_run_exclusive` lock and an overlap is a SKIP, not a failure, so a
+  # colliding slot silently starves a job rather than erroring. Taken before
+  # this: qfcl 04:00 (daily), mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00,
+  # bahrain_bourse 08:00, cbb 09:00, rera 10:00, sio 11:00, lloc 12:00, cbj
+  # 13:00, mlsd 14:00, lmra 15:00, nbr 16:00, justice_canada 17:00, edb 18:00,
+  # moic 19:00, pdpa 19:30, simah 20:00, saudi_exchange 20:30, qcb 21:00,
+  # nca 22:00.
+  #
+  # WEEKLY, AND THE CADENCE IS NOT THE CONSTRAINT — the probe is cheap enough to
+  # run daily. It is weekly to sit under the same lock as everything else, and
+  # because the file's Last-Modified is January 2010: a 2009 letter's attachment
+  # that has not been reissued in fifteen years. Do not read a long run of
+  # `unchanged` as the monitoring having failed.
+  #
+  # DISABLED, and this one is NOT the monitor_nca exception. Nobody has promoted
+  # output/workbooks/regulations_dd.xlsx, and a detected change crawls straight
+  # to MSSQL — so enabling it now would make the first scheduled run the ingest.
+  # Turn it on after the workbook is approved and promoted, and at that point
+  # prefer moving the pair into CHEAP_PROBE_SOURCES and DELETING this slot and
+  # its job, so the source is swept once rather than twice.
+  monitor_regulations_dd:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 23
+      minute: 0

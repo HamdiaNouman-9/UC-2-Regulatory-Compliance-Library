@@ -1,0 +1,271 @@
+# FFIEC — Federal Financial Institutions Examination Council (United States)
+#
+# First US regulator in this library. One source so far: the Cybersecurity
+# Awareness page under the site's "Resources & Tools" menu.
+#
+# ===========================================================================
+# READ THIS FIRST: CLOUDFLARE SITS IN FRONT OF www.ffiec.gov, AND HOW THIS
+# SOURCE IS CONFIGURED DECIDES WHETHER IT ANSWERS
+# ===========================================================================
+# The site is reachable. It is NOT a geographic block and NOT a block this
+# project earned — but it refuses whole classes of client, and the difference
+# between a clean run and a dead one is the `strategy` key on the source below.
+#
+# MEASURED 2026-09-28, in this order:
+#
+#   plain GET (requests), any headers   403 "CAPTCHA Error | FFIEC", whose body
+#                                       reads "Enable JavaScript and cookies to
+#                                       continue". Cloudflare's managed
+#                                       challenge needs JS; a library that runs
+#                                       none can never pass it. This is true of
+#                                       /robots.txt and of the PDFs too, so NO
+#                                       plain-HTTP probe of this host proves
+#                                       anything about reachability.
+#
+#   export with `strategy` unset        403, `status: zero`, 0 pages. The
+#     (i.e. "auto")                     default opens the seed pre-load block at
+#                                       crawler.py:3219 — up to three seed
+#                                       navigations, then detect_shape() which
+#                                       opens a SECOND page, then probe_scope()
+#                                       which clicks. Cloudflare answers that
+#                                       burst with the challenge.
+#
+#   export with `strategy: generic`     status: ok, 1 page, 8 documents,
+#     and `scope: prefix`               0 blocked, 0 errors, 1 retry. The guard
+#                                       is `strategy != "generic" or scope ==
+#                                       "auto"`, and pinning BOTH skips the
+#                                       whole block: one clean navigation, which
+#                                       the site serves.
+#
+# THE CORRECTION THIS FILE USED TO CARRY. An earlier version of this comment
+# said the host was geo-blocked, citing `cf-ray: ...-KHI` on the 403. That was
+# wrong twice over: KHI is simply the Cloudflare edge nearest this machine and
+# appears on every response from here, success or failure, and the 403s it was
+# reading came from JS-less probes and from the auto-strategy burst — not from
+# where the request originated. The workbook below was produced from this
+# network. Do not re-derive a block from a plain `requests` 403 on this host.
+#
+# WHAT IS MEASURED VS WHAT IS INFERRED. The page inventory in this file was
+# first read from the Internet Archive's capture of 2026-09-25, while the live
+# site was refusing the probes above, and has SINCE been confirmed against a
+# real crawl: the same 8 PDFs, same urls, same order. Nothing below rests on
+# the archive any more.
+#
+# STATE OF ONBOARDING (2026-09-28)
+#   Step 4 export     done — output/workbooks/ffiec.xlsx, 9 rows, no sidecar
+#   Step 5 check      "verdict": "OK", 0 errors, 1 warning (countries.yml)
+#   Step 5 read it    done — three findings, listed at the end of this file
+#   Step 7 twice      done — see the note on what `export` can and cannot show
+#   Step 6 promote    NOT DONE — belongs to whoever holds the DB credentials
+#   Step 8 signal     NOT DONE — no entry in change_signals.yml,
+#                     jobs/monitor_jobs.py or scheduler.yml, so this file
+#                     generates no traffic unless someone runs the export
+#
+# STEP 7 CANNOT REPORT `unchanged` ON THIS PATH, AND THAT IS NOT A FFIEC BUG.
+# ONBOARDING says to export twice and expect everything `unchanged` with zero
+# new version rows. `ExcelRepo.__init__` starts with empty tables and never
+# reads the previous workbook, so run 2 compares against nothing and reports
+# all 9 rows `new` — as it would for any regulator. What Step 7 is actually
+# asking is whether the crawler is stable, so that was checked directly:
+# exported twice, compared the two workbooks on identity and content_hash.
+#     9 rows both runs | 0 identities only in one | 0 hashes moved
+# If you re-run this, compare the files; do not read `"new": 9` as a failure.
+
+regulator: "Federal Financial Institutions Examination Council (FFIEC)"
+owner: lead
+
+sources:
+  # ---- Cybersecurity Awareness --------------------------------------------
+  # https://www.ffiec.gov/resources/cybersecurity-awareness
+  #
+  # WHAT IS ON THE PAGE (archive capture, 2026-09-25). It is a single
+  # information page — prose, then three link lists under <h3> headings — with
+  # NO sub-pages beneath its own URL. Eight PDFs, all on-host under
+  # /sites/default/files/media/press-releases/:
+  #
+  #     CAT Sunset Statement                                    2024
+  #     FFIEC Authentication and Access to Financial
+  #       Institution Services and Systems Guidance             2021
+  #     FFIEC Statement on Security in a Cloud Computing Env.   2020
+  #     FFIEC Joint Statement – OFAC Cyber-Related Sanctions    2019
+  #     Cybersecurity of Interbank Messaging and Wholesale
+  #       Payment Networks                                      2016
+  #     FFIEC Statement on Destructive Malware                  2015
+  #     FFIEC Statement on Compromising Credentials             2015
+  #     "View Slides" (CCIWG webinar deck)                      2014
+  #
+  # The rest of the page links OTHER organisations — FDIC, FS-ISAC, CISA, NIST,
+  # CIS, FBI InfraGard, NCUA, Cyber Risk Institute, USSS — plus a YouTube video
+  # and the two FFIEC InfoBase subdomains (ithandbook, bsaaml). None of them is
+  # a document, and `scope: prefix` will not walk any of them, so there is
+  # nothing for `exclude_documents` to do. They stay as links inside the page's
+  # own HTML, which is where they belong: part of this page's value is that it
+  # is FFIEC's own curated list.
+  #
+  # THE PAGE ITSELF IS A DOCUMENT, and `include_pages` is left at its default
+  # `auto` so it is kept: roughly 2,900 characters of FFIEC stating supervisory
+  # expectations on cyber risk, well past MIN_PAGE_TEXT. Expect 9 rows, not 8.
+  - name: "Cybersecurity Awareness"
+    mode: generic
+    seed_url: "https://www.ffiec.gov/resources/cybersecurity-awareness"
+    source_system: "Cybersecurity Awareness"
+
+    # PREFIX, not breadcrumb. The site does publish a real breadcrumb
+    # ("Home > Resources > Cybersecurity Awareness", a <nav> the engine reads),
+    # so `breadcrumb` would load — but it would scope the run to everything
+    # under "Resources", which is eight more sections this source does not own
+    # (Computational Tools, Reporting Forms, Enforcement Actions and Orders,
+    # EGRPRA ...). Each of those is its own source_system when its turn comes,
+    # for the reason zatca.yml sets out: one source per section gives each its
+    # own baseline, so a section returning nothing is a finding instead of a
+    # smaller total. `prefix` holds this run to the one page it is about.
+    scope: prefix
+
+    # THE ONE KEY THAT DECIDES WHETHER THIS SOURCE RUNS AT ALL. Leave it unset
+    # and `strategy` defaults to "auto", which at crawler.py:3219 opens the seed
+    # pre-load block: up to three navigations of the seed, then detect_shape()
+    # — which opens a SECOND page — then probe_scope(), which clicks. That burst
+    # is what Cloudflare answers, and every run made that way came back
+    # `status: zero, 0 pages, 0 documents` (measured three times, 2026-09-28).
+    #
+    # `generic` skips the whole block, because the guard is
+    # `strategy != "generic" or scope == "auto"` and this source pins BOTH. The
+    # crawl then makes one clean navigation and the site serves it:
+    # `status: ok, 1 page, 8 documents, 0 blocked, 0 errors, 1 retry`.
+    #
+    # NOTHING IS LOST BY PINNING IT. Shape detection exists to hand a tree,
+    # table or list layout to a specialised walker. This is one information page
+    # with a prose block and three link lists — the shape the BFS walk handles
+    # natively — and `auto` detected exactly "generic" on the run that did get
+    # through. So the probe would spend its requests confirming the default.
+    strategy: generic
+
+    # ONE PAGE, but not capped at one. Nothing sits under this URL today, so a
+    # correct run visits the seed and stops. The cap is 20 rather than 1 so that
+    # a sub-page FFIEC adds later is picked up and counted instead of silently
+    # truncated — and small enough that a scope mistake cannot become a sweep of
+    # ffiec.gov. Same reasoning as the two generic sources in
+    # config/sources/nca.yml.
+    max_pages: 20
+    max_depth: 2
+
+    # INERT TODAY, AND KEPT AS A GUARD. The page's rendered breadcrumb is
+    # [Home, Resources, Cybersecurity Awareness], and "Resources" is this page's
+    # PARENT — keep it and it becomes a folder sitting INSIDE Cybersecurity
+    # Awareness, when on the site the nesting runs the other way. That is the
+    # rera.gov.bh inversion `doc_path_sections` documents, and dropping the one
+    # bad crumb is narrower than switching folders off for good.
+    #
+    # BUT THE CRAWL DOES NOT SEE THAT BREADCRUMB. Measured on the successful run:
+    # `section_path` came back as "Home" and nothing else, so this key matched
+    # nothing and the inversion never arose. It is kept because it costs nothing
+    # and because the day the engine does read that <nav> — a host profile, an
+    # upstream change — the wrong folder would appear silently, with nothing in
+    # this file looking wrong. `category` is left as the "Home" the crawl
+    # produced; it is a column, not a level, and `doc_path_category` is off.
+    drop_sections: ["Resources"]
+
+    # WITHOUT THIS THE LEAF IS THE SOURCE SYSTEM and all nine rows share it.
+    # Free to set: no FFIEC row has ever been stored, so re-identifying rows is
+    # not a risk here. doc_path becomes
+    #     FFIEC | Cybersecurity Awareness | <document title>
+    doc_path_title: true
+
+# ---------------------------------------------------------------------------
+# WHAT READING THE WORKBOOK FOUND — `check` says OK, and these are still wrong
+# ---------------------------------------------------------------------------
+# ONBOARDING Step 5: "check catches shape, not sense — only you can see that a
+# title is a cookie banner or a folder is upside down." Three findings from
+# output/workbooks/ffiec.xlsx, 2026-09-28. None is fixable from this file.
+#
+# 1. THE PAGE ROW IS TITLED "RESOURCES" AND POINTS AT SOMEONE ELSE'S PDF.
+#    Row 9 is the Cybersecurity Awareness page itself — 11,691 characters of
+#    real HTML, which is the row worth having. But:
+#      title        RESOURCES   — the page's <h1>, which on this Drupal layout
+#                   is the SECTION label. The page's own name is the <h2>,
+#                   "Cybersecurity Awareness".
+#      document_url .../2024/cat-sunset-statement-ffiec-letterhead.pdf
+#                   — the FIRST PDF on the page. Row 2 already IS that document.
+#    So two rows now carry one url under two names, and in the library the CAT
+#    Sunset Statement appears twice, once called "RESOURCES". `check` passes it
+#    because identity is (document_url, doc_path, title) and the titles differ —
+#    this is the CBE case quoted at crawler.py:1395, escaping the same guard
+#    only because `doc_path_title` makes the paths differ too.
+#    THE OPTIONS, in preference order: fix the page row's url (engine work, not
+#    config); or set `include_pages: never` and lose 11,691 characters of FFIEC
+#    prose; or leave it and let a person fix the title at review. Left alone for
+#    now — it is visible, and the wrong answer is one row rather than eight.
+#
+# 2. ONE TITLE IS A BUTTON LABEL, as predicted before the run. The 2014 webinar
+#    deck is stored as "View Slides"; its real name sits on the line above the
+#    link — "Executive Leadership of Cybersecurity: What Today's CEOs Need to
+#    Know About the Threats They Don't See." The nca.yml case exactly, and no
+#    yml key fixes it.
+#
+# 3. THE SIDEBAR IS IN document_html. <main class="main-content usa-layout-docs">
+#    holds TWO columns — the section nav (desktop:grid-col-3) and the article
+#    (div.usa-layout-docs__main.desktop:grid-col-9) — and the default <main>
+#    capture takes both, so the stored HTML opens with a list of the other eight
+#    Resources pages. A host profile in generic_crawler/crawler.py keyed
+#    "www.ffiec.gov" with
+#        "content_selector": "div.usa-layout-docs__main"
+#    is the one-line fix, the same entry nca.gov.sa already has. Not added here
+#    because it is shared machinery and belongs in its own change. That profile
+#    is also where "group_headings": true would go, turning the page's three
+#    <h3>s (FFIEC Resources / Exercise Program Resources / Other Resources) into
+#    real folders as it does for www.aml.gov.sa — here they are a genuine
+#    grouping, not dates or "FOLLOW US".
+#
+# AND ONE THING THAT IS NOT A FINDING. All 8 PDF rows carry empty text and empty
+# document_html. That is what this path produces for every regulator, not
+# something FFIEC did: `tools/workbook.py` builds the Orchestrator with
+# `analyse=False`, and misa.xlsx (68 PDF rows), moh.xlsx (83) and zatca.xlsx
+# (71) all have zero PDF rows with text. Checked before reporting it.
+#
+# ALSO OUTSTANDING: `check` warns that this regulator is not in
+# config/countries.yml, so its folders will sit at the tree root instead of
+# under a country. Add it under the United States, matching the `regulator`
+# string above EXACTLY. Not done here — countries.yml is shared, and the entry
+# should land with whatever else the US onboarding brings.
+#
+# ---------------------------------------------------------------------------
+# WHY THE FAILING RUNS SAID `zero` AND NOT `blocked` — TWO ENGINE GAPS
+# ---------------------------------------------------------------------------
+# Kept although this source now runs clean, because it is what made the failure
+# expensive to read and it will do the same to the next site behind a WAF.
+#
+# README.md promises `blocked` means "a bot-protection wall answered instead of
+# the site — no count from this run means anything", and `zero` means "a failed
+# extraction — check shape and scope". The `strategy: auto` runs were the first
+# case and the engine reported the second, which is why the printed advice sent
+# a reader to check scope and shape, where nothing was wrong. Measured
+# 2026-09-28; EITHER gap alone would have given the right answer, and it takes
+# both to get the wrong one:
+#
+# 1. `BLOCK_RE` IN generic_crawler/blockcheck.py DOES NOT MATCH THIS WALL.
+#    Cloudflare serves FFIEC's block in two skins, and the seed check at
+#    crawler.py:3245 runs against the second:
+#      "Just a moment..."            — MATCHES ("just a moment"), 181 chars
+#      "CAPTCHA Error | FFIEC"       — NO MATCH. Its body reads "Enable
+#                                      JavaScript and cookies to continue", and
+#                                      the pattern holds "captcha-bypass" and
+#                                      "verify you are human" but no bare
+#                                      "captcha" and no "enable javascript".
+#    The CAPTCHA Error skin is a full FFIEC-styled page carrying the whole site
+#    nav, so it clears the seed loop's `a[href] > 15` test at crawler.py:3231 —
+#    which is why the run reports `seed_loaded: true` for a page that is not the
+#    site, and why shape detection then ran against the wall.
+#
+# 2. A 4xx WITH A SHORT BODY NEVER REACHES THE BLOCK CHECK. crawler.py:3391-3401
+#    counts the 403 as an error and `continue`s when the body is under
+#    HTTP_ERROR_MIN_TEXT (600); `blocked_reason(page)` is the very next
+#    statement, at 3405. The walk's own load got the 181-character interstitial
+#    — the skin that DOES match — and skipped past the check that would have
+#    matched it.
+#
+# NOT FIXED HERE, DELIBERATELY. Both live in the shared engine, every regulator
+# runs through those lines, and neither is FFIEC's to change on its own. A fix
+# is small — swapping the order at 3391-3405 so a blocked page is named before
+# it is dropped, and widening BLOCK_RE — but it needs its own change, its own
+# review, and a regression run against the sites that already depend on that
+# path. Flagged, not owned.

@@ -116,3 +116,27 @@ countries:
     # Step 3's naming rule, "Full Name (ACRONYM)", and this whole string is
     # what doc_path[0] holds.
     - "Qatar Central Bank (QCB)"
+
+  # The United States' first entry, onboarded 2026-09-28 (branch
+  # feature/usa-regulators). Listed here in the SAME change that settles
+  # config/sources/regulations_dd.yml, not at first crawl, for the reason the
+  # Bahrain and Qatar blocks above record: an unlisted regulator keeps its
+  # folders at the TREE ROOT, every document is still correct, and nothing else
+  # complains -- so the mistake survives for months.
+  #
+  # NAME: "United States of America", the ISO 3166 short name, so that its
+  # alpha-3 in utils/countries.py::_COUNTRY_CODES is the obvious "USA" and
+  # resolve_country("USA") — the API's ?country= filter — lands here. Added to
+  # that dict in this same change, as its comment requires.
+  #
+  # "Regulations DD" NAMES AN INSTRUMENT, NOT AN AUTHORITY, so it does not carry
+  # the "Full Name (ACRONYM)" shape most of this file uses — the Kuwait entry
+  # above is the same case. It is the string handed over on the onboarding
+  # sheet, it must match config/sources/regulations_dd.yml exactly, and a near
+  # miss does not error: country_for() returns None and the folder silently
+  # stays at the root. The publisher is in fact the Federal Reserve Board; if
+  # this library later holds more Fed material, that is a SEPARATE entry here
+  # ("Board of Governors of the Federal Reserve System (FRB)") rather than a
+  # rename of this one, because this string is doc_path[0] and identity.
+  "United States of America":
+    - "Regulations DD"

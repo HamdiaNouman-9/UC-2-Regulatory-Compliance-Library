@@ -1470,6 +1470,63 @@ def _monitor_nca_impl() -> dict:
     return res
 
 
+def monitor_regulations_dd() -> dict:
+    """WEEKLY, AND OFF. Regulations DD — one declared PDF on federalreserve.gov.
+
+    A CHEAP PROBE, NOT A CRAWL: `stored-inventory` over the single stored url,
+    which is ONE ranged GET returning two bytes. Measurements are on the
+    change_signals.yml entry; the short version is that the ETag is stable
+    across probes, so `confirm` is false and a sweep costs nothing.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook. A
+    detected change goes through `_crawl_into_db`, which writes STRAIGHT TO
+    MSSQL, and nothing here has been promoted — enabling it now would make the
+    first scheduled run be the ingest, which is the one thing the workbook step
+    exists to prevent.
+
+    ONCE THE WORKBOOK IS APPROVED AND PROMOTED, this job's work is done: move
+    the pair into CHEAP_PROBE_SOURCES as
+
+        ("Regulations DD", "Regulations DD"),
+
+    and DELETE this function and its scheduler slot. Do not leave both, or the
+    source is swept twice. That is exactly the note left on Justice Canada
+    above, and the KDIPA entry in CHEAP_PROBE_SOURCES is what the finished
+    state looks like — `monitor_cheap_probes` already handles a declared
+    config/sources regulator through `_config_source_for`.
+
+    WHAT IT CANNOT SEE: a new Federal Reserve instrument. The sweep reads only
+    documents the library already stores, so it watches this one file and
+    nothing else. Deliberate, and recorded on the change_signals.yml entry.
+    """
+    return _run_exclusive("monitor_regulations_dd", _monitor_regulations_dd_impl)
+
+
+def _monitor_regulations_dd_impl() -> dict:
+    # ONE request to detect. If it moved, the re-crawl is one more request for
+    # the same file: `mode: declared` means the source IS that single url, so a
+    # full re-crawl of it already is the targeted re-crawl (the same reasoning
+    # the KDIPA branch of monitor_cheap_probes records). No browser either way.
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    regulator = "Regulations DD"
+    source = "Regulations DD"
+    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
+    rep = _sweep(regulator, source, tf)
+    targets = [l.strip() for l in
+               (tf.read_text(encoding="utf-8").splitlines()
+                if tf.exists() else []) if l.strip()]
+    out = {"counts": rep.get("counts", {}), "targets": len(targets),
+           "seconds": rep.get("_seconds")}
+    # `new` on a detect-only sweep means "first time swept", not a new document,
+    # so it must not pull a crawl — same rule as monitor_cheap_probes.
+    if targets:
+        src = _config_source_for(regulator) or "regulations_dd"
+        out["crawl"] = _crawl_into_db(src, False)
+    logger.info("Regulations DD: %s", out)
+    return out
+
+
 def _forms_for(regulator: str) -> list:
     """Every hints form that crawls this regulator, sorted for determinism.
 
@@ -1520,4 +1577,4 @@ __all__ = ["monitor_cheap_probes", "monitor_sama", "monitor_mc", "monitor_cma",
            "monitor_moic", "monitor_cbj", "monitor_edb", "monitor_mlsd",
            "monitor_lmra", "monitor_justice_canada", "monitor_nbr",
            "monitor_simah", "monitor_saudi_exchange", "monitor_qcb", "monitor_qfcl",
-           "monitor_nca"]
+           "monitor_nca", "monitor_regulations_dd"]
