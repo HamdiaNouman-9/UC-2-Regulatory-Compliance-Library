@@ -171,6 +171,42 @@ sources:
     #     FFIEC | Cybersecurity Awareness | <document title>
     doc_path_title: true
 
+    # THE `category` COLUMN, SET EXPLICITLY BECAUSE THE FALLBACK IS WRONG HERE.
+    #
+    # MEASURED on the 2026-09-28 export: all 9 rows carried `category: Home`.
+    # `_category_for` (generic_crawler_wrapper.py) returns, in order, this key if
+    # set, else the LAST crumb of the raw section_path, else the source_system —
+    # and section_path was the broken "Home" the breadcrumb bug produced. Note it
+    # reads the RAW section_path, not the cleaned trail, which is why doc_path
+    # looked fine while this column did not: `_clean_trail` drops "home" as a
+    # non-subject crumb and `_category_for` never sees that cleaning.
+    #
+    # Setting it here fixes the column outright and keeps it fixed whatever the
+    # breadcrumb turns out to say — the two problems then stop being able to hide
+    # each other. It is a COLUMN ONLY: `doc_path_category` is left unset, so this
+    # adds no folder and the tree is unchanged.
+    category: "Cybersecurity Awareness"
+
+    # CAPTURE THE SECTION PATH, DO NOT TURN IT INTO FOLDERS.
+    #
+    # With `breadcrumb_li` on the www.ffiec.gov profile the crumbs should come
+    # back as  Home > Resources > Cybersecurity Awareness  instead of "Home".
+    # That is what we want STORED — it is the page's real place on the site, and
+    # it belongs in the row whatever the library's own tree looks like.
+    #
+    # It is NOT what we want as folders. `_doc_path` appends the crumbs when this
+    # is true, and `_clean_trail` would drop "Home" (non-subject) and the repeated
+    # "Cybersecurity Awareness", leaving
+    #     FFIEC | Cybersecurity Awareness | Resources | <title>
+    # — "Resources" is the PARENT of Cybersecurity Awareness on fema-style USWDS
+    # navigation, so filing it underneath is precisely the "a folder is upside
+    # down" case ONBOARDING Step 5 says only a person can spot. rera.gov.bh is
+    # recorded in the wrapper as the same trap.
+    #
+    # section_path is stored either way — it comes off the document record, not
+    # off this key — so nothing is lost by switching the folders off.
+    doc_path_sections: false
+
 # ---------------------------------------------------------------------------
 # WHAT READING THE WORKBOOK FOUND — `check` says OK, and these are still wrong
 # ---------------------------------------------------------------------------
@@ -191,30 +227,96 @@ sources:
 #    because identity is (document_url, doc_path, title) and the titles differ —
 #    this is the CBE case quoted at crawler.py:1395, escaping the same guard
 #    only because `doc_path_title` makes the paths differ too.
-#    THE OPTIONS, in preference order: fix the page row's url (engine work, not
-#    config); or set `include_pages: never` and lose 11,691 characters of FFIEC
-#    prose; or leave it and let a person fix the title at review. Left alone for
-#    now — it is visible, and the wrong answer is one row rather than eight.
+#    FIXED 2026-09-29, and by the first option — the engine work got done. A
+#    "www.ffiec.gov" entry in generic_crawler/crawler.py::SITE_PROFILES now sets
+#      page_title_selector "div.usa-layout-docs__main h2"  -> "Cybersecurity
+#                          Awareness", measured n=1 on the saved capture against
+#                          the <h1>'s "Resources", which is the menu label every
+#                          Resources page on this site carries.
+#      page_pdf_link       False -> the page row keeps its own url. The wrapper
+#                          hands pdf_links[0] to the orchestrator as
+#                          `org_pdf_link` and the orchestrator promotes it into
+#                          document_url; this stops the page offering one at all.
+#    VERIFIED by replaying output/ffiec/pages.json through the real wrapper:
+#    9 rows, page document_url = /resources/cybersecurity-awareness, no
+#    org_pdf_link. Neither option that cost something was needed — the prose
+#    stays and no reviewer has to rename anything.
+#
+#    THIS WAS NEVER AN FFIEC BUG. The same defect hit FEMA's page row the same
+#    week; `page_pdf_link` is a DEFAULT_PROFILE key defaulting to True, so every
+#    other host behaves exactly as before. Any content page that cites several
+#    unrelated files has it waiting.
 #
 # 2. ONE TITLE IS A BUTTON LABEL, as predicted before the run. The 2014 webinar
-#    deck is stored as "View Slides"; its real name sits on the line above the
-#    link — "Executive Leadership of Cybersecurity: What Today's CEOs Need to
-#    Know About the Threats They Don't See." The nca.yml case exactly, and no
-#    yml key fixes it.
+#    deck is stored as "View Slides"; its real name sits in the same paragraph,
+#    before a <br> — "May 7, 2014 - Webinar: Executive Leadership of
+#    Cybersecurity: What Today's CEOs Need to Know About the Threats They Don't
+#    See." The nca.yml case exactly.
 #
-# 3. THE SIDEBAR IS IN document_html. <main class="main-content usa-layout-docs">
-#    holds TWO columns — the section nav (desktop:grid-col-3) and the article
-#    (div.usa-layout-docs__main.desktop:grid-col-9) — and the default <main>
-#    capture takes both, so the stored HTML opens with a list of the other eight
-#    Resources pages. A host profile in generic_crawler/crawler.py keyed
-#    "www.ffiec.gov" with
+#    LEFT AS IS ON PURPOSE, 2026-09-29, and this is the measurement rather than a
+#    shrug. Three routes exist and all three are worse:
+#
+#      heading_is_title   DOES NOT FIRE. It only takes effect through
+#                         `disambiguate_titles`, which rewrites titles SHARED by
+#                         several documents — SDAIA's 41 "2025"s, CBJ's 34
+#                         "2373"s. "View Slides" is unique in this source, so the
+#                         function never touches it.
+#
+#      GENERIC_LINK_TEXT  MAKES IT WORSE. Adding "view slides" there skips tier 1
+#                         of `best_doc_title`; the anchor has no title="", so the
+#                         ladder falls to tier 3, the row context. MEASURED: the
+#                         ctx walk stops at the nearest ancestor whose class
+#                         matches /card|item|box|publication|row|result/, and this
+#                         link's is Drupal's own
+#                             div.field.field--name-body...field__item
+#                         — `field__item` matches `item`. So ctx is the WHOLE
+#                         article's innerText, and the row would be titled
+#                             "Federal Financial Institutions Examination Council
+#                              (FFIEC) members are taking various measures to
+#                              raise awareness among financial institutions and
+#                              the"
+#                         It is also a GLOBAL set: every host would get it.
+#
+#      the url slug       No better and slightly mangled:
+#                             "CCIWG Cybersecurity Draft18for Industry May7webinar"
+#
+#    THE REAL CAUSE IS THAT `field__item` LOOKS LIKE A CARD to the ctx walk, on
+#    every Drupal site there is. Narrowing that pattern is shared JS in
+#    generic_crawler/crawler.py::JS_LINKS and would move titles on hosts nobody is
+#    looking at today — not a change to make for one webinar deck.
+#
+#    SO THE ROW KEEPS THE BUTTON LABEL, AND THE CONTEXT IS NOT LOST: the sentence
+#    naming the deck is inside the stored page row's document_html, one line above
+#    the link, where a reader lands anyway. A reviewer who wants the row itself
+#    renamed does it at `status = ''`, which is a one-cell edit and exactly what
+#    that queue is for.
+#
+# 3. THE SIDEBAR IS IN document_html — WITHDRAWN 2026-09-29. IT IS NOT.
+#    This finding was written from the page's TEMPLATE, not from the stored row,
+#    and measuring the row disproved it. output/workbooks/ffiec.xlsx row 9 holds
+#    24 links, 8 of them PDFs and ZERO pointing at another /resources/ page, and
+#    its visible text is 3,214 characters against the article's own 3,127. There
+#    is no list of the other eight Resources pages in it. Whatever the default
+#    <main> capture did, it did not bring the nav.
+#
+#    The recommended selector was still added — "www.ffiec.gov" now carries
 #        "content_selector": "div.usa-layout-docs__main"
-#    is the one-line fix, the same entry nca.gov.sa already has. Not added here
-#    because it is shared machinery and belongs in its own change. That profile
-#    is also where "group_headings": true would go, turning the page's three
-#    <h3>s (FFIEC Resources / Exercise Program Resources / Other Resources) into
-#    real folders as it does for www.aml.gov.sa — here they are a genuine
-#    grouping, not dates or "FOLLOW US".
+#    — but for a smaller and honest reason: it drops the <h1> "Resources", the
+#    section label repeating the folder, and ~40 characters of wrapper. It also
+#    pins the capture to the article instead of leaving it to the default walk,
+#    which is what WOULD pull a nav in if this template ever grows one.
+#
+#    RECORDED RATHER THAN QUIETLY EDITED, because the wrong version is the
+#    plausible one: reading a USWDS two-column template and concluding both
+#    columns are captured is exactly the inference a reader will make again.
+#
+#    STILL OPEN on that profile: "group_headings": true would turn the page's
+#    three <h3>s (FFIEC Resources / Exercise Program Resources / Other
+#    Resources) into real folders, as it does for www.aml.gov.sa — here they are
+#    a genuine grouping, not dates or "FOLLOW US". NOT switched on, because it
+#    moves doc_path for all 8 PDF rows and doc_path is an identity field; that is
+#    a shape decision for whoever owns the library, and it is free only while
+#    nothing is promoted.
 #
 # AND ONE THING THAT IS NOT A FINDING. All 8 PDF rows carry empty text and empty
 # document_html. That is what this path produces for every regulator, not
@@ -222,11 +324,22 @@ sources:
 # `analyse=False`, and misa.xlsx (68 PDF rows), moh.xlsx (83) and zatca.xlsx
 # (71) all have zero PDF rows with text. Checked before reporting it.
 #
-# ALSO OUTSTANDING: `check` warns that this regulator is not in
-# config/countries.yml, so its folders will sit at the tree root instead of
-# under a country. Add it under the United States, matching the `regulator`
-# string above EXACTLY. Not done here — countries.yml is shared, and the entry
-# should land with whatever else the US onboarding brings.
+# DONE 2026-09-29: this regulator is now listed in config/countries.yml under
+# "United States of America", so its folders hang under the country instead of
+# at the tree root and `check` no longer warns. That string and the `regulator:`
+# above must stay byte-identical — country_for() matches exactly and a near miss
+# does not error, it silently drops the regulator back to the root.
+#
+# MONITORING, WIRED THE SAME DAY:
+#   config/change_signals.yml   signal: crawl, confirm: false — the source is ONE
+#                               page load, so a 9-request probe is the expensive
+#                               option and could not see a NEW statement anyway.
+#   jobs/monitor_jobs.py        CRAWL_AS_SIGNAL + monitor_ffiec().
+#   config/scheduler.yml        monitor_ffiec, Saturday 23:00, `enabled: false`
+#                               until output/workbooks/ffiec.xlsx is promoted.
+#                               Its own night rather than stacked behind the two
+#                               Sunday US jobs, because this is the host that
+#                               needs a real browser and can be slow.
 #
 # ---------------------------------------------------------------------------
 # WHY THE FAILING RUNS SAID `zero` AND NOT `blocked` — TWO ENGINE GAPS

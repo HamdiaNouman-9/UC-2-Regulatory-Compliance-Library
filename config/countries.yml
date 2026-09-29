@@ -119,7 +119,7 @@ countries:
 
   # The United States' first entry, onboarded 2026-09-28 (branch
   # feature/usa-regulators). Listed here in the SAME change that settles
-  # config/sources/regulations_dd.yml, not at first crawl, for the reason the
+  # its first source config, not at first crawl, for the reason the
   # Bahrain and Qatar blocks above record: an unlisted regulator keeps its
   # folders at the TREE ROOT, every document is still correct, and nothing else
   # complains -- so the mistake survives for months.
@@ -129,14 +129,19 @@ countries:
   # resolve_country("USA") — the API's ?country= filter — lands here. Added to
   # that dict in this same change, as its comment requires.
   #
-  # "Regulations DD" NAMES AN INSTRUMENT, NOT AN AUTHORITY, so it does not carry
-  # the "Full Name (ACRONYM)" shape most of this file uses — the Kuwait entry
-  # above is the same case. It is the string handed over on the onboarding
-  # sheet, it must match config/sources/regulations_dd.yml exactly, and a near
-  # miss does not error: country_for() returns None and the folder silently
-  # stays at the root. The publisher is in fact the Federal Reserve Board; if
-  # this library later holds more Fed material, that is a SEPARATE entry here
-  # ("Board of Governors of the Federal Reserve System (FRB)") rather than a
-  # rename of this one, because this string is doc_path[0] and identity.
+  # FEMA was listed as "Flood Insurance" on 2026-09-28 and renamed to the
+  # regulatory body on 2026-09-29, in step with config/sources/fema.yml, which
+  # carries the string twice (top level and its declared source). All three must
+  # move together: country_for() matches exactly, so editing one alone does not
+  # error — it drops the regulator to the tree root, which is what happened to
+  # QFCL the day before.
+  # FFIEC added 2026-09-29. config/sources/ffiec.yml has asked for this since it
+  # was onboarded — "add it under the United States, matching the `regulator`
+  # string above EXACTLY ... the entry should land with whatever else the US
+  # onboarding brings" — and `check` has been warning on every ffiec.xlsx export
+  # that its folders sit at the tree root. This is that branch.
   "United States of America":
-    - "Regulations DD"
+    - "Federal Emergency Management Agency (FEMA)"
+    - "Federal Financial Institutions Examination Council (FFIEC)"
+    - "Financial Crimes Enforcement Network (FINCEN)"
+

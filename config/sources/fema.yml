@@ -1,0 +1,411 @@
+# Federal Emergency Management Agency (FEMA) — Laws and Regulations
+# The National Flood Insurance Program (NFIP), United States
+#
+# ===========================================================================
+# READ THIS BEFORE RUNNING IT. THE HOST REFUSED US ONCE ALREADY.
+# ===========================================================================
+# MEASURED 2026-09-28, one plain GET to the seed url, and only one:
+#
+#     HTTP 403   420 bytes   Server: AkamaiGHost
+#     <title>Access Denied</title>   <h1>Access Denied</h1>
+#
+# NO SECOND ATTEMPT WAS MADE, AND NONE SHOULD BE MADE CASUALLY. This is Akamai,
+# which is the same vendor that permanently blocked saudiexchange.sa for this
+# address — and config/change_signals.yml's skip_hosts entry records that that
+# block "was caused by automated access from this address … triggered by
+# repeated iteration". ONBOARDING §3 puts it plainly: a scheduled retry is not a
+# way out of a block, it is what makes one.
+#
+# THE 403 DOES NOT PROVE THE SITE IS CLOSED TO US. config/sources/ffiec.yml
+# records the same trap being fallen into and corrected: there, a JS-less
+# `requests` probe was refused while a real browser run returned the page and
+# eight documents, and a geo-block was wrongly inferred from a `cf-ray`
+# suffix. So the honest reading of the 403 is "a JS-less client was refused",
+# not "fema.gov is blocked".
+#
+# BUT IT IS NOT THE SAME SIGNATURE, AND THAT MATTERS. FFIEC's refusal was a
+# Cloudflare managed CHALLENGE — an interstitial that a real browser solves.
+# This is Akamai's flat "Access Denied" in 420 bytes, which is usually a
+# reputation decision about the client rather than a challenge to be passed, and
+# a headless browser can get exactly the same answer.
+#
+# SO THIS CONFIG IS WRITTEN BUT UNPROVEN. Everything below about the page's
+# shape comes from the Internet Archive (capture 20260603155723), NOT from a
+# live read. What must happen next, in this order:
+#
+#   1. ONE supervised run, watched by a person. Not a scheduled job, not a
+#      retry loop, not a `--max-pages` sweep.
+#   2. If it returns the page: confirm the findings below against the real run
+#      and rewrite this header to say "confirmed live", exactly as ffiec.yml was
+#      rewritten once its archive-derived shape was verified by a real crawl.
+#   3. If it returns 403 or `blocked`: STOP. Add www.fema.gov to skip_hosts in
+#      config/change_signals.yml with the date and the evidence, and raise it
+#      with whoever owns the relationship with FEMA. Do not tune the User-Agent
+#      to look less like us — ffiec.yml already records that as the wrong
+#      instinct, and saudiexchange.sa records what iterating costs.
+#
+# BE AWARE THE RUN MAY REPORT `zero` RATHER THAN `blocked`. ffiec.yml's last
+# section documents two engine gaps that make a WAF wall read as a failed
+# extraction: blockcheck's BLOCK_RE misses some wall skins, and crawler.py
+# :3391-3401 `continue`s past a short 4xx body before the block check runs. A
+# 420-byte 403 is exactly the shape that slips through. If this run says `zero`
+# with "check shape and scope", check the HTTP status before believing it.
+#
+# ---------------------------------------------------------------------------
+# WHAT THE PAGE IS (Internet Archive, capture 20260603155723)
+# ---------------------------------------------------------------------------
+#   <title>  Laws and Regulations | FEMA.gov
+#   <h1>     Laws and Regulations
+#   <h2>     Governing the National Flood Insurance Program
+#   <h2>     Additional Laws and Regulations
+#   <h2>     Download the FEMA App          <- site furniture, twice
+#   <h3>     six, one per Act (1968/1973, 1994, 2004, Biggert-Waters 2012,
+#            Consolidated Appropriations 2014, Homeowner Affordability 2014)
+#
+# main text is only 3,497 characters and `main` carries USWDS classes
+# (`usa-section`) — the same US Web Design System layout ffiec.gov uses, which
+# is worth knowing because ffiec.yml's outstanding host-profile note
+# (`content_selector: "div.usa-layout-docs__main"`) may well apply here too.
+#
+# ELEVEN FILE LINKS, and three of them are NOT on fema.gov:
+#   fema.gov      8 (7 .pdf + nfip-statutory-authority-all-laws.doc)
+#   gpo.gov       1 (Biggert-Waters 2012, PLAW-112publ141)
+#   govinfo.gov   1 (Coastal Barrier Improvement Act 1990, STATUTE-104)
+#   plus /media-library/assets/documents/20509 (NFIRA 1994 Bulletins)
+#
+# THE OFF-HOST FILES ARE COLLECTED, and `scope` cannot stop them: documents are
+# gathered "regardless of scope" (crawler.py:3539) and `is_document_link`
+# returns True on the extension alone. That is WANTED here — the two off-host
+# statutes are as much a part of this listing as the nine on fema.gov, and the
+# publisher FEMA chose to link to does not change what the document is.
+#
+# eCFR, US Code, congress.gov and federalregister.gov are ALSO linked, and are
+# NOT picked up as documents — EXTERNAL_LAW_PORTALS (crawler.py:397) lists only
+# Saudi portals. That is shared machinery and is deliberately not touched here.
+# If the library later wants 44 CFR from ecfr.gov, that is its own source.
+#
+# ---------------------------------------------------------------------------
+# A DEFECT ON FEMA'S OWN PAGE — expect a duplicate, do not "fix" it in config
+# ---------------------------------------------------------------------------
+# Two different link texts point at ONE file:
+#
+#   "National Flood Insurance Act of 1968"   -> .../national-flood-insurance-act-1968.pdf
+#   "Flood Disaster Protection Act of 1973"  -> .../national-flood-insurance-act-1968.pdf
+#
+# That is FEMA's markup, not ours: the 1973 Act is a real, separate statute
+# whose own file FEMA has not linked.
+#
+# THE 1973 ACT GETS NO ROW, AND NOTHING REPORTS THAT IT IS MISSING. MEASURED
+# 2026-09-29 by replaying the saved crawl: `documents` is keyed by
+# (url, section_path) at crawler.py:3768, both anchors carry the same url and the
+# same empty section, so the second collapses into the first and the surviving
+# row is titled "National Flood Insurance Act of 1968". Eleven links, eleven
+# document rows, and one statute silently folded into another.
+#
+# I EXPECTED TWO ROWS AND WAS WRONG — recorded because the wrong version is the
+# intuitive one. Identity is (document_url, doc_path, title) and the titles do
+# differ, so a reader reasoning from identity alone concludes `check` would pass
+# a duplicate pair. It never gets that far: the dedupe happens in the crawl,
+# before identity is ever computed.
+#
+# FIXED 2026-09-29 BY DECLARING IT — see the second source at the foot of this
+# file. A `mode: declared` entry is collected by a different code path from the
+# crawl and is not subject to its key, and the wrapper dedupes on
+# (document_url, doc_path), so the 1973 Act takes a row of its own at FEMA's own
+# url. Thirteen rows, not twelve.
+#
+# THE URL IS NOT EDITED TO ACHIEVE THIS, and it must never be. Identity is the
+# url; a made-up one invents a file FEMA does not serve. What the pair records
+# is true — FEMA offers both Acts at this file — and `report_duplicates` exists
+# precisely so a person reads such a pair rather than a rule collapsing it.
+#
+# ---------------------------------------------------------------------------
+# THE NAME
+# ---------------------------------------------------------------------------
+# `regulator` is "Federal Emergency Management Agency (FEMA)" — the REGULATORY
+# BODY, in ONBOARDING Step 3's required form, `Full Name (ACRONYM)`.
+#
+# IT WAS "Flood Insurance" UNTIL 2026-09-29, exactly as handed over. That string
+# was neither the publisher nor the programme: FEMA publishes, the NFIP is the
+# programme, and "Flood Insurance" is the section of fema.gov the seed url sits
+# in. The header note asking whether the sheet meant the agency was answered by
+# the lead on 2026-09-29 — it did — and the rename was made the same day.
+#
+# IT WAS CHANGED AT THE ONLY MOMENT IT WAS FREE. `regulator` is doc_path[0] and
+# doc_path is an identity field (changesignal.DEFAULT_IDENTITY is
+# (document_url, doc_path, title)), so this string decides which stored row a
+# crawled document IS. Nothing had been promoted — Step 6 had not run, the rows
+# existed only in output/workbooks/fema.xlsx, and a re-export rebuilt them under
+# the new name at no cost. AFTER a promote the same edit re-identifies every
+# stored row: the library would read thirteen withdrawals and thirteen new
+# documents, not one rename. DO NOT MAKE THIS EDIT AGAIN WITHOUT CHECKING THAT.
+#
+# THE SECOND SOURCE REPEATS IT and must be kept in step — a declared source
+# carries its own `regulator:`, as kdipa.yml does, and
+# a mismatch between the two would file the 1973 Act under a regulator of its
+# own rather than beside its siblings.
+#
+# LISTED IN config/countries.yml under "United States of America" (added
+# 2026-09-28, renamed with this file 2026-09-29). That string and this one must
+# stay byte-identical: `country_for()` matches exactly and a near miss does not
+# error — it returns None and the regulator silently sits at the tree root
+# instead of under its country. That exact break happened to QFCL on 2026-09-28
+# when one of the two was edited alone.
+#
+# THIS FILE IS STILL config/sources/fema.yml, and that is fine. The stem is only
+# the config's NAME — what `tools/workbook export fema` takes, and what
+# `_config_source_for` returns for a monitoring re-crawl, which matches on the
+# `regulator:` FIELD and not on the filename. The field is identity; the
+# filename is not, and renaming the file costs nothing while renaming the field
+# costs everything above.
+
+regulator: "Federal Emergency Management Agency (FEMA)"
+owner: lead
+
+sources:
+  - name: "Laws and Regulations"
+    mode: generic
+    seed_url: "https://www.fema.gov/flood-insurance/rules-legislation/laws"
+    # TWO FOLDER LEVELS, NOT ONE — the CBJ shape (config/sources/cbj.yml, which
+    # hangs ten site listings under one "Legislation" parent this same way).
+    #
+    #     source_system      "Flood Insurance"      the programme, the parent
+    #     category           "Laws and Regulations" this listing, the child
+    #     doc_path_category  true                   without it `category` is a
+    #                                               COLUMN ONLY and never becomes
+    #                                               a folder — it is opt-in
+    #                                               because `_category_for` falls
+    #                                               back to the last section
+    #                                               crumb or the source_system,
+    #                                               so switching it on globally
+    #                                               would give most sources a
+    #                                               folder repeating their parent
+    #
+    # giving  doc_path = [regulator, source_system, category, title]  and a tree
+    #
+    #     United States of America
+    #       Federal Emergency Management Agency (FEMA)
+    #         Flood Insurance
+    #           Laws and Regulations
+    #             13 documents
+    #
+    # WHY THE PROGRAMME IS A LEVEL. FEMA is not only the flood insurer — it runs
+    # disaster assistance, preparedness grants and the rest. "Flood Insurance"
+    # names the NFIP, which is where this listing actually belongs, and it leaves
+    # a place for a second FEMA programme to sit beside it rather than having its
+    # listings land as siblings of this one's.
+    #
+    # "Laws and Regulations" IS STILL THE PAGE'S OWN <h1> AND <title>, not an
+    # invented label — it has moved from source_system to category, not changed.
+    source_system: "Flood Insurance"
+    category: "Laws and Regulations"
+    doc_path_category: true
+
+    # THE KEY THAT DECIDES WHETHER THIS RUNS AT ALL — see ffiec.yml. The default
+    # `auto` opens with a pre-load burst (three navigations, detect_shape()
+    # opening a second page, probe_scope() clicking) before anything is read,
+    # and that burst is what a WAF answers with a challenge. `generic` skips the
+    # block at crawler.py:3219 and goes straight at the page. On FFIEC this was
+    # the difference between 8 documents and none.
+    strategy: generic
+
+    # Only the seed and anything beneath /flood-insurance/rules-legislation/laws.
+    # The siblings — .../congressional-reauthorization and .../2006-evaluation —
+    # sit one level UP and are therefore out. That is deliberate: this source is
+    # the one url that was handed over. Each sibling is worth its own entry here
+    # with its own source_system, so `disappeared` stays scoped per listing.
+    scope: prefix
+
+    # One page. Small on purpose: an unproven config on an Akamai host should not
+    # be able to turn into a sweep. Raise these only after a supervised run.
+    max_pages: 5
+    max_depth: 1
+
+    # Site furniture, not a section of the document. It appears TWICE on the
+    # archived page. NOW LOAD-BEARING: the statutes are kept as documents, so
+    # section paths are real folders again, and without this a site-wide app
+    # promo becomes a folder with statutes filed under it.
+    drop_sections: ["Download the FEMA App"]
+
+    # THE PAGE IS A DOCUMENT TOO — it is not merely a container for the files.
+    # Roughly 3,300 characters of FEMA explaining what each Act did and how they
+    # fit together, which is not restated in any of the PDFs. The shape is
+    # ffiec.yml's: the page and its files as siblings in one folder —
+    #     FEMA > Flood Insurance > Laws and Regulations
+    #         > "Governing the National Flood Insurance Program"   <- this page
+    #         > "National Flood Insurance Act of 1968"             <- its files
+    #         > "Flood Disaster Protection Act of 1973"
+    #         > …
+    # so the page reads as the guide to the folder it sits in, and every statute
+    # is still a row the library can be asked about on its own.
+    #
+    # With the www.fema.gov entry in generic_crawler/crawler.py::SITE_PROFILES
+    # that row is:
+    #   title          "Governing the National Flood Insurance Program"
+    #                  — `page_title_selector`. Without it the title is the <h1>,
+    #                  "Laws and Regulations", which IS the source_system, so
+    #                  `_clean_trail` folds it out and the document ends up named
+    #                  after the folder it sits in.
+    #   document_url   the page itself
+    #   document_html  div.region-content, less the two blocks named in the
+    #                  profile's `drop_selectors`. MEASURED 3,272 characters:
+    #                  opens on "A number of laws have been passed…", carries the
+    #                  11 file links inline as hyperlinks, and ENDS ON "Last
+    #                  updated July 18, 2024". No section sidebar, no "Return to
+    #                  top", no "Download the FEMA App" promo, no <h1> repeating
+    #                  the folder name, and no translations widget — that one
+    #                  rendered as a large globe icon above a one-item "English"
+    #                  list and was most of the top of the stored page.
+    #
+    # THE "Last updated" LINE IS PART OF THE DOCUMENT, NOT FURNITURE, and the
+    # selector was widened from div.content-inner-container to keep it. It is
+    # FEMA's own statement of when this page changed — on a source whose
+    # content_hash is computed over the page's markup, it is the line a reviewer
+    # reads to tell a real revision from a template change, and the only date the
+    # page carries at all.
+    #
+    # IT IS ALSO A CLEAN EXTRACTION TARGET IF THIS IS EVER WANTED AS A FIELD.
+    # FEMA renders it in its own Drupal views block:
+    #     div#block-views-block-updated-date-view-block-block-1
+    #       ... div.views-field.views-field-changed > span.field-content
+    # so it could feed `published_date` rather than only living in the HTML.
+    # NOT done — that is engine work beyond this source, and the line being
+    # present is what was asked for.
+    include_pages: always
+
+    # ONE EXCLUSION, AND IT IS NOT A STATUTE.
+    #
+    # The eleven file links are KEPT as documents. This source stores the page
+    # AND its files — the shape ffiec.yml already produces, where 8 PDFs and the
+    # page sit as siblings in one folder, and the page's own HTML is the reader's
+    # preview of the whole set. Twelve rows, twelve leaves.
+    #
+    # WHAT CHANGED, AND WHY, on 2026-09-29. The first pass excluded all eleven so
+    # the folder held one leaf, matching the screenshot the shape was drawn from.
+    # That bought a clean tree at a real cost: each statute then had NO row and
+    # therefore no fingerprint of its own, so FEMA replacing a file behind an
+    # unchanged link was invisible — exactly the failure dynamic_crawler/
+    # fingerprint.py opens by describing. With rows, each file is something the
+    # library can be asked about.
+    #
+    # BE HONEST ABOUT WHAT THAT BUYS TODAY. A file we have not downloaded is
+    # fingerprinted `document_url | title` — ONBOARDING Step 2's third and
+    # weakest preference, which "cannot move when a PDF is replaced behind an
+    # unchanged link". The rows only start earning their keep once
+    # config/change_signals.yml gives this source a signal whose probe returns a
+    # real validator for these urls, and THAT IS UNMEASURED on fema.gov. Step 8
+    # says measure before choosing; it has not been measured, because measuring
+    # means asking Akamai eleven questions and this host has refused us once. See
+    # the header. Until then the page's own text hash is what detects change.
+    #
+    # THE ONE THAT STAYS OUT is a SEARCH QUERY, not a document:
+    #     federalregister.gov/documents/search?conditions[term]=National+FLood…
+    # `is_document_link` matches any path segment called "documents", so it
+    # arrived as a DOC row with no content at all. It is a live search over the
+    # Federal Register, not a thing FEMA published; if the library ever wants
+    # those notices they are their own source, with their own source_system.
+    #
+    # Substring match against the url (`pat in url`, wrapper line 747), applied
+    # AFTER the crawl — it keeps a url out of the documents sheet, and the run's
+    # own record still counts it. The page row no longer claims a file either
+    # way: that is `page_pdf_link: False` on the www.fema.gov profile in
+    # generic_crawler/crawler.py, and it is a separate concern from this list.
+    exclude_documents:
+      - "www.federalregister.gov"
+
+    # THE DOCUMENT'S OWN NAME IS THE LEAF OF doc_path.
+    #
+    # MEASURED on the 2026-09-28 export, without this: doc_path was
+    #     Flood Insurance | Laws and Regulations
+    # (the regulator was still called "Flood Insurance" that day — see THE
+    # NAME in the header) for BOTH rows — no title level at all. `_walk_folders` types the LAST
+    # doc_path segment "R", the frontend's marker for "this node is a document",
+    # so the workbook held TWO nodes both titled "Laws and Regulations", both
+    # typed R, side by side under the regulator. The section stopped being a
+    # folder and the document's real name appeared nowhere in the tree.
+    #
+    # With it the trail is
+    #     Federal Emergency Management Agency (FEMA) > Flood Insurance
+    #         > Laws and Regulations
+    #         > Governing the National Flood Insurance Program
+    # which is the shape the target library shows.
+    doc_path_title: true
+
+  # =========================================================================
+  # THE 1973 ACT, WHICH THE CRAWL CANNOT PRODUCE
+  # =========================================================================
+  # FEMA links two statutes to one file. The crawl keys documents by
+  # (url, section_path) at crawler.py:3768, so the second link collapses into
+  # the first and the Flood Disaster Protection Act of 1973 gets no row —
+  # silently, before identity is ever computed. See the defect note in the
+  # header for the measurement.
+  #
+  # DECLARING IT IS THE WAY TO GET IT BACK, and it needs no code:
+  # `mode: declared` documents are collected by `collect_declared`, which is a
+  # different list from the crawl's `documents` dict and is not subject to its
+  # key. The wrapper then dedupes on (document_url, doc_path) — wrapper line
+  # 994, NOT on url alone, "because regulators cross-list one document under
+  # several sections and each listing is its own place in the library". The url
+  # is shared, the doc_path leaf is not, so both rows stand.
+  #
+  # THE URL IS FEMA'S OWN, UNEDITED. That is the whole point: the row records
+  # what FEMA published — that it offers the 1973 Act at this file — rather than
+  # inventing a file FEMA does not serve. Two rows on one url is exactly the
+  # case `report_duplicates` (crawler.py:4602) refuses to collapse: "a genuine
+  # cross-listing is two real places in the library ... both are reported and a
+  # person reads the pair." Expect this pair in the duplicates report. It is
+  # correct, and it is not to be "fixed".
+  #
+  # IT ALSO FINGERPRINTS BETTER THAN THE CRAWLED ROWS DO. `stamp_declared`
+  # (crawler.py:4513) asks the server — HEAD, then GET with stream=True — and
+  # hashes `url|etag:` or `url|last-modified:` when one is offered, falling back
+  # to `url|title (WEAK - no server stamp)` and SAYING SO in `hash_basis`. So
+  # this one row can detect a file being replaced behind an unchanged link,
+  # which none of the eleven crawled rows can. Read its basis after the next
+  # export: it is the first real measurement of whether fema.gov offers a
+  # validator at all, and the answer decides the `signal:` this source gets in
+  # config/change_signals.yml.
+  #
+  # COSTS AT MOST TWO REQUESTS, in the same supervised run as the crawl, not on
+  # a schedule. The header's one-run rule is not weakened by this.
+  #
+  # THE SAME THREE STRINGS AS THE CRAWLED SOURCE — regulator, source_system AND
+  # category — so this row lands beside the other twelve instead of opening a
+  # folder of its own. All three must match, not just source_system: `_trail`
+  # builds [regulator, source_system, category, title] and any one of them
+  # differing moves the leaf somewhere else in the tree, silently.
+  #
+  # Sharing a source_system across sources is established practice here, not an
+  # exception: cbj.yml repeats "Legislation" across ten, rera.yml repeats
+  # "Regulations", sio.yml repeats two. `disappeared` is scoped by
+  # (regulator, source_system) and both sources export in one run, so the
+  # combined inventory holds all thirteen and nothing proposes anything as
+  # withdrawn.
+  - name: "Flood Disaster Protection Act of 1973"
+    mode: declared
+    # BYTE-IDENTICAL TO THE TOP-LEVEL `regulator:` ABOVE. See THE NAME in the
+    # header: a mismatch here does not error, it files this Act under a
+    # regulator of its own, away from the twelve rows it belongs beside.
+    regulator: "Federal Emergency Management Agency (FEMA)"
+    source_system: "Flood Insurance"
+    # SETS THE COLUMN, NOT THE FOLDER, on this path. `DeclaredDocumentsSource`
+    # builds doc_path as
+    #     _clean_trail([regulator, source_system] + <the spec's section>) + [title]
+    # and never consults `category` — so `doc_path_category: true` is NOT set
+    # here, because nothing would read it (build_source does not even pass it to
+    # this class). It is kept as `category:` alone so the declared row's
+    # `category` COLUMN matches the twelve crawled rows.
+    category: "Laws and Regulations"
+    # THREE PARTS: <section path> :: <title> :: <url>.
+    #
+    # The folder level has to come from the spec here, not from `category`. The
+    # crawled source gets "Laws and Regulations" via doc_path_category; this one
+    # gets it by naming it as the section, which is the form the wrapper
+    # documents as "a 3-part entry gets exactly the folders its author asked
+    # for". Both land on
+    #     [regulator, "Flood Insurance", "Laws and Regulations", title]
+    # so this row sits beside its twelve siblings rather than one level above
+    # them. A 2-part entry here would put the 1973 Act directly under Flood
+    # Insurance, next to the "Laws and Regulations" FOLDER instead of inside it.
+    documents:
+      - "Laws and Regulations :: Flood Disaster Protection Act of 1973 :: https://www.fema.gov/sites/default/files/2020-07/national-flood-insurance-act-1968.pdf"

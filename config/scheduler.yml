@@ -591,37 +591,65 @@ jobs:
       hour: 22
       minute: 0
 
-  # ---- United States, onboarded 2026-09-28 -------------------------------- #
-  # REGULATIONS DD — one declared PDF on federalreserve.gov, and a CHEAP PROBE
-  # rather than a crawl: ONE ranged GET (Range: bytes=0-1, two bytes of body,
-  # measured 210–483 ms) against the single stored url. A crawl follows only if
-  # the ETag moved, and that crawl is one more request for the same file.
+  # DISABLED, for exactly the reason above: output/workbooks/fema.xlsx has not
+  # been promoted, and this job's signal IS a crawl that writes through
+  # `_crawl_into_db` straight to MSSQL. Enabling it now would make the first
+  # scheduled run the ingest.
   #
-  # Sunday 23:00, the next free slot after nca 22:00. Every monitor_* job takes
-  # the same `_run_exclusive` lock and an overlap is a SKIP, not a failure, so a
-  # colliding slot silently starves a job rather than erroring. Taken before
-  # this: qfcl 04:00 (daily), mc 04:00, cma 05:00, mlcu 06:00, cbe 07:00,
-  # bahrain_bourse 08:00, cbb 09:00, rera 10:00, sio 11:00, lloc 12:00, cbj
-  # 13:00, mlsd 14:00, lmra 15:00, nbr 16:00, justice_canada 17:00, edb 18:00,
-  # moic 19:00, pdpa 19:30, simah 20:00, saudi_exchange 20:30, qcb 21:00,
-  # nca 22:00.
+  # DO NOT DELETE THIS SLOT WHEN YOU ENABLE IT. A probe-based source graduates
+  # into CHEAP_PROBE_SOURCES and loses its own slot; FEMA's signal is the crawl
+  # itself, so there is nothing to graduate into — flip `enabled` to true and
+  # leave the rest alone.
   #
-  # WEEKLY, AND THE CADENCE IS NOT THE CONSTRAINT — the probe is cheap enough to
-  # run daily. It is weekly to sit under the same lock as everything else, and
-  # because the file's Last-Modified is January 2010: a 2009 letter's attachment
-  # that has not been reissued in fifteen years. Do not read a long run of
-  # `unchanged` as the monitoring having failed.
-  #
-  # DISABLED, and this one is NOT the monitor_nca exception. Nobody has promoted
-  # output/workbooks/regulations_dd.xlsx, and a detected change crawls straight
-  # to MSSQL — so enabling it now would make the first scheduled run the ingest.
-  # Turn it on after the workbook is approved and promoted, and at that point
-  # prefer moving the pair into CHEAP_PROBE_SOURCES and DELETING this slot and
-  # its job, so the source is swept once rather than twice.
-  monitor_regulations_dd:
+  # 23:30 SUNDAY: the last free slot of the Sunday run, half an hour after the
+  # other United States job. The whole regulator is ONE page load, so it cannot
+  # overrun into Monday, and `_run_exclusive` would make an overlap a skip rather
+  # than two browsers on one page in any case.
+  monitor_fema:
     enabled: false
     trigger: cron
     schedule:
       day_of_week: 'sun'
       hour: 23
+      minute: 30
+
+  # DISABLED: output/workbooks/ffiec.xlsx has not been promoted either, and this
+  # job's signal is a crawl that writes through `_crawl_into_db` straight to
+  # MSSQL. Like monitor_fema, the crawl IS the
+  # signal here, so there is no CHEAP_PROBE_SOURCES entry to graduate into — flip
+  # `enabled` when the workbook is approved and leave the slot in place.
+  #
+  # SATURDAY, NOT SUNDAY, and deliberately not stacked behind the other two US
+  # jobs. Sunday is full from 04:00 to 23:30 and this host is the one that
+  # answers a JS-less client with a Cloudflare CAPTCHA — a slot of its own keeps
+  # a slow browser run from colliding with monitor_fema's lock and reporting a
+  # skip that reads like a failure. `_run_exclusive` would make that harmless,
+  # but it would also make it invisible.
+  monitor_ffiec:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sat'
+      hour: 23
+      minute: 0
+
+  # DISABLED: output/workbooks/fincen.xlsx has not been promoted, and this job's
+  # signal is a crawl that writes through `_crawl_into_db` straight to MSSQL.
+  # Like monitor_fema and monitor_ffiec, the crawl IS the signal, so there is no
+  # CHEAP_PROBE_SOURCES entry to graduate into — flip `enabled` once the workbook
+  # is approved and leave the slot in place.
+  #
+  # SATURDAY 22:00, an hour AHEAD of monitor_ffiec rather than behind it. This is
+  # the cheapest of the four US sources — one page load on a host that answers a
+  # plain GET, plus one HEAD/GET for the declared row — while FFIEC needs a real
+  # browser against a Cloudflare challenge and can be slow. Running the cheap,
+  # predictable one first means a long FFIEC run cannot delay it through
+  # `_run_exclusive`'s lock, which would show up as a skip that reads like a
+  # failure.
+  monitor_fincen:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sat'
+      hour: 22
       minute: 0

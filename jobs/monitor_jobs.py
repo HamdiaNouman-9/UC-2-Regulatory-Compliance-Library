@@ -332,6 +332,39 @@ CRAWL_AS_SIGNAL = {
     #: The sitemap is useless (every <lastmod> is the build time). Full
     #: measurements on its config/change_signals.yml entry.
     "National Cybersecurity Authority (NCA)": ("nca", False),
+
+    # ---- United States, FEMA onboarded 2026-09-29 ----------------------- #
+    #: THE WHOLE REGULATOR IS ONE PAGE LOAD. fema.yml sets max_pages: 5, but only
+    #: the seed is in scope under `scope: prefix`, and three consecutive runs
+    #: (2026-09-28 17:09, 2026-09-29 09:38, 11:19) each reported n_pages: 1,
+    #: blocked_pages: 0, errors: 0. A stored-inventory sweep would be 13 requests
+    #: against that one -- the MOIC (90 vs 11) and CBJ (376 vs 10) inversion
+    #: again -- and the only validator measurement we have came back
+    #: `url|title (WEAK - no server stamp)`, which cannot tell "no header" from
+    #: "refused" on a host that has already answered us with an Akamai 403.
+    #:
+    #: THE PAGE'S TEXT HASH IS THE ONLY THING IN THIS SOURCE THAT DETECTS AN
+    #: EDIT. Its 11 crawled file rows are `document_url | title`, so every change
+    #: the library can see -- prose edited, a statute link added, removed or
+    #: re-pointed, the "Last updated" date moving -- moves that one hash, and a
+    #: probe would see strictly less. Full measurements on the change_signals.yml
+    #: entry.
+    "Federal Emergency Management Agency (FEMA)": ("fema", False),
+    #: FFIEC joined 2026-09-29. ONE page load: max_pages is 20 but `scope:
+    #: prefix` on /resources/cybersecurity-awareness has nothing below it, and
+    #: the run reported n_pages: 1, n_documents: 8, blocked_pages: 0. A probe
+    #: would be 9 requests and could never see a NEW statement added to the page,
+    #: which on a resources listing is the main event. Unlike FEMA, the crawl
+    #: here needs a real browser — a refused run reports `zero`, not `blocked`.
+    #: Full measurements on the change_signals.yml entry.
+    "Federal Financial Institutions Examination Council (FFIEC)": ("ffiec", False),
+    #: FINCEN joined 2026-09-29. ONE page load, on a host that answers a plain GET
+    #: with 200 from nginx — no challenge, no JS. A stored-inventory sweep would be
+    #: 3 requests AND blind to the only row that can detect an edit: measured
+    #: through version_token, both pdfs return a stable last-modified+length but
+    #: THE PAGE RETURNS NO TOKEN AT ALL, and the page is the document. Full
+    #: measurements on the change_signals.yml entry.
+    "Financial Crimes Enforcement Network (FINCEN)": ("fincen", False),
 }
 
 
@@ -544,7 +577,6 @@ def _monitor_cheap_probes_impl() -> dict:
     logger.info("Ministry of Health: %s", moh_rep)
 
     return out
-
 
 def monitor_sama() -> dict:
     """DAILY. SAMA's own revision page: one request instead of 6,101 probes.
@@ -1470,61 +1502,166 @@ def _monitor_nca_impl() -> dict:
     return res
 
 
-def monitor_regulations_dd() -> dict:
-    """WEEKLY, AND OFF. Regulations DD — one declared PDF on federalreserve.gov.
+def monitor_fema() -> dict:
+    """WEEKLY, AND OFF. FEMA's flood-insurance Laws and Regulations — ONE page.
 
-    A CHEAP PROBE, NOT A CRAWL: `stored-inventory` over the single stored url,
-    which is ONE ranged GET returning two bytes. Measurements are on the
-    change_signals.yml entry; the short version is that the ETag is stable
-    across probes, so `confirm` is false and a sweep costs nothing.
+    THE CRAWL IS THE SIGNAL, and as with PDPA it is also the CHEAPEST question
+    available rather than the only one left. The source is a single page:
+    `max_pages: 5` in config/sources/fema.yml, but only the seed is in scope
+    under `scope: prefix`, and three consecutive runs (2026-09-28 17:09,
+    2026-09-29 09:38 and 11:19) each reported `n_pages: 1, blocked_pages: 0,
+    errors: 0`. Nothing a probe loop could ask is cheaper than one GET.
+
+    IT IS ALSO THE ONLY SIGNAL THAT SEES ANYTHING. The page row's content_hash is
+    taken over its VISIBLE TEXT — ONBOARDING Step 2's first preference — and is
+    the only hash in this source that can detect an edit; the eleven crawled file
+    rows are `document_url | title`, the third and weakest. Every change the
+    library can see moves that one hash: the prose edited, a statute link added,
+    removed or re-pointed, or FEMA's own "Last updated" line advancing, which is
+    inside the captured content on purpose.
+
+    WHY NOT stored-inventory: it is 13 requests against that one page load, the
+    same inversion MOIC and CBJ record above. And the one validator measurement
+    we have — `stamp_declared` on the declared 1973 row, 2026-09-29 — stored
+    `url|title (WEAK - no server stamp)`, which collapses "the server sent no
+    header" and "the request was refused" into one answer on a host that met our
+    first plain GET with a 420-byte Akamai 403. `version_token` separates them
+    (`probe-failed` vs `url+title`); until someone runs one supervised sweep,
+    stored-inventory is ruled out on MISSING EVIDENCE, not on a measurement.
+
+    NOT MEASURED, DELIBERATELY: whether fema.gov publishes a usable sitemap. That
+    needs requests to a host under the one-supervised-run rule in fema.yml's
+    header. Worth trying in the same session as that sweep — FEMA is Drupal, and
+    a real <lastmod> for this url would beat everything here.
+
+    BOTH SOURCES RUN TOGETHER, and they must. fema.yml holds the generic crawl
+    and one `mode: declared` entry for the Flood Disaster Protection Act of 1973,
+    which the crawl cannot produce — FEMA links it to the 1968 Act's file and the
+    crawl keys documents by (url, section_path). They share one source_system, so
+    `disappeared` is scoped across both; running them separately would make each
+    propose the other's rows as withdrawn.
 
     LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook. A
     detected change goes through `_crawl_into_db`, which writes STRAIGHT TO
     MSSQL, and nothing here has been promoted — enabling it now would make the
-    first scheduled run be the ingest, which is the one thing the workbook step
-    exists to prevent.
+    first scheduled run be the ingest, which is what the workbook step exists to
+    prevent. Same rule the CRAWL_AS_SIGNAL header states, and the way MLCU and
+    CBE shipped.
 
-    ONCE THE WORKBOOK IS APPROVED AND PROMOTED, this job's work is done: move
-    the pair into CHEAP_PROBE_SOURCES as
+    THIS JOB DOES NOT GO AWAY once the workbook is promoted: the crawl IS the
+    signal, so there is no CHEAP_PROBE_SOURCES entry for it to graduate into, the
+    way a probe-based source would. Enable the slot and leave the function be.
 
-        ("Regulations DD", "Regulations DD"),
-
-    and DELETE this function and its scheduler slot. Do not leave both, or the
-    source is swept twice. That is exactly the note left on Justice Canada
-    above, and the KDIPA entry in CHEAP_PROBE_SOURCES is what the finished
-    state looks like — `monitor_cheap_probes` already handles a declared
-    config/sources regulator through `_config_source_for`.
-
-    WHAT IT CANNOT SEE: a new Federal Reserve instrument. The sweep reads only
-    documents the library already stores, so it watches this one file and
-    nothing else. Deliberate, and recorded on the change_signals.yml entry.
+    WHAT IT CANNOT SEE: a new FEMA instrument published anywhere but this page.
+    The crawl is one url with `scope: prefix`, so the siblings named in fema.yml
+    (.../congressional-reauthorization, .../2006-evaluation) stay invisible until
+    each is added as its own source with its own source_system.
     """
-    return _run_exclusive("monitor_regulations_dd", _monitor_regulations_dd_impl)
+    return _run_exclusive("monitor_fema", _monitor_fema_impl)
 
 
-def _monitor_regulations_dd_impl() -> dict:
-    # ONE request to detect. If it moved, the re-crawl is one more request for
-    # the same file: `mode: declared` means the source IS that single url, so a
-    # full re-crawl of it already is the targeted re-crawl (the same reasoning
-    # the KDIPA branch of monitor_cheap_probes records). No browser either way.
-    state = REPO_ROOT / "output" / "monitor_targets"
-    state.mkdir(parents=True, exist_ok=True)
-    regulator = "Regulations DD"
-    source = "Regulations DD"
-    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
-    rep = _sweep(regulator, source, tf)
-    targets = [l.strip() for l in
-               (tf.read_text(encoding="utf-8").splitlines()
-                if tf.exists() else []) if l.strip()]
-    out = {"counts": rep.get("counts", {}), "targets": len(targets),
-           "seconds": rep.get("_seconds")}
-    # `new` on a detect-only sweep means "first time swept", not a new document,
-    # so it must not pull a crawl — same rule as monitor_cheap_probes.
-    if targets:
-        src = _config_source_for(regulator) or "regulations_dd"
-        out["crawl"] = _crawl_into_db(src, False)
-    logger.info("Regulations DD: %s", out)
-    return out
+def monitor_fincen() -> dict:
+    """WEEKLY, AND OFF. FINCEN's Statutes and Regulations — ONE page, 3 rows.
+
+    THE CRAWL IS THE SIGNAL, and here the alternative was measured with a real
+    expectation that it would win. The declared AML Act fact sheet carries a
+    genuine `last-modified` stamp — the first affirmative validator any United
+    States source in this library has produced — so `stored-inventory` looked
+    justified. It is not, and the reason is which url holds the token.
+
+    MEASURED 2026-09-29 through dynamic_crawler.fingerprint.version_token, three
+    passes over every stored url:
+
+        FY2021 NDAA (govinfo.gov)       last-modified+length   stable
+        FINCEN Fact Sheet (fincen.gov)  last-modified+length   stable
+        FinCEN's Legal Authorities      url+title              NO TOKEN
+
+    The page answers a ranged GET with neither ETag nor Last-Modified. It is also
+    the only row whose content_hash is taken over visible TEXT, and therefore the
+    only one that can detect an edit at all — the two pdfs are files this pass
+    never downloads. So a probe loop would cost 3 requests against the crawl's 1
+    page load and would be blind to FINCEN rewriting its own statement of legal
+    authority, which is the event worth watching.
+
+    THE CRAWL STILL CATCHES THE REPLACED FILE. The fact sheet is a `mode:
+    declared` row and `stamp_declared` re-asks the server on every run, so its
+    hash is validator-based and moves when FINCEN swaps the pdf. The probe's one
+    advantage is obtained inside the crawl.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook. A
+    detected change goes through `_crawl_into_db`, which writes STRAIGHT TO
+    MSSQL, and output/workbooks/fincen.xlsx has not been promoted.
+
+    CHEAPEST OF THE FOUR US SOURCES TO RUN: fincen.gov answers a plain GET with
+    200 from nginx, no challenge and no JS — unlike ffiec.gov, whose crawl needs
+    a real browser, and unlike fema.gov, which sits behind Akamai.
+
+    NOT COVERED: the govinfo NDAA pdf is a crawled row hashed
+    `document_url | title`, so GPO replacing that package is invisible here. It
+    is an enrolled public law; watching it properly is a govinfo source of its
+    own, not a change to this job.
+    """
+    return _run_exclusive("monitor_fincen", _monitor_fincen_impl)
+
+
+def _monitor_fincen_impl() -> dict:
+    # Both sources, so the declared fact sheet is re-stamped alongside the crawled
+    # rows and `disappeared` compares a complete inventory. No `only_sources`.
+    rep = _crawl_into_db("fincen", False)
+    logger.info("Financial Crimes Enforcement Network (FINCEN): %s", rep)
+    return {"Financial Crimes Enforcement Network (FINCEN)": rep}
+
+
+def monitor_ffiec() -> dict:
+    """WEEKLY, AND OFF. FFIEC's Cybersecurity Awareness resources — ONE page.
+
+    THE CRAWL IS THE SIGNAL, and it is the cheapest question available. The
+    config allows `max_pages: 20` / `max_depth: 2`, but `scope: prefix` on
+    /resources/cybersecurity-awareness leaves nothing beneath it to walk: the
+    2026-09-28 run reported `n_pages: 1, n_documents: 8, blocked_pages: 0`. A
+    stored-inventory sweep would be 9 requests against that one, and it could
+    never see a NEW statement appear on the page — which on a resources listing
+    is the main event, the same covers_inventory = False argument PDPA and MOIC
+    record above.
+
+    THIS ONE IS NOT AS CHEAP AS IT LOOKS, AND THAT MATTERS FOR SCHEDULING. FEMA's
+    page answers a plain GET; this host does not. www.ffiec.gov sits behind a
+    Cloudflare managed challenge that refuses every JS-less client, so the run
+    needs a real browser and `strategy: generic` — see config/sources/ffiec.yml's
+    header, which records a plain `requests` GET returning 403 "CAPTCHA Error".
+
+    AND A REFUSED RUN LIES ABOUT WHY. ffiec.yml's last section documents two
+    engine gaps that make a WAF wall read as a failed extraction: blockcheck's
+    BLOCK_RE misses some wall skins, and crawler.py `continue`s past a short 4xx
+    body before the block check runs. So a run reporting `zero` with "check shape
+    and scope" may be a challenge page. CHECK THE HTTP STATUS BEFORE BELIEVING A
+    ZERO, and do not respond by retrying — ONBOARDING §3 is explicit that a
+    scheduled retry is not a way out of a block, it is what makes one.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/ffiec.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db`, which writes STRAIGHT TO MSSQL.
+
+    KNOWN GAP, NOT FIXABLE FROM CONFIG: the 2014 webinar deck is stored as "View
+    Slides", the button's label rather than the document's name, which sits on
+    the line above the link. Recorded as finding 2 on config/sources/ffiec.yml —
+    the nca.yml case exactly. A reviewer fixes it at `status = ''`.
+    """
+    return _run_exclusive("monitor_ffiec", _monitor_ffiec_impl)
+
+
+def _monitor_ffiec_impl() -> dict:
+    rep = _crawl_into_db("ffiec", False)
+    logger.info("Federal Financial Institutions Examination Council (FFIEC): %s", rep)
+    return {"Federal Financial Institutions Examination Council (FFIEC)": rep}
+
+
+def _monitor_fema_impl() -> dict:
+    # Both sources, so the declared 1973 Act is re-read with the crawled twelve
+    # and `disappeared` compares a complete inventory. No `only_sources`.
+    rep = _crawl_into_db("fema", False)
+    logger.info("Federal Emergency Management Agency (FEMA): %s", rep)
+    return {"Federal Emergency Management Agency (FEMA)": rep}
 
 
 def _forms_for(regulator: str) -> list:
@@ -1577,4 +1714,5 @@ __all__ = ["monitor_cheap_probes", "monitor_sama", "monitor_mc", "monitor_cma",
            "monitor_moic", "monitor_cbj", "monitor_edb", "monitor_mlsd",
            "monitor_lmra", "monitor_justice_canada", "monitor_nbr",
            "monitor_simah", "monitor_saudi_exchange", "monitor_qcb", "monitor_qfcl",
-           "monitor_nca", "monitor_regulations_dd"]
+           "monitor_nca", "monitor_fema",
+           "monitor_ffiec", "monitor_fincen"]

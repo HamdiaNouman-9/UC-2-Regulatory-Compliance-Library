@@ -1506,52 +1506,176 @@ sources:
     signal: crawl
     confirm: false
 
+    confirm: false
+
   # ---- United States -----------------------------------------------------
-  # NO `signal:` KEY, because stored-inventory is the default and this is the
-  # cheapest possible instance of it -- the KDIPA entry above is the same shape
-  # and the same reasoning.
+  # FEMA / NFIP (United States). `crawl` is NOT the fallback it usually is here
+  # -- it is the CHEAPEST question available, on the PDPA precedent above: the
+  # whole source is ONE page load. config/sources/fema.yml sets max_pages: 5,
+  # but only the seed is in scope under `scope: prefix`, and three consecutive
+  # runs (2026-09-28 17:09, 2026-09-29 09:38, 11:19) each reported
+  # `n_pages: 1, blocked_pages: 0, errors: 0`.
   #
-  # config/sources/regulations_dd.yml declares ONE pdf (`mode: declared`) rather
-  # than crawling for it, so the sweep has exactly one url to ask about: one
-  # ranged GET per run, two bytes of body.
+  # THE FOUR ALTERNATIVES:
   #
-  # MEASURED 2026-09-28 through dynamic_crawler/fingerprint.py::version_token
-  # itself, not a hand-rolled request, so this is the basis the monitor records:
+  #   stored-inventory  AVAILABLE ONLY ON PAPER, AND MORE EXPENSIVE. The source
+  #                     now stores 13 urls, so a sweep is 13 requests per run
+  #                     against ONE page load for the crawl -- the same inversion
+  #                     MOIC (90 vs 11) and CBJ (376 vs 10) record above.
   #
-  #     probe 1   483 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
-  #     probe 2   210 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
-  #     probe 3   380 ms   basis 'etag-opaque'   token 'ed8226e119aca1:0'
+  #                     AND THE ONE MEASUREMENT WE HAVE DOES NOT SUPPORT IT.
+  #                     `stamp_declared` asked fema.gov for a validator on
+  #                     2026-09-29 while exporting the declared 1973 row, and
+  #                     stored `hash_basis: url|title (WEAK - no server stamp)`.
+  #                     READ THAT AS "no validator was obtained", NOT "the server
+  #                     has none": stamp_declared collapses a missing header and
+  #                     a refused request into the same fallback, and this is the
+  #                     host that answered our first plain GET with a 420-byte
+  #                     Akamai 403. `version_token` DOES separate the two
+  #                     (`probe-failed` vs `url+title`), so ONE supervised sweep
+  #                     would settle it. Until someone runs that, this line is
+  #                     ruled out on missing evidence, not on a measurement.
   #
-  #     HTTP 206 (the Range: bytes=0-1 is honoured -- Content-Length 2 of
-  #     306,814), ETag "ed8226e119aca1:0", Last-Modified Wed, 20 Jan 2010
-  #     20:44:58 GMT, server cloudflare.
+  #   sitemap           NOT MEASURED, and deliberately not measured. It would
+  #                     take requests to a host under the one-supervised-run rule
+  #                     in config/sources/fema.yml's header. Worth trying in the
+  #                     same supervised session as the sweep above: FEMA is
+  #                     Drupal and /sitemap.xml is plausible. If it carries a
+  #                     real lastmod for this url, it beats everything here.
   #
-  # `etag-opaque`, NOT `etag`, and that is not a fault. `_SP_ETAG` only matches
-  # SharePoint's `{guid},N`; this is an IIS ETag, so fingerprint.py reports it
-  # separately rather than pretending to understand it. It still detects a
-  # change, which is the whole job. The ETag wins over Last-Modified on tier
-  # order, so the 2010 date is not what is compared.
+  #   snapshot-articles WRONG SHAPE. It exists for one page that CONTAINS many
+  #                     articles -- PDPA's 60 accordion panels, all anchors into
+  #                     one HTTP object. This page contains LINKS to 12 separate
+  #                     objects. There is nothing on the page to split.
   #
-  # CONFIRM IS FALSE BECAUSE THE TOKEN DOES NOT LIE -- measured, not assumed:
-  # identical across three probes above, and a real sweep run twice against the
-  # workbook reported `unchanged: 1, unknown: 0, without_token: 0` the second
-  # time. Nothing like CMA, whose Last-Modified is the CURRENT TIME and reported
-  # 1,134 false changes until `confirm: true` made it hash the visible text. A
-  # needless confirm here would download 306 KB every sweep to learn nothing.
+  #   sama-feed         No "what changed" page for this section. FEMA's own
+  #                     "Last updated July 18, 2024" line is the closest thing,
+  #                     and it is INSIDE the page -- so the crawl already reads
+  #                     it, and it moves this source's content_hash.
   #
-  # WHAT THIS CANNOT SEE: a new Federal Reserve instrument. A stored-inventory
-  # sweep reads only documents already stored, so it watches this one file and
-  # is structurally blind to anything else the Board publishes -- the sweep says
-  # so itself in `withdrawals.blocked_by`. That is the right trade for a source
-  # defined as one declared instrument; the day this library wants Fed material
-  # generally, that is a crawling source with its own entry, not a change here.
+  # WHAT THE CRAWL DETECTS THAT A PROBE CANNOT. The page row's content_hash is
+  # taken over its VISIBLE TEXT (ONBOARDING Step 2's first preference) and is
+  # the only hash in this source that can detect an edit -- the 11 crawled file
+  # rows are `document_url | title`, the third and weakest preference, which
+  # cannot move when FEMA replaces a PDF behind an unchanged link. Every change
+  # this library CAN see -- an edit to the prose, a statute link added, removed
+  # or re-pointed, the "Last updated" date moving -- moves that one hash. A
+  # stored-inventory sweep would detect strictly LESS, for 13x the requests.
   #
-  # THE TWO STRINGS ARE THE SAME ON PURPOSE, as with KDIPA: `source_system` was
-  # set to the regulator name so `_clean_trail` folds it out of doc_path.
-  # `settings_for` matches on BOTH halves, so this still resolves to exactly
-  # this source.
-  - regulator: "Regulations DD"
-    source_system: "Regulations DD"
+  # CONFIRM IS FALSE because there is no token to distrust. `confirm` exists to
+  # re-hash the visible text when a version token lies (CMA's Last-Modified is
+  # the current time, 1,134 false changes). `crawl` already hashes the text, so
+  # confirming would be doing the same work twice.
+  #
+  # WHAT THIS CANNOT SEE: a NEW FEMA instrument published anywhere other than
+  # this page. The crawl is one url and `scope: prefix`, so the siblings named in
+  # fema.yml (.../congressional-reauthorization, .../2006-evaluation) are invisible
+  # until each is added as its own source with its own source_system.
+  #
+  # NO JOB READS THIS YET. There is no monitor_fema in jobs/monitor_jobs.py and
+  # no scheduler slot, so this entry is inert -- it records the decision. Wire it
+  # the way Justice Canada was: its own job on a slot that
+  # ships `enabled: false`, NOT a line in CHEAP_PROBE_SOURCES, because that job
+  # is daily, enabled, and writes through `_crawl_into_db` STRAIGHT TO MSSQL --
+  # and nothing here has been promoted.
+  # `source_system` IS THE PROGRAMME, NOT THE LISTING. fema.yml hangs this
+  # listing under a "Flood Insurance" parent the way cbj.yml hangs ten under
+  # "Legislation" — the page's own "Laws and Regulations" is its `category` and
+  # a folder below this. `settings_for` matches on BOTH halves of the pair, so
+  # this string must stay identical to the `source_system:` in fema.yml; a near
+  # miss silently falls back to the defaults at the top of this file, which is
+  # `stored-inventory` — the one signal ruled out above.
+  - regulator: "Federal Emergency Management Agency (FEMA)"
+    source_system: "Flood Insurance"
+    signal: crawl
+    confirm: false
+
+  # FFIEC (United States), Cybersecurity Awareness. `crawl` for the same reason
+  # as FEMA above and PDPA before it: the source is ONE page load. The config
+  # allows max_pages: 20 / max_depth: 2, but `scope: prefix` on
+  # /resources/cybersecurity-awareness leaves nothing below it to walk, and the
+  # 2026-09-28 run reported `n_pages: 1, n_documents: 8, blocked_pages: 0`.
+  #
+  #   stored-inventory  9 requests against 1 page load, and it could never see a
+  #                     NEW statement appear on the page, which on a "resources"
+  #                     listing is the main event. Same covers_inventory = False
+  #                     argument PDPA and MOIC record above.
+  #   sitemap           NOT MEASURED. It would take requests to a host behind a
+  #                     Cloudflare managed challenge; config/sources/ffiec.yml's
+  #                     header sets the terms and a plain GET is refused there
+  #                     with a CAPTCHA page, so a sitemap probe would likely be
+  #                     refused too and tell us nothing either way.
+  #   snapshot-articles wrong shape — the page links 8 separate PDF objects, it
+  #                     does not contain 8 articles to split.
+  #   sama-feed         none.
+  #
+  # THE PAGE ROW IS THE ONLY ROW THAT CAN DETECT AN EDIT, exactly as on FEMA: the
+  # 8 PDF rows are `document_url | title`, ONBOARDING Step 2's weakest
+  # preference. A new statement added to the page, or a link re-pointed, moves
+  # the page's text hash. A PDF silently replaced behind an unchanged link does
+  # not — recorded as finding 2 on the ffiec.yml entry, and true of every source
+  # on this list that hashes url|title.
+  #
+  # NOTE THE CRAWL IS NOT FREE HERE THE WAY IT IS ON FEMA. This host answers only
+  # a real browser (`strategy: generic` and a JS-capable client); a refused run
+  # reports `zero`, not `blocked`, for the two engine reasons ffiec.yml's last
+  # section documents. Read the HTTP status before believing a zero.
+  - regulator: "Federal Financial Institutions Examination Council (FFIEC)"
+    source_system: "Cybersecurity Awareness"
+    signal: crawl
+    confirm: false
+
+  # FINCEN (United States), Statutes and Regulations. `crawl`, and unusually this
+  # one was measured with a genuine expectation that the answer would be
+  # `stored-inventory` — the declared fact sheet came back with a real
+  # `last-modified` stamp, which is the first affirmative validator any US source
+  # in this library has produced. It is still the wrong signal, and the reason is
+  # WHICH url has the token.
+  #
+  # MEASURED 2026-09-29 through dynamic_crawler/fingerprint.py::version_token
+  # itself — the function the sweep calls — three passes, every stored url:
+  #
+  #   FY2021 NDAA (govinfo.gov)     last-modified+length   STABLE
+  #     'Fri, 02 Jan 2026 21:36:58 GMT|3925814'  identical on all three
+  #   FINCEN Fact Sheet (fincen.gov) last-modified+length  STABLE
+  #     'Wed, 30 Jul 2025 00:49:12 GMT|139321'   identical on all three
+  #   FinCEN's Legal Authorities     url+title              NO TOKEN AT ALL
+  #     '' — the page answers a ranged GET with neither ETag nor Last-Modified
+  #
+  # THE PAGE IS THE DOCUMENT AND THE PAGE HAS NO TOKEN. It is the only row here
+  # whose content_hash is taken over visible TEXT (ONBOARDING Step 2's first
+  # preference) and the only one that can detect an edit at all — the two PDFs
+  # are files we never download. A `stored-inventory` sweep would therefore be
+  # structurally blind to the only thing worth watching: FINCEN rewriting its own
+  # statement of legal authority, adding a statute, or re-pointing a link.
+  #
+  # AND IT WOULD COST MORE: 3 requests per sweep against the crawl's 1 page load.
+  # The MOIC (90 vs 11) and CBJ (376 vs 10) entries above record the same
+  # inversion at larger scale.
+  #
+  # THE CRAWL ALSO CATCHES THE ONE THING A PROBE WOULD HAVE ADDED. The fact sheet
+  # is a `mode: declared` row, and `stamp_declared` re-asks the server on EVERY
+  # run — so its content_hash is `url|last-modified:` and moves when FINCEN
+  # replaces the file. That is a real fingerprint on the one FINCEN-published
+  # file here, obtained inside the crawl, without a sweep.
+  #
+  # WHAT IS STILL NOT COVERED, stated plainly: the govinfo NDAA pdf is a crawled
+  # row hashed `document_url | title`, so GPO silently replacing PLAW-116publ283
+  # is invisible. It is an enrolled public law package; a re-issue would be a
+  # govinfo event, not a FINCEN one, and the day this library wants public laws
+  # watched properly that is a govinfo source with its own entry.
+  #
+  # CONFIRM IS FALSE because `crawl` already hashes the visible text; confirming
+  # would re-fetch to learn what the run just computed. `confirm` exists for a
+  # token that lies (CMA's Last-Modified is the current time, 1,134 false
+  # changes), and there is no token in play here.
+  #
+  # THE HOST IS COOPERATIVE, which is why this is affordable: one plain GET
+  # returns 200 from nginx with no challenge, no JS and no cookie — unlike
+  # ffiec.gov above, whose crawl needs a real browser.
+  - regulator: "Financial Crimes Enforcement Network (FINCEN)"
+    source_system: "Statutes and Regulations"
+    signal: crawl
     confirm: false
 
 # Not listed, deliberately:

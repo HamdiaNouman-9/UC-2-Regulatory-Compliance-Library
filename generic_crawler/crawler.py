@@ -870,6 +870,319 @@ def best_doc_title(link: dict, url: str) -> str:
 # circulars, CBB, SECP acts, SBP circulars and CMA seeds: with the profile off,
 # breadcrumb and content output are unchanged on all six.
 SITE_PROFILES = {
+    "www.fema.gov": {
+        # FEMA IS DRUPAL ON THE US WEB DESIGN SYSTEM, the same family of layout
+        # as ffiec.gov, and it fails the same way: <main> holds TWO columns and
+        # the default capture takes both, so the stored HTML opens with the
+        # section's sidebar nav instead of the document.
+        #
+        # MEASURED 2026-09-28 against the Internet Archive capture
+        # 20260603155723 of /flood-insurance/rules-legislation/laws. The live
+        # host answers a plain GET with 403 (AkamaiGHost), so this profile is
+        # derived from the archived markup and has NOT been confirmed against a
+        # live crawl -- see config/sources/flood_insurance.yml, which carries the
+        # measurement and the rule about not iterating against this host.
+        #
+        #   selector                      chars  files  n  sidebar  updated  top
+        #   main                          3,496    11   1   LEAKS    yes     yes
+        #   div.grid-row-container        3,496    11   1   LEAKS    yes     yes
+        #   div.region-content-container  3,496    11   1   LEAKS    yes     yes
+        #   .desktop\:grid-col-9          3,229    11   1   clean    yes     LEAKS
+        #   div.region-content            3,215    11   1   clean    YES     no   <-
+        #   div.content-inner-container   3,159    11   1   clean    NO      no
+        #   article                       3,159    11   3   clean    NO      no
+        #   div.field--name-body              0     0   9   -        -       -
+        #
+        # `div.field--name-body` is the Drupal body field and looks like the
+        # obvious answer; it is a trap. Nine of them exist on the page and
+        # querySelector takes the first, which is EMPTY — the capture would have
+        # been silently blank, which is the aml.gov.sa/QCB failure exactly.
+        #
+        # `div.region-content` is the one that keeps "Last updated July 18,
+        # 2024" — FEMA's own statement of when the page last changed, which is
+        # the most monitoring-relevant line on it and must not be trimmed away as
+        # furniture. It also excludes "Return to top" by itself, so no
+        # drop_selectors are needed: that link lives in
+        # div.grid-container.usa-footer__return-to-top, a sibling one level up.
+        # The narrower div.content-inner-container loses the date, and the wider
+        # wrappers take the section sidebar with them.
+        "content_selector": "div.region-content",
+        # THE TWO BLOCKS THAT COME WITH THE WIDER WRAPPER AND ARE NOT THE
+        # DOCUMENT. div.region-content holds three blocks in order — the page
+        # title, the language switcher, then the article — plus the updated-date
+        # block at the end, which is the one that must stay.
+        #
+        #   .block-page-title-block          n=1, "Laws and Regulations"
+        #       The <h1>, which is the SECTION and is already the source_system
+        #       and the folder this row sits in. `page_title_selector` above
+        #       deliberately does not read it; leaving it in the body made the
+        #       stored document open by repeating its own folder name.
+        #   .view-translations-available     n=1, "English" + a globe <img>
+        #       FEMA's translations widget. It renders as a large globe icon and
+        #       a one-item list, which is most of the top of the stored page and
+        #       none of the document.
+        #
+        # CLASS-BASED, NOT ID-BASED, deliberately. The ids are
+        # block-fema-uswds-pagetitle-2 and
+        # block-views-block-translations-available-block-1 — Drupal appends a
+        # per-page counter, so an id selector would stop matching on the next
+        # FEMA page. These two classes are the block plugin and the view name.
+        #
+        # MEASURED 2026-09-28 on the archived capture: removes exactly 2
+        # elements, leaves 3,272 characters starting at "A number of laws have
+        # been passed…", 11 file links, 0 images, and still ends on "Last
+        # updated July 18, 2024".
+        #
+        # This only edits the CAPTURED HTML — JS_LINKS reads the live document,
+        # so nothing here can hide a link from the crawl.
+        "drop_selectors": ".block-page-title-block, .view-translations-available",
+        # THE LAWS PAGE IS AN ARTICLE THAT CITES ELEVEN STATUTES. IT DOES NOT
+        # OWN ANY OF THEM.
+        #
+        # MEASURED on the 17:24 2026-09-28 export (output/workbooks/fema.xlsx).
+        # The wrapper takes pdf_links[0] as extra_meta["org_pdf_link"]
+        # (generic_crawler_wrapper.py:816) and the orchestrator promotes that key
+        # into document_url (utils/file_links.py::LEGACY_FILE_KEYS), so the page
+        # row came out as:
+        #     title         Governing the National Flood Insurance Program
+        #     file_type     HTML          <- still says it is a page
+        #     document_url  .../national-flood-insurance-act-1968.pdf   <- WRONG
+        # The row's own url was replaced by the first statute it links to, which
+        # also corrupts identity — (document_url, doc_path, title).
+        #
+        # This switch stops the page claiming a file while leaving the eleven
+        # statutes to be collected as documents in their own right, which is the
+        # shape config/sources/fema.yml now asks for and the shape ffiec.yml
+        # already produces: the page plus its files, siblings in one folder.
+        #
+        # AN EARLIER PASS DID THIS WITH `exclude_document_urls` INSTEAD — the
+        # page row came out right because nothing was collected at all. That was
+        # the wrong lever: it bought a correct url by throwing the documents
+        # away, and it would have starved any future fema.gov source of its
+        # files. Removed on 2026-09-29 in favour of the switch above, which fixes
+        # the bug without deciding what the source is allowed to keep.
+        "page_pdf_link": False,
+        # THE <h1> IS THE SECTION, NOT THE PAGE. "Laws and Regulations" is what
+        # the source_system is already called; the page's own name is the first
+        # <h2> inside the body field. Scoped to the body so it cannot pick up
+        # "Download the FEMA App", the site-wide app promo that appears as an
+        # <h2> twice on every page and sits OUTSIDE the body field.
+        "page_title_selector": "div.field--name-body h2",
+    },
+    "www.ffiec.gov": {
+        # FFIEC (United States), the Cybersecurity Awareness resources page.
+        # MEASURED 2026-09-29 against the SAVED capture
+        # (output/ffiec/html/resources-cybersecurity-awareness.html), not a live
+        # request — this host sits behind a Cloudflare managed challenge and
+        # config/sources/ffiec.yml's header sets the terms for touching it.
+        #
+        # THE PAGE'S NAME IS ITS <h2>, NOT ITS <h1>. Measured on the saved page:
+        #     <h1>  "Resources"                 n=1, 9 chars   <- the SECTION
+        #     <h2>  "Cybersecurity Awareness"   n=1, 23 chars  <- the PAGE
+        # This is the same USWDS/Drupal layout habit fema.gov has, and without
+        # the override the 2026-09-28 export stored the page row as
+        # `title: RESOURCES` — which is the menu label every other Resources page
+        # on this site also carries. Scoped to the article column so it cannot
+        # pick up a heading from the furniture.
+        "page_title_selector": "div.usa-layout-docs__main h2",
+        # THE PAGE ROW MUST NOT CLAIM THE FIRST PDF IT LINKS. Measured on the
+        # 2026-09-28 export: the page row came out as
+        #     title         RESOURCES
+        #     file_type     HTML
+        #     document_url  .../2024/cat-sunset-statement-ffiec-letterhead.pdf
+        # which is row 2's document. Two rows, one url, two names, and `check`
+        # passes it because identity is (document_url, doc_path, title). See
+        # `page_pdf_link` in DEFAULT_PROFILE for the mechanism; FFIEC is the
+        # case that proves it was never FEMA-specific.
+        "page_pdf_link": False,
+        # THE ARTICLE COLUMN. <main class="main-content usa-layout-docs"> holds
+        # the section nav and the article; this names the article.
+        #
+        # BE HONEST ABOUT WHAT IT BUYS, because ffiec.yml's finding 3 overstated
+        # it. That note says the stored HTML "opens with a list of the other eight
+        # Resources pages". MEASURED, IT DOES NOT: the stored document_html of the
+        # 2026-09-28 export carries 24 links, 8 of them PDFs and ZERO pointing at
+        # another /resources/ page, and its visible text is 3,214 characters
+        # against the article's 3,127. There is no sidebar in it.
+        #
+        # What this selector actually removes is the <h1> "Resources" — the
+        # section label repeating the folder — and ~40 characters of wrapper. Kept
+        # for that, and because it pins the capture to the article rather than
+        # leaving it to the default <main> walk, which is what would pull the nav
+        # in if this page's template ever grows one.
+        "content_selector": "div.usa-layout-docs__main",
+        # IT DOES NOT REMOVE THE HERO IMAGE — see `drop_selectors` below. An
+        # earlier draft of this comment claimed it did, from a containment test
+        # that compared BeautifulSoup Tags with `in`; Tag equality compares NAME
+        # AND CONTENTS, not identity, so the test answered about a look-alike and
+        # not about position. The 2026-09-29 12:21 run settled it: the capture
+        # came back with the <h1> gone and the image still in it.
+        #
+        # THE CRUMBS ARE <li>s, AND ANCHORS-ONLY READS ONLY THE FIRST ONE.
+        # MEASURED on the 2026-09-28 run: every row came back with
+        #     section_path = "Home"
+        # while the page's own trail reads  Home > Resources > Cybersecurity
+        # Awareness. That is the pdp.gov.bh case this file already documents at
+        # JS_BREADCRUMB — "Anchors-only reads ['Home'] ... section_path was 'Home'
+        # on all three, so every document filed under the site root instead of its
+        # own section" — and `breadcrumb_li` is the switch written for it: read the
+        # <li>s whether or not they are links.
+        #
+        # WHY IT WENT UNNOTICED IN doc_path: `_clean_trail` drops "home" via
+        # _NON_SUBJECT_CRUMBS, so the folder tree looked right while the stored
+        # section_path and the `category` COLUMN — which `_category_for` takes
+        # from the RAW, uncleaned section_path — both read "Home".
+        #
+        # NOT YET CONFIRMED AGAINST THE LIVE PAGE, and it cannot be from here: the
+        # breadcrumb block (#block-uswds-ffiec-breadcrumbs) is EMPTY in the saved
+        # capture, so the trail is rendered after the point that file was written.
+        # The diagnosis is from the symptom and the engine, not from FFIEC's
+        # markup. CONFIRM IT ON THE NEXT SUPERVISED RUN: section_path should read
+        # "Home > Resources > Cybersecurity Awareness". If it still says "Home",
+        # the container matched is the wrong one and `breadcrumb_current` is the
+        # next thing to try — not a retry of this.
+        "breadcrumb_li": True,
+        # THE DECORATIVE BANNER, WHICH IS INSIDE THE ARTICLE AND SO SURVIVES
+        # `content_selector`. MEASURED on the 2026-09-29 12:21 capture — the
+        # page's only <img>, first thing in the Drupal body field:
+        #     div.field--name-body > p > img
+        #     src   /media/cybersecurity/cybersecurity-digital-security-concept-
+        #           1500x350.jpg
+        #     alt   ""        width "NaN"   height "NaN"
+        # A 1500x350 stock illustration of padlocks over a city. It is not
+        # content, it is the page's header art, and it renders in the stored HTML
+        # as a full-width image above the first sentence.
+        #
+        # MATCHED ON alt="", NOT ON THE FILENAME, deliberately. `alt=""` is the
+        # HTML convention for "this image is decorative, screen readers should
+        # skip it" — FFIEC's own markup declaring what the image is for. A
+        # filename or a path match would miss the next banner and would have to be
+        # kept in step every time FEMA-style CMS re-uploads rename a file. An
+        # image that carries real alt text is by the same token content, and stays.
+        #
+        # Scoped to the body field so it cannot reach an image in the site
+        # furniture of some other ffiec.gov page a later source crawls.
+        "drop_selectors": "div.field--name-body img[alt='']",
+    },
+    "www.fincen.gov": {
+        # FINCEN (United States). MEASURED 2026-09-29 on
+        # /resources/fincens-legal-authorities with one plain GET — HTTP 200,
+        # 38,924 bytes, server nginx, no challenge and no JS needed.
+        #
+        # WITHOUT THIS KEY THE CAPTURE WAS AN EMPTY <body>. The exploratory run
+        # stored text=0, html=0 and a 213-byte file holding nothing but the
+        # doctype and an empty body — a BLANK WHITE PAGE — while the same run
+        # read the title, the breadcrumb ['Home', 'Resources'] and both PDFs
+        # correctly. Only the content step failed, which is what makes this kind
+        # of failure so easy to misread as "the site blocked us".
+        #
+        # THE CAUSE IS DOCUMENT ORDER, NOT THE SITE. JS_MAIN_CONTENT falls back to
+        # `document.querySelector('main, [role="main"], article, #content,
+        # .content, #main')`, and querySelector returns the FIRST MATCH IN
+        # DOCUMENT ORDER, not selector order. This page has ten matches:
+        #     [0] div.content                     21 chars  <- picked, ~empty
+        #     [1] div.content                     52
+        #     [2] main#content.usa-section     4,005
+        #     [3] div.content                  3,262
+        #     ...
+        # The 21-character wrapper won and its content did not survive the strip,
+        # so the row came out blank. obamawhitehouse.archives.gov above is the
+        # same trap with a different ending — there the near-empty pick lost the
+        # frame contest to a YouTube embed instead of emptying out.
+        #
+        # WHY div.region-content AND NOT main#content. Both are single matches.
+        #     div.region-content   3,289 chars   the article
+        #     main#content         4,005 chars   the article PLUS 716 characters
+        #                                        of section sidebar — "Resources,
+        #                                        Alerts/Advisories/Notices,
+        #                                        Bank Secrecy Act Filing
+        #                                        Information, ..." — which is the
+        #                                        site's menu, not this document.
+        # MEASURED on div.region-content: opens "FinCEN's Legal Authorities 31
+        # U.S.C. 310 ...", ends "...notices that FinCEN has submitted to the
+        # Federal Register.", carries the <h1>, all seven <h3> section headings,
+        # all 10 links and both PDFs. Same Drupal region name www.fema.gov uses.
+        "content_selector": "div.region-content",
+        # THE PAGE IS THE DOCUMENT AND THE TWO PDFs ARE REFERENCES: the FY2021
+        # NDAA on govinfo.gov, and FINCEN's own AMLA one-pager. Neither is "this
+        # page's own file", so the page must not claim one — see `page_pdf_link`
+        # in DEFAULT_PROFILE for the document_url corruption it prevents. Third
+        # host to need it after fema.gov and ffiec.gov.
+        "page_pdf_link": False,
+        # THE BANNER PHOTOGRAPH, DROPPED ON THE LEAD'S CALL (2026-09-29).
+        #
+        # The region holds one image, /system/files/shared/
+        # StatutesRegulations_large.jpg (807x200) — a photograph of a dome
+        # ceiling above the first sentence. Decoration by any reading.
+        #
+        # MATCHED ON THE `_large.` RENDITION SUFFIX, NOT ON alt="". The rule
+        # written for www.ffiec.gov above keys on alt="" because that is the
+        # page declaring an image decorative — and it does NOT apply here: this
+        # image carries real alt text ("A photo of a dome ceiling with carvings
+        # and a skylight."), so the FFIEC rule would keep it. `_large.` is
+        # Drupal's own image-style suffix for a full-width banner rendition,
+        # which is the thing being refused; an image dropped into the body by an
+        # author comes through at its own filename and stays.
+        #
+        # THE COST, SO IT IS NOT A SURPRISE LATER: a content image that a FINCEN
+        # author happens to publish through the `_large` style would also go.
+        # Scoped to div.region-content so it can never reach site furniture on
+        # some other fincen.gov page, and narrow enough to name in a review.
+        "drop_selectors": "div.region-content img[src*='_large.']",
+    },
+    "obamawhitehouse.archives.gov": {
+        # THE OBAMA WHITE HOUSE ARCHIVE. MEASURED 2026-09-29 on
+        # /economy/middle-class/dodd-frank-wall-street-reform with one plain GET
+        # (41,024 bytes, HTTP 200 — a static archive, no WAF).
+        #
+        # WITHOUT THIS KEY THE CRAWL CAPTURED A YOUTUBE PLAYER. Measured on the
+        # exploratory run: text 121 characters, html 4,613, reading "The 2013
+        # State of the Union Address (Enhanced Version) ... 1.11M subscribers
+        # Watch on". That is the embed's own chrome, not the page. TWO THINGS
+        # COMBINED TO PRODUCE IT, and only the first is fixed here:
+        #
+        # 1. THE GENERIC LIST PICKS THE WRONG CONTAINER. JS_MAIN_CONTENT falls
+        #    back to `document.querySelector('main, [role="main"], article,
+        #    #content, .content, #main')`, and querySelector returns the first
+        #    match in DOCUMENT ORDER, not selector order — the caveat this file
+        #    already states two lines above that constant. This page carries six
+        #    matches:
+        #        [0] div.content      39 chars   <- querySelector stops here
+        #        [1] div.content     291
+        #        [2] div.content     127
+        #        [3] div#content   6,890 chars   <- the article
+        #        [4] div.content       0
+        #        [5] div.content       0
+        #    There is no <main>, no <article> and no [role=main], so the 39-char
+        #    wrapper won and the page contributed almost nothing.
+        #
+        # 2. THE FRAME MERGE THEN PREFERRED THE EMBED. `collect_all` walks every
+        #    frame and keeps whichever returns the MOST TEXT — written for
+        #    <frameset> sites like SBP, where the top document has no body at all.
+        #    It has no same-host guard, so the page's 39 characters lost to the
+        #    YouTube iframe's 121. The page carries four iframes: two YouTube
+        #    embeds, Google Tag Manager, and /embeds/footer.
+        #
+        #    NAMING #content FIXES THE SYMPTOM because 6,890 beats 121 by a wide
+        #    margin. IT DOES NOT FIX THE RULE: any page whose own content extracts
+        #    thin and which embeds a video can still be captured as the video.
+        #    That is `collect_all` in this file, shared by every regulator, and
+        #    changing it is not something one new source should decide.
+        #
+        # VERIFIED: with #content the capture is 6,890 characters of text / 8,217
+        # of html, opening "Wall Street Reform: The Dodd-Frank Act In the fall of
+        # 2008, a financial crisis...", carrying <h1> plus both <h2>s and all 9
+        # links including the two PDFs.
+        "content_selector": "#content",
+        # THE PAGE IS THE DOCUMENT, AND THE TWO PDFs ARE OTHER PEOPLE'S. They are
+        # an FDIC overdraft study and a Department of Education shopping sheet —
+        # references inside a White House explainer, not the instrument it
+        # explains. Without this the wrapper hands pdf_links[0] to the
+        # orchestrator as `org_pdf_link` and the page row's document_url becomes
+        # the FDIC report. Same defect as fema.gov and ffiec.gov; see
+        # `page_pdf_link` in DEFAULT_PROFILE.
+        "page_pdf_link": False,
+    },
     "nca.gov.sa": {
         # NCA (Next.js), MEASURED 2026-09-24 on /en/enablement/ and
         # /en/cyber-operations/ — the two tabs crawled generically; the other
@@ -1430,6 +1743,30 @@ DEFAULT_PROFILE = {
     #: JS_MAIN_CONTENT's list. Empty means "use the defaults", which is what every
     #: host without an entry does.
     "content_selector": "",
+    #: A CSS selector for where THIS HOST puts a page's real title, tried before
+    #: JS_DOC_TITLE's own rules and falling through to them when it finds
+    #: nothing.
+    #:
+    #: JS_DOC_TITLE takes the first h1/h2 that is not site furniture, which is
+    #: right nearly everywhere: the page's own name is its first heading. It is
+    #: wrong on a CMS whose <h1> names the SECTION and puts the page's name in
+    #: the body — ffiec.yml finding 1 records exactly that on the US Web Design
+    #: System layout, where the <h1> was "RESOURCES" and the page's real name
+    #: was the <h2> below it.
+    #:
+    #: MEASURED 2026-09-28 on www.fema.gov/flood-insurance/rules-legislation/laws
+    #: (Internet Archive capture 20260603155723, the live host refuses a plain
+    #: GET):
+    #:     document.title  "Laws and Regulations | FEMA.gov"
+    #:     <h1>            "Laws and Regulations"   <- the SECTION, and the
+    #:                                                 source_system already
+    #:     <h2> in body    "Governing the National Flood Insurance Program"
+    #:                                              <- the page's own name
+    #: Without this the row's title repeats its own folder and `_clean_trail`
+    #: folds it out, leaving a document named after the folder it sits in.
+    #:
+    #: Off by default, so no host that does not name one is affected.
+    "page_title_selector": "",
     #: When several documents share one title, name them after their SECTION
     #: instead of their URL slug -- and drop that crumb from `section_path`, since
     #: it has become the title.
@@ -1604,6 +1941,38 @@ DEFAULT_PROFILE = {
     #: separately, so nothing here can hide a link from the crawl or drop a
     #: document from the documents sheet.
     "drop_selectors": "",
+    #: DOES A PAGE ROW ON THIS HOST CLAIM THE FIRST FILE IT LINKS AS ITS OWN?
+    #:
+    #: The page record carries `pdf_links`, and
+    #: `generic_crawler_wrapper.py:816` takes the FIRST of them —
+    #:     pdf = (r.get("pdf_links") or "").split(" | ")[0]
+    #:     extra_pdf = {"org_pdf_link": pdf} if pdf.startswith("http") else {}
+    #: — which the orchestrator then PROMOTES INTO document_url (see
+    #: utils/file_links.py::LEGACY_FILE_KEYS).
+    #:
+    #: THAT IS RIGHT FOR SAMA AND CBB, where a page is a stub wrapped around one
+    #: attachment and the attachment is the regulation. IT IS WRONG FOR AN
+    #: ARTICLE THAT CITES MANY UNRELATED FILES: the row then says file_type HTML
+    #: while its url points at whichever statute happened to be linked first, and
+    #: identity is (document_url, doc_path, title), so the page is misfiled as
+    #: well as mislabelled.
+    #:
+    #: ALREADY IN THE STORED DATA, not a hypothetical: output/workbooks/ffiec.xlsx
+    #: holds its page row as
+    #:     title         RESOURCES
+    #:     file_type     HTML
+    #:     document_url  .../press-releases/2024/ca...pdf     <- the first of 8
+    #: and fema.xlsx did the same until 2026-09-28.
+    #:
+    #: False leaves `n_pdfs` honest — the crawl still reports what it found, and
+    #: the documents themselves are untouched, because they are collected into a
+    #: separate dict (~line 3768) — and only stops the PAGE row claiming one of
+    #: them as its own file. Use it on a host whose pages are articles.
+    #:
+    #: DEFAULT True, so every existing source behaves exactly as before. The
+    #: proper fix is in the wrapper, which should not call the first of twelve
+    #: unrelated links "this page's PDF"; this is a per-host opt-out until then.
+    "page_pdf_link": True,
 }
 
 
@@ -2009,10 +2378,25 @@ JS_MODALS = r"""
 # The real document title. Page <title>/banner is often generic ("Circulars"),
 # so prefer a subject-like heading in the body, skipping banner/nav/breadcrumb.
 JS_DOC_TITLE = r"""
-() => {
+(sel) => {
   const clean = s => (s || '').replace(/\s+/g, ' ').trim();
   const banned = el => el.closest('.pages-banner,.banner,header,nav,.bread-crumb,' +
                                   '.breadcrumb,footer,[aria-hidden="true"],#pdfDownloadLayout');
+  // 0) A host may name where its real title lives (see `page_title_selector`).
+  //    Guarded and first-match-wins, exactly like `heading_selector` in JS_LINKS:
+  //    one bad selector in a profile must cost that host its override, not the
+  //    title of every page on every site — querySelectorAll throws on invalid
+  //    syntax. Falling through to the rules below is the pre-existing behaviour,
+  //    which is also what every host without the key gets, since `sel` is ''.
+  if (sel) {
+    try {
+      for (const e of document.querySelectorAll(sel)) {
+        if (banned(e)) continue;
+        const t = clean(e.innerText);
+        if (t && t.length > 4) return t.slice(0, 250);
+      }
+    } catch (err) { /* fall through to the default rules */ }
+  }
   // 1) The real title is the main heading (green <h2>): first h1/h2 that is NOT the
   //    site banner and not the generic word "Circulars".  (Do NOT trust
   //    .circular-subject here — SBP tags BOTH the recipient line and the subject
@@ -3435,7 +3819,12 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
             # content then client-side-redirect away seconds later; capturing here keeps it.
             # Prefer the real document heading over the generic <title>/banner text.
             try:
-                title = (page.evaluate(JS_DOC_TITLE) or "").strip()
+                # The argument is the host's `page_title_selector`, '' for every
+                # host that does not set one — which is the behaviour this call
+                # had before the key existed.
+                title = (page.evaluate(JS_DOC_TITLE,
+                                       prof.get("page_title_selector") or "")
+                         or "").strip()
             except Exception:
                 title = ""
             if not title:
@@ -3660,7 +4049,13 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                 "parent_page_url": link_parents.get(url, ""),
                 "status": status,
                 "n_pdfs": len(page_docs),
-                "pdf_links": " | ".join(page_docs),
+                # `n_pdfs` above stays honest whatever this says: the count is
+                # what the crawl found, and it is what tells a blocked page from
+                # an empty one. `page_pdf_link` only decides whether the page
+                # ALSO hands the wrapper a file to call its own — see that key
+                # in DEFAULT_PROFILE for the document_url bug it exists to stop.
+                "pdf_links": (" | ".join(page_docs)
+                              if prof.get("page_pdf_link", True) else ""),
                 "text_len": len(content["text"]),
                 "html_file": html_file,
                 "text": content["text"],
