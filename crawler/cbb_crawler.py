@@ -274,18 +274,12 @@ def _crawl_corpgov() -> List[RegulatoryDocument]:
 #: in `_rulebook_doc_to_regulatory`.
 #
 # THIS FIXES THE COLUMN, NOT THE FOLDER TREE, and the two were separate faults.
-# The tree misfiles a volume's "Quarterly Updates" section under the Users'
-# Guide subsection of the same name (and Volume 5's "Reporting Requirements"
-# inside a Capital Adequacy module) because
-# `repo.find_folder_in_subtree(title, parent)` matches a title at ANY depth in
-# the subtree. That function is shared by every regulator, so it is deliberately
-# left alone: a depth cap was written, measured to be a no-op on all 20
-# non-CBB workbooks and strictly better on the six CBB volumes, and still
-# reverted 2026-09-16 rather than carry cross-regulator risk for a CBB bug.
-#
-# So an export still needs `scripts/reparent_cbb_quarterly_updates.py` run over
-# its workbooks afterwards. That script is idempotent and reports when there is
-# nothing to move.
+# The tree used to misfile a volume's "Quarterly Updates" section under the
+# Users' Guide subsection of the same name, because the folder walk fell back to
+# `find_folder_in_subtree(title, parent)`. That fallback was removed 2026-09-29
+# (exact-path reuse only; see docs/FOLDER_TREE.md), so a fresh export files
+# them correctly. `scripts/reparent_cbb_quarterly_updates.py` is only needed for
+# workbooks exported before then.
 _SECTION_INDEX = 3
 
 

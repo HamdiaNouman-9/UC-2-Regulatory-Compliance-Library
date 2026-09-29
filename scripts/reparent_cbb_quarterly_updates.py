@@ -87,12 +87,10 @@ levels), rather than hanging off a wrong branch. Which of the two is right there
 has NOT been checked against the site, so this script leaves them alone rather
 than guessing. It reports them so they are not forgotten.
 
-    !! THE CRAWLER IS STILL UNFIXED. !!
-
-This moves nodes in the FILES. The collision lives in the tree walk
-(`find_folder_in_subtree` matching a title across a subtree), so the next
-`tools.workbook export` reproduces it. Re-run this script after any re-export
-until that is fixed.
+FIXED AT SOURCE 2026-09-29: the tree walk (orchestrator._walk_folders) and
+promote now reuse a folder only on an exact (title, parent) match -- the subtree
+fallback is gone. A fresh export no longer needs this script; it is kept for
+workbooks exported BEFORE that date. See docs/FOLDER_TREE.md.
 
 HOW IT WRITES
 -------------

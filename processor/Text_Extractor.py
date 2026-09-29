@@ -334,7 +334,16 @@ class OCRProcessor:
                 # 72 dpi is fitz's default user space, so scale to reach OCR_DPI.
                 pix = page.get_pixmap(matrix=fitz.Matrix(OCR_DPI / 72, OCR_DPI / 72))
                 img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            return pytesseract.image_to_string(img, lang=langs).strip()
+            return pytesseract.image_to_string(img, lang=langs, timeout=180).strip()
+        except RuntimeError as e:
+            # pytesseract's timeout_manager raises a plain RuntimeError
+            # ("Tesseract process timeout") when it kills the tesseract
+            # subprocess for exceeding `timeout`. Without a timeout here, a
+            # single stuck page hangs the whole run forever with no exception,
+            # no log line, nothing -- this blocked a live monitor_qcb run for
+            # 75+ minutes with zero visible activity on 2026-09-29.
+            logger.error(f"OCR timed out on page {page_num} (>180s): {e}")
+            return ""
         except Exception as e:
             logger.error(f"OCR failed on page {page_num}: {e}")
             return ""

@@ -184,54 +184,37 @@ def _same_document(obj, row) -> bool:
 
 
 
-def _by_folder_and_title(repo, finder, obj, doc_path: str):
-    """The row in the same folder with the same TITLE — a document that moved url.
+def _by_files(repo, finder, obj, doc_path: str):
+    """The stored row with the same PATH and TITLE that shares a FILE with this
+    document -- the same instrument after it gained or lost an attachment.
 
-    MEASURED 2026-08-16 on MHRSD. The ministry serves ONE instrument at TWO urls,
-    an English filename and an Arabic slug, and BOTH answer 200:
+    The identity rule, decided 2026-09-29:
 
-        .../Procedural%20Manual%20for%20the%20Saudization%20Decree...pdf
-        .../%D9%86-%D9%85%D9%87%D9%86%D8%A9-%D8%A7%D9%84%D8%B5%D9%8A%D8%AF...
+        path + title + files all the same          -> same document
+        path + title same, files OVERLAP           -> same document, new version
+            (one PDF added, or one removed, at least one old PDF still there)
+        path + title same, files ALL different     -> a NEW document
+        path or title different                    -> a NEW document
 
-    An earlier crawl stored the first; a later listing linked the second. Same
-    title, same date, same document — but identity is (document_url, doc_path,
-    title), so the differing url produced one false `new` AND one false
-    `disappeared`, and `disappeared` feeds the withdrawal gate. Left alone, a
-    site that alternates between two urls would insert and un-insert the same
-    document for ever.
-
-    `version_key: reference_no` exists for exactly this new-url case and could
-    not help here: neither row has a reference number.
-
-    A FALLBACK, never an identity field. It runs only after every exact lookup
-    has missed, so it can only find matches that would otherwise be lost — it
-    cannot orphan anything, which is what makes it safe.
+    EVERY row with this path and title is checked, not just the first: QCB lists
+    several different circulars under one title in one folder, and comparing
+    only the first would miss the one this document actually continues.
     """
     if not doc_path or not callable(finder):
         return None
+    fields = {"doc_path": doc_path}
     title = str(resolve_field(obj, "title") or "").strip()
-    if not title:
-        return None
+    if title:
+        fields["title"] = title
     try:
-        return finder({"doc_path": doc_path, "title": title})
+        return finder(fields, accept=lambda row: _same_document(obj, row))
+    except TypeError:
+        # A repo whose finder predates `accept` (the test doubles): it can only
+        # return the first row, so check that one the old way.
+        candidate = finder(fields)
+        return candidate if candidate and _same_document(obj, candidate) else None
     except (ValueError, NotImplementedError):
         return None
-
-
-def _by_files(repo, finder, obj, doc_path: str):
-    """The row in the SAME folder that shares a file with this document.
-
-    The gained-or-lost-an-attachment case (see `_same_document`). The exact
-    lookups are the fast path and cover every document whose file list has not
-    moved; this catches the one that has, in either direction, and without it
-    that document is inserted a second time.
-    """
-    if not doc_path or not callable(finder):
-        return None
-    candidate = finder({"doc_path": doc_path})
-    if candidate and _same_document(obj, candidate):
-        return candidate
-    return None
 
 
 def find_existing(repo, obj, default=DEFAULT_IDENTITY):
@@ -271,8 +254,7 @@ def find_existing(repo, obj, default=DEFAULT_IDENTITY):
         # phantom duplicate in the direction nobody tests, because the exact
         # lookup on this path succeeds for every document that has not changed.
         _p = fields.get("doc_path", "")
-        return (hit or _by_files(repo, finder, obj, _p)
-                or _by_folder_and_title(repo, finder, obj, _p))
+        return hit or _by_files(repo, finder, obj, _p)
     if not callable(finder):
         # Say what is actually wrong. This used to read "it only supports
         # {default}", which since `title` joined the default prints the SAME
@@ -289,12 +271,17 @@ def find_existing(repo, obj, default=DEFAULT_IDENTITY):
         # The source named a column the repo will not match on. Falling back to
         # doc_path alone is still far better than inserting a duplicate.
         return finder({"doc_path": fields.get("doc_path", "")})
-    # NOTHING MATCHED EXACTLY — so try the same folder and compare FILES.
-    # Same folder: first by the FILES the document carries, then by its TITLE
-    # (a document that changed url).
+    # NOTHING MATCHED EXACTLY — so look for the same path + title sharing a file
+    # (an attachment added or removed). That is the ONLY fallback.
+    #
+    # NO TITLE-ONLY FALLBACK, removed 2026-09-29. "Same folder + same title =
+    # same document at a new url" (added for MHRSD, 2026-08-16) merged QCB's
+    # DIFFERENT circulars that share a title: promote skipped 14 of them, and
+    # monitoring would have versioned each over the first. A document whose
+    # files are ALL new is now a new document; its predecessor reads as
+    # disappeared, which is never acted on without two trusted runs and a person.
     _p = fields.get("doc_path", "")
-    return (hit or _by_files(repo, finder, obj, _p)
-            or _by_folder_and_title(repo, finder, obj, _p))
+    return hit or _by_files(repo, finder, obj, _p)
 
 def identity_key(fields: dict) -> str:
     """`field=value|field=value`, in the order the source declared the fields.

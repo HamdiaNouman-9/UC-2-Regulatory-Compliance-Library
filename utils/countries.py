@@ -158,7 +158,12 @@ _COUNTRY_CODES: Dict[str, str] = {
     "Egypt": "EGY",
     "Bahrain": "BHR",
     "Qatar": "QAT",
+    "Jordan": "JOR",
+    "Kuwait": "KWT",
+    "Canada": "CAN",
+    "Pakistan": "PAK",
 }
+
 
 # Matches regulator_acronym()'s own "UNK" convention in mssql_repo.py, for a
 # regulator with no entry in countries.yml at all -- e.g. SBP/SECP today,

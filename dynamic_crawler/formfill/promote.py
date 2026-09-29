@@ -222,9 +222,11 @@ def promote(xlsx: Path, repo, dry_run: bool = False) -> dict:
         if dry_run:
             folder_map[cid] = -cid
             return folder_map[cid]
+        # Exact (title, parent) only -- no subtree fallback, or a folder that is
+        # correct in the workbook collides again against a same-named folder
+        # deeper in the DB tree. Same rule as orchestrator._walk_folders; see
+        # docs/FOLDER_TREE.md.
         db_id = repo.get_folder_id(title, parent_db)
-        if db_id is None and parent_db is not None:
-            db_id = repo.find_folder_in_subtree(title, parent_db)
         if db_id is None:
             db_id = repo.insert_folder(
                 title, parent_db, cat_type=str(c.get("type") or "F"))

@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional, Tuple
+import threading
 import pyodbc
 import json
 import re
@@ -109,12 +110,61 @@ class MSSQLRepository(DocumentRepository):
 
     def __init__(self, conn_params: dict):
         self.conn_params = conn_params
+        # Off by default -- see enable_connection_reuse.
+        self._reuse_conn = False
+        self._local = threading.local()
 
     # ================================================================== #
     #  CONNECTION                                                          #
     # ================================================================== #
 
+    def enable_connection_reuse(self) -> None:
+        """Keep ONE open connection per thread instead of a new one per call.
+
+        Every repo method opens its own connection (`with self._get_conn()`),
+        which costs nothing against a local server and a full network login
+        against a remote one. MEASURED 2026-09-25, promoting NCA into prod
+        (10.11.12.76, over VPN): the 39 folders alone took 13 minutes, several
+        seconds per connection -- which put QFCL (8,034 rows, 9,707 folders) at
+        days, with every VPN blip failing whatever row was mid-flight.
+
+        Safe for every existing caller: pyodbc's `with conn:` commits (or rolls
+        back on error) at the end of the block but does NOT close the
+        connection, so a reused connection behaves exactly like a fresh one.
+        Before each reuse a `SELECT 1` proves it is still alive; if the VPN
+        dropped it, a new one is opened through the usual retry loop.
+
+        OPT-IN, and only `tools.workbook promote` turns it on: the orchestrator
+        processes documents on a thread pool, and per-thread storage is what
+        keeps two threads from ever sharing one connection even if it is used
+        there later.
+        """
+        self._reuse_conn = True
+        if not hasattr(self, "_local"):
+            self._local = threading.local()
+
     def _get_conn(self, retries: int = 4, delay: float = 8.0):
+        if getattr(self, "_reuse_conn", False):
+            conn = getattr(self._local, "conn", None)
+            if conn is not None:
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1").fetchone()
+                    cur.close()
+                    return conn
+                except Exception as e:
+                    logger.warning(f"reused DB connection is dead ({e}); reconnecting")
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    self._local.conn = None
+            conn = self._connect(retries, delay)
+            self._local.conn = conn
+            return conn
+        return self._connect(retries, delay)
+
+    def _connect(self, retries: int = 4, delay: float = 8.0):
         # WINDOWS AUTH WHEN NO USERNAME IS SET.
         #
         # This used to interpolate UID/PWD unconditionally. With a local
@@ -676,8 +726,13 @@ class MSSQLRepository(DocumentRepository):
         "source_page_url", "source_system", "regulator", "published_date",
     })
 
-    def find_by_identity_fields(self, fields: dict) -> Optional[dict]:
+    def find_by_identity_fields(self, fields: dict, accept=None) -> Optional[dict]:
         """Identity lookup on whichever columns the source config names.
+
+        `accept(row) -> bool`, when given, skips matching rows it rejects and
+        keeps looking -- so a caller can ask for "the row with this path and
+        title that ALSO shares a file", not just the first row with this path
+        and title (QCB lists several different circulars under one title).
 
         `doc_path` is JSON text written by our own code, so it is compared in
         python after the SQL narrows on everything else — same reason
@@ -723,7 +778,8 @@ class MSSQLRepository(DocumentRepository):
                     r = self._with_extra_meta(r)
                     if all(str(resolve_field(r, k) or "") == str(v)
                            for k, v in meta_fields.items()):
-                        return r
+                        if accept is None or accept(r):
+                            return r
             return None
         except ValueError:
             raise
@@ -2556,7 +2612,7 @@ class MSSQLRepository(DocumentRepository):
         what = f"Activity {ref_key!r}"
         title = _fit_column(title, 500, f"{what} title")
         suggested_department = _fit_column(suggested_department, 255, f"{what} suggested_department")
-        frequency = _fit_column(frequency, 100, f"{what} frequency")
+        frequency = _fit_column(frequency, 500, f"{what} frequency")
         frequency_type = _fit_column(frequency_type, 20, f"{what} frequency_type")
         priority = _fit_column(priority, 50, f"{what} priority")
         suggested_activity_type = _fit_column(suggested_activity_type, 200,

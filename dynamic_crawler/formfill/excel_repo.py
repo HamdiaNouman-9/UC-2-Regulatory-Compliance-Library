@@ -250,9 +250,9 @@ class ExcelRepo:
                   if r.get("document_url") == document_url
                   and self._norm_path(r.get("doc_path")) == want), None))
 
-    def find_by_identity_fields(self, fields: dict) -> Optional[dict]:
+    def find_by_identity_fields(self, fields: dict, accept=None) -> Optional[dict]:
         """Identity lookup on whichever columns the source config names.
-        Mirrors the MSSQL method."""
+        Mirrors the MSSQL method, including `accept`."""
         fields = {k: v for k, v in (fields or {}).items() if v not in (None, "")}
         if not fields:
             return None
@@ -269,7 +269,8 @@ class ExcelRepo:
                 if (str(stored) if stored is not None else "") != str(v):
                     break
             else:
-                return row
+                if accept is None or accept(row):
+                    return row
         return None
 
     def find_regulations_by_source(self, source_system: str,

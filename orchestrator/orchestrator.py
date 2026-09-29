@@ -648,10 +648,18 @@ class Orchestrator:
         last_index = len(hierarchy) - 1
 
         for i, title in enumerate(hierarchy):
+            # EXACT PATH ONLY: a folder is reused when the whole trail down to it
+            # matches, and created otherwise. There used to be a fallback here,
+            # `find_folder_in_subtree(title, parent_id)`, which reused a folder of
+            # the same title at ANY depth under the parent. On the CBB rulebook it
+            # hung every volume's "Quarterly Updates" letters (Volume > Quarterly
+            # Updates) off the Users' Guide section of the same name (... > UG-3.1
+            # Rulebook Maintenance > Quarterly Updates). Both are real, placed by
+            # the regulator, so same name at a different path is a different
+            # folder. MEASURED 2026-09-29: replaying all 15 workbooks in
+            # output/workbooks/ with and without the fallback gives identical
+            # trees -- no other regulator relied on it. See docs/FOLDER_TREE.md.
             folder_id = self.repo.get_folder_id(title, parent_id)
-
-            if folder_id is None and parent_id is not None:
-                folder_id = self.repo.find_folder_in_subtree(title, parent_id)
 
             # Leaf rule, unchanged from the parent: never hand one document's node
             # to another. A same-named sibling is created instead.

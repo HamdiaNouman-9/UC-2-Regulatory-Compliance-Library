@@ -52,7 +52,7 @@ class FakeRepo:
 
     def insert_requirement(self, regulation_id, version_id, ref_key, title,
                            description, source_reference, source_refs,
-                           requirement_type_name=""):
+                           requirement_type_name="", **_ignored):
         rid = self._next_req_id
         self._next_req_id += 1
         self.requirements[rid] = dict(
@@ -103,8 +103,8 @@ class FakeRepo:
                 if a["requirement_id"] == requirement_id and aid in open_ids]
 
     def insert_activity(self, requirement_id, version_id, ref_key, title,
-                        description, department, frequency, frequency_type,
-                        priority, evidence_expected, activity_type_name=""):
+                        description, frequency, frequency_type,
+                        priority, evidence_expected, **_ignored):
         aid = self._next_act_id
         self._next_act_id += 1
         self.activities[aid] = dict(requirement_id=requirement_id, ref_key=ref_key,

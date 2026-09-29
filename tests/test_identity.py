@@ -247,7 +247,10 @@ def test_two_sources_match_on_different_fields_in_one_run():
     repo = FakeRepo([
         stored(id=1, reference_no="C-42", document_url="https://x/old.pdf",
                doc_path=["Circulars"]),
-        stored(id=2, document_url="https://x/article-3", doc_path=["Law", "3"]),
+        # Titled like the crawled article: since 2026-09-29 a different title
+        # is a different document (no title-blind fallback any more).
+        stored(id=2, title="Article 3", document_url="https://x/article-3",
+               doc_path=["Law", "3"]),
     ])
     circular = Doc(title="Circular 42", reference_no="C-42",
                    document_url="https://x/NEW-address.pdf",

@@ -400,6 +400,10 @@ def cmd_promote(a) -> int:
             return 1
 
     repo = _build_repo()
+    # One connection for the whole load instead of one per step: over the VPN
+    # to prod each new connection costs seconds (NCA's 39 folders took 13 min).
+    # promote is single-threaded, so this is safe. See enable_connection_reuse.
+    repo.enable_connection_reuse()
     repo.get_folder_id("__connectivity_probe__", None)   # fail loudly on a bad login
     report = promote(path, repo, dry_run=not a.apply)
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
