@@ -1,11 +1,13 @@
 # Justice Laws Website (Canada) — consolidated federal Acts. CUSTOM, like MOH,
 # MLCU, EDB, MLSD, LMRA and NBR.
 #
-#   Measured 2026-09-09 and 2026-09-13, artefacts cached in
+#   Measured 2026-09-09, 2026-09-13 and 2026-09-17, artefacts cached in
 #   UC-2-Scratch/JUSTICE_CANADA/cache/.
-#   FOUR ENTRIES, ONE ROW EACH — the scope is tab "Act" for the Bankruptcy and
-#   Insolvency Act and the Canadian Payments Act (agreed 2026-09-09), and the
-#   Auditor General Act and Farm Income Protection Act (agreed 2026-09-13).
+#   NINE ENTRIES, ONE ROW EACH — the scope is tab "Act" throughout:
+#     Bankruptcy and Insolvency, Canadian Payments        (agreed 2026-09-09)
+#     Auditor General, Farm Income Protection             (agreed 2026-09-13)
+#     Financial Administration, Access to Information,
+#     Privacy, Income Tax, Insurance Companies            (agreed 2026-09-17)
 #
 # ONE ROW IS ONE ACT, NOT ONE PAGE. `/eng/acts/<CODE>/` is a table of contents
 # linking `page-1.html` … `page-36.html`. Those are PAGINATION: they carry no
@@ -128,11 +130,11 @@ owner: Fakih
 # `disappeared`, so two Acts sharing one would propose each other for
 # withdrawal the first time either failed to crawl.
 #
-# The remaining five Canadian Acts on the client list (Financial Administration,
-# Income Tax, …) are ONE MORE ENTRY EACH here, not a rethink — they are the same
-# publisher, the same template and the same crawler. Auditor General and Farm
-# Income Protection were added on 2026-09-13 with NO crawler change at all,
-# which is the evidence for that claim rather than a hope about it.
+# Any further Canadian Act on the client list is ONE MORE ENTRY HERE, not a
+# rethink — same publisher, same template, same crawler. That claim has now been
+# tested twice and held twice: Auditor General and Farm Income Protection were
+# added 2026-09-13, and five more on 2026-09-17, both times with NO crawler
+# change at all. That is evidence for it rather than a hope about it.
 #
 # `init_kwargs.regulator` is set even though the top-level `regulator:` exists,
 # because for mode: custom `build_source` passes only init_kwargs
@@ -208,6 +210,234 @@ sources:
       expected_title: "Farm Income Protection Act (S.C. 1991, c. 22)"
       # Measured at 39,324 characters on 2026-09-13.
       min_text_chars: 6000
+
+  # -------------------------------------------------------------------------
+  # ADDED 2026-09-17 — five more entries, NO CRAWLER CHANGE. The 2026-09-09
+  # config claimed the remaining Acts were "one more entry each"; this batch is
+  # the second test of that claim and it held again. All five were measured
+  # against the crawler's assumptions before anything was written: each serves
+  # an <h1 class='HeadTitle'>, each advertises the same /eng/XML/<CODE>.xml the
+  # pattern predicts, and each XML has a <Statute> root. I-3.3 was additionally
+  # run through JusticeCanadaActCrawler unmodified — 18.1s, 324 MB peak, one
+  # document, zero warnings.
+  #
+  # THE DATE TRAP REPRODUCED ON ALL FIVE. Every one of these pages advertises
+  # "Act current to 2026-07-21" while its file says otherwise:
+  #
+  #     act     page says       its XML says   its XML file written
+  #     F-11    2026-07-21      2026-07-21     2026-09-11 14:43:04
+  #     A-1     2026-07-21      2026-06-14     2026-07-22 18:41:26
+  #     P-21    2026-07-21      2026-03-02     2026-03-18 15:59:48
+  #     I-3.3   2026-07-21      2026-06-21     2026-08-20 14:10:06
+  #     I-11.8  2026-07-21      2026-05-26     2026-06-05 19:32:14
+  #
+  # P-21 is the clearest: the banner claims July over a file not rewritten since
+  # MARCH. F-11 is the single case where banner and file agree, because F-11
+  # genuinely WAS re-cut in the latest consolidation — which is what the other
+  # four prove is not the normal case.
+
+  - name: "Financial Administration Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "F-11"
+      act_folder: "Financial Administration Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/f-11/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/F-11.xml"
+      expected_title: "Financial Administration Act (R.S.C., 1985, c. F-11)"
+      # Measured at 308,003 characters on 2026-09-17. Floor set ~6x below, for
+      # the reason given on B-3.
+      min_text_chars: 50000
+
+  # ---------------------------------------------------------------------------
+  # A-1 AND P-21 — TWO ENTRIES, TWO FOLDERS, FOR ONE LINE ON THE CLIENT LIST.
+  #
+  # The brief asks for a "Freedom of Information & Protection of Privacy Act"
+  # and gives TWO urls for it. That name is PROVINCIAL — Ontario, BC and Alberta
+  # each have a FIPPA. Federally the same ground is two separate statutes, which
+  # is why one line of the brief needed two urls:
+  #
+  #     A-1   Access to Information Act (R.S.C., 1985, c. A-1)
+  #     P-21  Privacy Act (R.S.C., 1985, c. P-21)
+  #
+  # Stored under their own names and their OWN FOLDERS, agreed 2026-09-17. Not
+  # one shared folder: the folder is what scopes `disappeared`, so a run in
+  # which A-1 failed to fetch would propose the Privacy Act for withdrawal. Same
+  # reasoning as "ONE ENTRY PER ACT" above; it is spelled out again because this
+  # is the first case where the CLIENT LIST invites the mistake rather than the
+  # site.
+  #
+  # Their `lims:fid` values are unrelated — A-1 is 167, P-21 is 397163 — which
+  # is the publisher agreeing they are two documents.
+  # ---------------------------------------------------------------------------
+
+  - name: "Access to Information Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "A-1"
+      act_folder: "Access to Information Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/A-1/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/A-1.xml"
+      expected_title: "Access to Information Act (R.S.C., 1985, c. A-1)"
+      # Measured at 196,932 characters on 2026-09-17.
+      min_text_chars: 30000
+
+  - name: "Privacy Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "P-21"
+      act_folder: "Privacy Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/P-21/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/P-21.xml"
+      expected_title: "Privacy Act (R.S.C., 1985, c. P-21)"
+      # Measured at 123,082 characters on 2026-09-17.
+      min_text_chars: 20000
+
+  # ---------------------------------------------------------------------------
+  # THE INCOME TAX ACT IS THE LARGEST DOCUMENT IN THIS LIBRARY BY AN ORDER OF
+  # MAGNITUDE, and the reason the delivery note has to mention the sidecar.
+  #
+  #     14,082,767 bytes of XML  ->  7,428,948 characters of text
+  #
+  # That is 227x the 32,767-character Excel cell limit, and TEN TIMES the four
+  # Acts onboarded before it put together (~695,000 characters in total). It
+  # alone takes the `.fulltext.json` sidecar from 1.3 MB to roughly 20 MB,
+  # because an overflowing document is parked in the sidecar TWICE — once as its
+  # content column and once inside its extra_meta blob.
+  #
+  # MEASURED, NOT ASSUMED, BEFORE THIS ENTRY WAS WRITTEN: run through
+  # JusticeCanadaActCrawler unmodified on 2026-09-17 it took 18.1 seconds, peaked
+  # at 324 MB, returned one document with zero warnings and hashed to 37ab60df… .
+  # Nothing in the crawler, the sidecar or the cell-overflow path needed changing
+  # to carry it.
+  #
+  # STILL ONE ROW. Size does not change the publisher's unit: this is one Act,
+  # with one `lims:fid` (279718), one currency banner and one point-in-time
+  # index. Splitting it by Part would invent documents the publisher does not
+  # have — the same mistake as a row per `page-N.html`.
+  # ---------------------------------------------------------------------------
+
+  - name: "Income Tax Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "I-3.3"
+      act_folder: "Income Tax Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/I-3.3.xml"
+      # THE CITATION IS NOT THE URL CODE, as on F-3.3. This Act is cited
+      # R.S.C., 1985, c. 1 (5th Supp.); "I-3.3" is the index code Justice files
+      # it under. Both are correct.
+      expected_title: "Income Tax Act (R.S.C., 1985, c. 1 (5th Supp.))"
+      # Measured at 7,428,948 characters on 2026-09-17. Floor set ~7x below.
+      # A floor this large is still a floor and not the count — see B-3.
+      min_text_chars: 1000000
+
+  # ---------------------------------------------------------------------------
+  # THE BRIEF CALLS THIS ONE "Insurance Act". THE PUBLISHER DOES NOT.
+  #
+  # The page's own <h1> reads "Insurance Companies Act (S.C. 1991, c. 47)", and
+  # there is no federal Insurance Act — that name is provincial as well
+  # (Ontario's is R.S.O. 1990, c. I.8). The url the brief supplied is right and
+  # its label is wrong, the same way NBR's regulator name was.
+  #
+  # The PAGE's name is used, agreed 2026-09-17. The stored `title` is read off
+  # the page either way, so the alternative was a folder permanently disagreeing
+  # with the title sitting inside it — and the folder is an identity field, so
+  # correcting it later would reclassify the Act as `new` plus `disappeared` in
+  # a single run.
+  # ---------------------------------------------------------------------------
+
+  - name: "Insurance Companies Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "I-11.8"
+      act_folder: "Insurance Companies Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/i-11.8/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/I-11.8.xml"
+      expected_title: "Insurance Companies Act (S.C. 1991, c. 47)"
+      # Measured at 1,432,086 characters on 2026-09-17.
+      min_text_chars: 200000
+
+  # ---------------------------------------------------------------------------
+  # ADDED 2026-09-22 — a TENTH entry, and again NO CRAWLER CHANGE. Run through
+  # JusticeCanadaActCrawler unmodified before this entry was written: 3.6s, one
+  # document, 298,396 characters, ZERO warnings, hash 5997c944… . Every
+  # assumption the crawler makes held — <h1 class='HeadTitle'> present, the page
+  # advertises the /eng/XML/<CODE>.xml the pattern predicts, the XML has a
+  # <Statute> root, and the XML fetched twice was byte-identical.
+  #
+  # THE BRIEF CALLS THIS "Proceeds of Crime, Money Laundering and Terroristm".
+  # The publisher's own <h1> reads "Proceeds of Crime (Money Laundering) and
+  # Terrorist Financing Act (S.C. 2000, c. 17)" — note the parentheses, which
+  # are part of the short title, and "Terrorist Financing" rather than
+  # "Terrorism". The PAGE's name is used, agreed 2026-09-22, the same call made
+  # for "Insurance Act" -> "Insurance Companies Act" above and for NBR's
+  # regulator name. The url the brief supplied is right and its label is loose.
+  #
+  # THE BRIEF ALSO GIVES THE laws.justice.gc.ca HOSTNAME. That host and
+  # laws-lois.justice.gc.ca serve BYTE-IDENTICAL pages (both 31,376 bytes,
+  # measured 2026-09-22). laws-lois is used here because `fetch_documents`
+  # compares the page's advertised XML href against `xml_url` as BASE + href,
+  # and BASE is laws-lois — configuring the other hostname would make the
+  # crawler raise "page advertises X but this source is configured for Y" on
+  # every run, which is the guard working correctly against a url we chose.
+  #
+  # THE DATE TRAP REPRODUCED A TENTH TIME:
+  #
+  #     act        page says       its XML says   its XML file written
+  #     P-24.501   2026-07-21      2026-03-31     2026-05-22 18:04:20
+  #
+  # The banner claims July over a file not rewritten since MAY and a
+  # consolidation cut in MARCH. Handled by `_strip_volatile`; recorded because
+  # a measurement that was predicted and then held is the evidence for the rule.
+  #
+  # AND THE PDF BATCH STAMP AN ELEVENTH TIME. P-24.501.pdf carries
+  # Last-Modified 2026-08-31 18:00:14 — the SAME site-wide timestamp as the ten
+  # other Acts in config/change_signals.yml. Its XML carries 2026-05-22 and an
+  # ETag of "0ea876915eadc1:0" that was stable across repeated probes. The probe
+  # target stays the XML.
+  #
+  # ONE FURTHER OBSERVATION, recorded so nobody builds on it: two HEAD requests
+  # seconds apart returned Content-Length 674199 and then 96499 for the SAME
+  # file, because IIS answers a HEAD with or without gzip depending on
+  # negotiation. ETag and Last-Modified were identical across both and the GET
+  # was byte-identical, so nothing is wrong — but CONTENT-LENGTH ALONE IS NOT A
+  # VERSION TOKEN ON THIS HOST. `dynamic_crawler/fingerprint.py` takes the ETag
+  # here and never reaches the length, so this is a trap that is already avoided
+  # rather than one to fix.
+  # ---------------------------------------------------------------------------
+
+  - name: "Proceeds of Crime (Money Laundering) and Terrorist Financing Act"
+    mode: custom
+    crawler_class: "crawler.justice_canada_crawler.JusticeCanadaActCrawler"
+    init_kwargs:
+      regulator: "Department of Justice Canada (JUS)"
+      source_system: "Consolidated Acts"
+      act_code: "P-24.501"
+      act_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Act"
+      listing_url: "https://laws-lois.justice.gc.ca/eng/acts/P-24.501/"
+      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/P-24.501.xml"
+      # THE CITATION IS NOT THE URL CODE, as on F-3.3 and I-3.3. This Act is
+      # cited S.C. 2000, c. 17; "P-24.501" is the index code Justice files it
+      # under. Both are correct.
+      expected_title: "Proceeds of Crime (Money Laundering) and Terrorist Financing Act (S.C. 2000, c. 17)"
+      # Measured at 298,396 characters on 2026-09-22. Floor set ~6x below, for
+      # the reason given on B-3.
+      min_text_chars: 50000
 
 # NOT LISTED, DELIBERATELY. Scope agreed 2026-09-09 is tab "Act". Everything
 # below is real material on the same landing pages and each is ONE MORE ENTRY

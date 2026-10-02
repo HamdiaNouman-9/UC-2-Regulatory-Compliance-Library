@@ -1,0 +1,57 @@
+# Alberta King's Printer — the brief's "Alberta Treasury Branches Finance", tabs
+# "Act" and "Regulations". Measured 2026-10-02, see UC-2-Scratch/ATB/.
+#
+# ATB Financial is the regulated bank, not a regulator. The brief's two tabs are
+# the ATB Financial Act (RSA 2000 c A-45.2, the renamed Alberta Treasury
+# Branches Act) and the one Regulation made under it (Alta Reg 187/1997). King's
+# Printer publishes both, and is the regulator here by the same rule as Justice
+# Canada (JUS): the publisher. "AKP" is our acronym; the publisher has none.
+#
+# robots.txt disallows all crawlers. Crawled anyway by the user's decision
+# (2026-10-02), slow and single-threaded: 2 GETs a run, 3 s apart.
+#
+# THE URL IS THE FILE NAME, NOT THE ISBN. Listing links carry an ISBN that
+# appears to change per consolidation; `1266.cfm?page=<file>&leg_type=<type>`
+# without it returns byte-identical pages (measured).
+#
+# THE HASH: `div.htmlDocument` text only. Outside it sit the navigation, the
+# "Current as of <date>" banner (honest and per-document: Act June 11 2025, Reg
+# January 29 2025, the unrelated FAA May 14 2026, each matching Open Alberta) and
+# a "© 1995 - <year>" footer that rolls every January. Inside it, the Regulation's
+# "(Consolidated up to 2/2025)" is stripped from text and hash. Both dates are
+# kept in extra_meta.
+
+regulator: "Alberta King's Printer (AKP)"
+owner: Fakih
+
+sources:
+  - name: "ATB Financial Act"
+    mode: custom
+    crawler_class: "crawler.akp_crawler.AKPCrawler"
+    init_kwargs:
+      regulator: "Alberta King's Printer (AKP)"
+      source_system: "Laws Online"
+      folder: "Acts"
+      page: "A45p2.cfm"
+      leg_type: "Acts"
+      pdf_file: "A45p2.pdf"
+      # The document's own <title>, recorded 2026-10-02.
+      expected_title: "ATB FINANCIAL ACT"
+      # A floor, not the count: 48,670 chars measured 2026-10-02.
+      min_text_chars: 15000
+      delay: 3.0
+
+  - name: "ATB Financial Regulation"
+    mode: custom
+    crawler_class: "crawler.akp_crawler.AKPCrawler"
+    init_kwargs:
+      regulator: "Alberta King's Printer (AKP)"
+      source_system: "Laws Online"
+      folder: "Regulations"
+      page: "1997_187.cfm"
+      leg_type: "Regs"
+      pdf_file: "1997_187.pdf"
+      expected_title: "AR 187/97 ATB FINANCIAL REGULATION"
+      # A floor, not the count: 53,876 chars measured 2026-10-02.
+      min_text_chars: 15000
+      delay: 3.0

@@ -175,6 +175,14 @@ CHEAP_PROBE_SOURCES = [
     # promoted, move it here as
     #     ("Department of Justice Canada (JUS)", "Consolidated Acts"),
     # and delete that job — do not leave both, or the source gets swept twice.
+    #
+    # GOVINFO (GPO) IS NOT HERE YET EITHER, 2026-09-22, and for exactly the same
+    # reason: its signal IS `stored-inventory`, but this job is DAILY and
+    # ENABLED and a target it finds writes STRAIGHT TO MSSQL. It runs as
+    # `monitor_govinfo` on a slot that ships `enabled: false`. After the
+    # workbook is approved and promoted, move it here as
+    #     ("United States Government Publishing Office (GPO)", "Public Laws"),
+    # and delete that job.
 ]
 
 #: Regulator -> (crawler name, is_form) for the sources whose crawl IS the
@@ -267,6 +275,16 @@ CRAWL_AS_SIGNAL = {
     #: probing the orphaned old key and report `unchanged` forever. Full
     #: measurements on the change_signals.yml entry.
     "National Bureau for Revenue (NBR)": ("nbr", False),
+    #: FINTRAC joined 2026-09-29. Guidelines are crawl-as-signal; Regulations are
+    #: probed first by monitor_fintrac. Measurements on the change_signals.yml entries.
+    "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)":
+        ("fintrac", False),
+    #: OSFI joined 2026-09-29. Its sitemap is an honest signal that
+    #: sitemap_signal.py cannot yet read — measurements on the change_signals.yml entries.
+    "Office of the Superintendent of Financial Institutions (OSFI)": ("osfi", False),
+    #: AKP joined 2026-10-02. No ETag or Last-Modified on either rendering;
+    #: measurements on the change_signals.yml entry.
+    "Alberta King's Printer (AKP)": ("akp", False),
 }
 
 
@@ -866,11 +884,15 @@ def monitor_justice_canada() -> dict:
 
 
 def _monitor_justice_canada_impl() -> dict:
-    # FOUR requests to detect, because there are four documents and the probe is
+    # NINE requests to detect, because there are nine documents and the probe is
     # one HEAD per stored url against `/eng/XML/<CODE>.xml`. A crawl follows only
     # for the Acts whose file actually moved, and costs 2 requests per Act (the
-    # landing page, then the XML) — ~1.3 MB for B-3, under 100 KB for A-17 and
-    # F-3.3.
+    # landing page, then the XML) — under 100 KB for A-17 and F-3.3, ~1.3 MB for
+    # B-3, and 14 MB for the Income Tax Act added 2026-09-17.
+    #
+    # THAT LAST NUMBER IS WHY THE PROBE STEP EARNS ITS KEEP HERE. Crawling all
+    # nine unconditionally would move ~19 MB a week to learn that nothing
+    # changed; nine HEAD requests answer the same question for nothing.
     state = REPO_ROOT / "output" / "monitor_targets"
     state.mkdir(parents=True, exist_ok=True)
     regulator = "Department of Justice Canada (JUS)"
@@ -888,6 +910,131 @@ def _monitor_justice_canada_impl() -> dict:
         out["crawl"] = _crawl_into_db("justice_canada", False)
     logger.info("Justice Canada: %s", out)
     return out
+
+
+def monitor_govinfo() -> dict:
+    """WEEKLY, AND OFF. A cheap probe, not a crawl — measurements on the
+    change_signals.yml entry.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: a
+    detected change crawls straight into MSSQL, and this source has never been
+    reviewed. Once it is, this job's job is done — see CHEAP_PROBE_SOURCES.
+    """
+    return _run_exclusive("monitor_govinfo", _monitor_govinfo_impl)
+
+
+def _monitor_govinfo_impl() -> dict:
+    # ONE request to detect, because there is one document and the probe is a
+    # ranged GET against the stored `.htm`. A crawl follows only if the file
+    # moved and costs 2 requests (the `.htm`, then the MODS record), about
+    # 600 KB.
+    #
+    # THE PROBE BARELY EARNS ITS KEEP AT THIS SIZE — one probe against one
+    # 460 KB crawl is a thin saving, and `crawl` would be a defensible signal
+    # too. It is a probe anyway for two reasons. The document is FROZEN (a
+    # published slip law is never amended), so the normal case is "nothing
+    # moved" forever and the cheap question is the one worth asking. And the
+    # second U.S. law added turns this into N probes against N crawls, where the
+    # saving is real; building it that way now means adding a law is an entry in
+    # config/sources/govinfo.yml and nothing else.
+    #
+    # IF A SECOND LAW IS EVER ADDED, PREFER THE FEED INSTEAD. GPO publishes
+    # `api.govinfo.gov/collections/PLAW/<since>`, which answers the same question
+    # in one request AND discovers laws we do not hold — which a per-document
+    # probe structurally cannot. It needs an api.data.gov key, so it is an
+    # operator decision; the measurements are on the govinfo.yml entry.
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    regulator = "United States Government Publishing Office (GPO)"
+    source = "Public Laws"
+    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
+    rep = _sweep(regulator, source, tf)
+    targets = [l.strip() for l in
+               (tf.read_text(encoding="utf-8").splitlines()
+                if tf.exists() else []) if l.strip()]
+    out = {"counts": rep.get("counts", {}), "targets": len(targets),
+           "seconds": rep.get("_seconds")}
+    # `new` on a detect-only sweep means "first time swept", not a new document,
+    # so it must not pull a crawl — same rule as monitor_cheap_probes.
+    if targets:
+        out["crawl"] = _crawl_into_db("govinfo", False)
+    logger.info("govinfo (GPO): %s", out)
+    return out
+
+
+def monitor_fintrac() -> dict:
+    """WEEKLY, AND OFF. Guidelines crawl as the signal; Regulations are probed
+    first — measurements on the change_signals.yml entries.
+    """
+    return _run_exclusive("monitor_fintrac", _monitor_fintrac_impl)
+
+
+def _fintrac_sources(tab: str) -> list:
+    """fintrac.yml's entries for one tab, read at call time so a new entry is never left out."""
+    import yaml
+    cfg = yaml.safe_load((REPO_ROOT / "config" / "sources" / "fintrac.yml")
+                         .read_text(encoding="utf-8"))
+    names = [s["name"] for s in cfg["sources"]
+             if s.get("init_kwargs", {}).get("tab") == tab]
+    if not names:
+        raise RuntimeError("fintrac.yml has no %r entries" % tab)
+    return names
+
+
+def _monitor_fintrac_impl() -> dict:
+    # All six regulations share one `disappeared` bucket, so a Regulations crawl
+    # covers every entry — crawling only the one that moved would leave five
+    # absent from a run that claims them.
+    out = {"guidelines": _crawl_into_db(
+        "fintrac", False, only_sources=_fintrac_sources("guidelines"))}
+    state = REPO_ROOT / "output" / "monitor_targets"
+    state.mkdir(parents=True, exist_ok=True)
+    regulator = "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
+    rep = _sweep(regulator, "Regulations", tf)
+    targets = [l.strip() for l in
+               (tf.read_text(encoding="utf-8").splitlines()
+                if tf.exists() else []) if l.strip()]
+    out["regulations"] = {"counts": rep.get("counts", {}), "targets": len(targets),
+                          "seconds": rep.get("_seconds")}
+    # `new` on a detect-only sweep means "first time swept" — no crawl for it.
+    if targets:
+        out["regulations"]["crawl"] = _crawl_into_db(
+            "fintrac", False, only_sources=_fintrac_sources("regulations"))
+    logger.info("FINTRAC: %s", out)
+    return out
+
+
+def monitor_osfi() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entries.
+    """
+    return _run_exclusive("monitor_osfi", _monitor_osfi_impl)
+
+
+def _monitor_osfi_impl() -> dict:
+    # ~305 requests at 1.5 s: 11 listing pages, 268 item pages, and a 23-page
+    # walk of Supervision. Always every source whole — each is one `disappeared`
+    # bucket.
+    res = _crawl_into_db("osfi", False, timeout=5400)
+    logger.info("OSFI: %s", res)
+    return res
+
+
+def monitor_akp() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+    """
+    return _run_exclusive("monitor_akp", _monitor_akp_impl)
+
+
+def _monitor_akp_impl() -> dict:
+    # 2 requests, 3 s apart: the Act and its one Regulation. robots.txt disallows
+    # crawlers, so this stays weekly and never retries a refusal on a schedule.
+    res = _crawl_into_db("akp", False)
+    logger.info("AKP: %s", res)
+    return res
+
 
 
 def monitor_nbr() -> dict:

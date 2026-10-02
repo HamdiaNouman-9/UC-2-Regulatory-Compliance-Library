@@ -1,0 +1,211 @@
+# govinfo.gov — U.S. public laws, published by the Government Publishing Office.
+# CUSTOM, like MOH, MLCU, EDB, MLSD, LMRA, NBR and Justice Canada.
+#
+#   Measured 2026-09-22, artefacts cached in UC-2-Scratch/GOVINFO/cache/.
+#   ONE ENTRY, ONE ROW — the scope is tab "Act":
+#     USA PATRIOT Act (Public Law 107-56)                 (agreed 2026-09-22)
+#
+# FILED UNDER CANADA, ALTHOUGH THE PUBLISHER IS U.S. The business team lists this
+# as a Canadian regulator crawl (it arrived on the same brief as the PCMLTFA), and
+# that classification is honoured (2026-10-02): config/countries.yml puts it under
+# "Canada". The publisher itself is not in doubt — the document's own metadata,
+# not the url, settled that on 2026-09-22: MODS says
+# `<publisher>U.S. Government Printing Office</publisher>` and
+# `<branch>legislative</branch>`, the text reads "Be it enacted by the Senate
+# and House of Representatives of the United States of America", and the word
+# "Canada" does not occur once in 460,430 characters against 486 occurrences of
+# "United States".
+#
+#   A note for whoever checks this next: response headers from this host end
+#   with `CF-RAY: ...-YVR`. YVR is Vancouver, and it is the CLOUDFLARE EDGE
+#   NEAREST THIS MACHINE, not where govinfo is hosted. Every Cloudflare-fronted
+#   site fetched from here says YVR. It is not evidence of anything.
+
+regulator: "United States Government Publishing Office (GPO)"
+owner: Fakih
+
+# The regulator name stays the publisher's own: it is an identity field, and the
+# country is prepended only when the folder tree is built, never in doc_path.
+
+# ---------------------------------------------------------------------------
+# THE DOCUMENT IS THE .htm, NOT THE PDF THE BRIEF NAMED — AND NOT THE .xml
+# ---------------------------------------------------------------------------
+# GPO offers each law as a PDF, a plain-text `.htm` and a MODS metadata record.
+#
+# THE `.xml` RENDERING DOES NOT EXIST FOR THIS COLLECTION, AND SAYS SO WITH
+# HTTP 200. `/content/pkg/<PKG>/xml/<PKG>.xml` returns govinfo's own HTML page
+# under status 200 — not a 404. Measured on SIX unrelated packages 2026-09-22
+# (107publ56, 107publ296, 111publ203, 116publ283, 91publ508, 115publ174): all
+# six returned that same page, which is why all six report an IDENTICAL
+# `Last-Modified` of 2026-08-25 13:59:05. A crawler that trusted ".xml in the
+# url" would store an error page as the law and look successful doing it.
+# `GovInfoPublicLawCrawler` refuses a body with no `<pre>` for this reason.
+#
+# THE `.htm` IS PREFERRED OVER THE PDF, agreed 2026-09-22. Both carry the whole
+# law; the difference is print furniture. Extracted and compared word by word:
+#
+#     in the PDF and not the .htm      132x "PUBLIC LAW 107-56—OCT. 26, 2001"
+#                                      132x "VerDate 11-MAY-2000 ... Jkt 099139"
+#     in the .htm and not the PDF      nothing substantive
+#
+# That is the running header and the typesetter's job ticket, repeated once per
+# page, and it is neither law nor useful. The `.htm` also needs no PDF text
+# extraction, so there is no extraction layer to go wrong. The PDF is kept on
+# the row as `extra_meta.pdf_url`, the same way Justice Canada keeps its PDF.
+#
+# ONE ARTEFACT END TO END. `document_url` is the `.htm`, so the probe target,
+# the `confirm` target and the fingerprint basis are all the SAME file. The PDF
+# would give a marginally stronger probe token — govinfo returns a real
+# `Content-Range` for it, so the token carries the byte length as well as the
+# date, whereas the `.htm` is served chunked and its token is the date alone
+# (measured: `'Sun, 04 Jan 2026 06:02:27 GMT|494039'` against
+# `'Sun, 04 Jan 2026 06:02:27 GMT|'`). That was weighed and refused: splitting
+# the hash basis from the probe target is how two things that must agree come
+# to disagree, and the date alone is sufficient here because BOTH files carry
+# the same stamp anyway — see the signal section below.
+
+# ---------------------------------------------------------------------------
+# THE FINGERPRINT, AND THE BATCH STAMP THAT DECIDES IT
+# ---------------------------------------------------------------------------
+# The hash is the law's own text — the `<pre>` block, NFKC-normalised, and
+# NOTHING ELSE. This is the onboarding's FIRST preference ("the page's visible
+# text"), and unlike Justice Canada it is genuinely right here: the `.htm` is a
+# static file with no render-time content. Fetched twice it was BYTE-IDENTICAL
+# (md5 86a62664e5ff746c0153451c35195514 both times).
+#
+# NOT the publisher's own change stamp, which is the onboarding's SECOND
+# preference and is WRONG HERE. Every date govinfo offers for this law is the
+# same thing wearing three hats:
+#
+#     HTTP Last-Modified (.htm and .pdf)   Sun, 04 Jan 2026 06:02:27 GMT
+#     MODS <recordChangeDate>              2026-01-04
+#     sitemap <lastmod>                    2026-01-04T06:03:00.018Z
+#
+# They agree because they are ONE EVENT — a bulk re-ingest. Proof: the PLAW
+# 2001 sitemap holds 108 laws and ALL 108 carry a lastmod inside one ~90 minute
+# window on 2026-01-04. Nothing happened to 108 public laws that morning.
+# Hashing any of these would re-version the entire corpus on GPO's next
+# re-ingest, which is the CMA `Last-Modified` fault again.
+#
+# THE ONE DATE THAT DESCRIBES THE LAW is `<dateIssued>` = 2001-10-26, the day
+# Congress enacted it. It is recorded as `published_date` and it will not move.
+#
+# WHICH IS THE REAL POINT ABOUT THIS DOCUMENT: A PUBLISHED SLIP LAW IS FROZEN.
+# GPO does not amend a law once it is enrolled; it prints what Congress passed.
+# So the text hashed here should NEVER change, and a `modified` classification
+# on this row is a reason to look at the crawler before believing it. That is
+# unusual in this library and is stated again in the delivery message, because
+# it also means:
+#
+#   THIS IS THE LAW AS ENACTED IN 2001, NOT CURRENT U.S. LAW. Major parts of it
+#   were amended by the USA PATRIOT Improvement and Reauthorization Act (2006)
+#   and the USA FREEDOM Act (2015), and §215 (the business-records authority)
+#   SUNSET on 2020-03-15 and has not been reauthorised. The operative text
+#   today lives codified across the U.S. Code, not in this document. Storing
+#   this package is a correct record of what Congress enacted and is what the
+#   brief asked for; it is NOT a statement of law in force, and a compliance
+#   reviewer must not read it as one.
+
+# ---------------------------------------------------------------------------
+# HOST MANNERS
+# ---------------------------------------------------------------------------
+# Cloudflare in front of the GPO origin, and it does not fight us: no challenge,
+# no rate limiting observed across ~30 unpaced requests, `cf-cache-status:
+# DYNAMIC`. www.govinfo.gov is NOT in skip_hosts. `delay: 1.0` is politeness —
+# this is a two-request crawl, so there is nothing to gain by lowering it.
+#
+# robots.txt ALLOWS this. It disallows /core/, /profiles/, /admin/, /search/ and
+# the user account paths; /content/pkg/ and /metadata/pkg/ are not restricted.
+#
+# NO ETag ON ANY URL. The probe falls through to `Last-Modified|<length>` — see
+# dynamic_crawler/fingerprint.py:75.
+
+# ---------------------------------------------------------------------------
+# THE api.govinfo.gov FEED — THE `sama-feed` THAT EXISTS BUT NEEDS A KEY
+# ---------------------------------------------------------------------------
+# The onboarding directs that a publisher's own "what changed" feed be looked
+# for FIRST, because one request replaces thousands AND it discovers documents
+# we do not hold, which a per-document probe structurally cannot.
+#
+# GPO HAS ONE: `api.govinfo.gov/collections/PLAW/<since>` lists every package in
+# a collection modified after a timestamp. It is the right long-term signal for
+# this source and it is NOT wired here, for one reason: it requires an
+# api.data.gov key. Verified 2026-09-22 — an unkeyed request returns
+# `401 API_KEY_MISSING`, and `api_key=DEMO_KEY` gets through to a 400 about a
+# missing `offsetMark`, so the endpoint is reachable and only the credential is
+# missing.
+#
+# A KEY IS AN OPERATOR DECISION, NOT A REPOSITORY ONE. Whoever holds the
+# credentials should register at https://www.govinfo.gov/api-signup, put the key
+# in `.env`, and only then is this worth building. With ONE document the probe
+# below costs one request and the feed would cost one request, so there is
+# nothing to gain today — it becomes the right answer the moment a second U.S.
+# law is added, and it is recorded here so that is a decision rather than a
+# rediscovery.
+
+# ---------------------------------------------------------------------------
+# ONE ENTRY PER LAW
+# ---------------------------------------------------------------------------
+# The completeness gate groups on `extra_meta["crawl_source"]` and re-keys per
+# source, so one entry per law means one baseline of one — what a
+# single-document source should be measured against.
+#
+# Each law also gets its OWN `doc_folder`. The folder is what scopes
+# `disappeared`, so two laws sharing one would propose each other for
+# withdrawal the first time either failed to crawl.
+#
+# `init_kwargs.regulator` is set even though the top-level `regulator:` exists,
+# because for mode: custom `build_source` passes only init_kwargs
+# (generic_crawler_wrapper.py:654); the top-level key reaches the report label,
+# not the stored rows. That is how CMA's stored name and its change_signals.yml
+# entry came to disagree while both looked right.
+sources:
+  - name: "USA PATRIOT Act"
+    mode: custom
+    crawler_class: "crawler.govinfo_crawler.GovInfoPublicLawCrawler"
+    init_kwargs:
+      regulator: "United States Government Publishing Office (GPO)"
+      source_system: "Public Laws"
+      package_id: "PLAW-107publ56"
+      # The doc_path tier between source_system and the document. Its own
+      # folder — see "ONE ENTRY PER LAW" above. The short name rather than the
+      # full title, matching how Justice Canada folders read
+      # "Bankruptcy and Insolvency Act" under a longer stored title.
+      doc_folder: "USA PATRIOT Act"
+      htm_url: "https://www.govinfo.gov/content/pkg/PLAW-107publ56/html/PLAW-107publ56.htm"
+      pdf_url: "https://www.govinfo.gov/content/pkg/PLAW-107publ56/pdf/PLAW-107publ56.pdf"
+      mods_url: "https://www.govinfo.gov/metadata/pkg/PLAW-107publ56/mods.xml"
+      details_url: "https://www.govinfo.gov/app/details/PLAW-107publ56"
+      # A recorded observation of GPO's own wording, not our chosen title. The
+      # guard asks "has this record changed?", so giving it our own phrasing
+      # would make it warn on every run about a difference that is permanent.
+      #
+      # It is the SHORT title from `<titleInfo type="alternative">`. The bare
+      # `<titleInfo>` holds the official long title ("An act to deter and punish
+      # terrorist acts..."), which is also recorded, in extra_meta.
+      expected_title: "Uniting and Strengthening America by Providing Appropriate Tools Required to Intercept and Obstruct Terrorism (USA PATRIOT ACT) Act of 2001"
+      # A FLOOR, NOT THE COUNT. Measured at 378,533 characters on 2026-09-22;
+      # naming that would turn any re-render into a crawl failure. Set well
+      # below it so a truncated fetch or an error page fails loudly rather than
+      # proposing the law for withdrawal.
+      min_text_chars: 60000
+
+# NOT LISTED, DELIBERATELY. Scope agreed 2026-09-22 is tab "Act" — the enrolled
+# public law as GPO published it. Each of these is ONE MORE ENTRY rather than a
+# rethink, and the first two are what a reader asking "but is this current?"
+# actually wants:
+#
+#   PLAW-109publ177 — USA PATRIOT Improvement and Reauthorization Act of 2005
+#     (enacted 2006-03-09), and PLAW-114publ23 — USA FREEDOM Act of 2015. Both
+#     amend this Act and both are the same package shape, so this crawler reads
+#     them with no change at all. Adding them would let the library show the
+#     amendment chain instead of one frozen snapshot.
+#   The U.S. Code titles this Act is codified into (18 U.S.C., 31 U.S.C., 50
+#     U.S.C.) — govinfo's USCODE collection. That is where law IN FORCE lives,
+#     and it is a different collection with a different package shape and a
+#     genuinely different unit of publication. It is NOT one more entry here.
+#   /content/pkg/BILLS-107hr3162enr/ — the enrolled bill this law was made from.
+#     Its MODS is already linked from this package's `<relatedItem>` blocks,
+#     which is why `_mods_root` cuts there: those titles describe H.R. 3162, not
+#     the law, and reading one would file this Act as "United States House Bill
+#     3162".

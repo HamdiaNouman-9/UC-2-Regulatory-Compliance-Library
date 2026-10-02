@@ -1016,8 +1016,11 @@ sources:
   # render time; the FILES tell the truth. The last two rows are the strongest:
   # F-3.3 advertises 2026-07-21 over a file untouched since SEPTEMBER 2019.
   #
-  # ONE HEAD PER ACT replaces downloading the Act, and there are FOUR documents,
-  # so the sweep is four requests.
+  # ONE HEAD PER ACT replaces downloading the Act, and there are NINE documents,
+  # so the sweep is nine requests. That matters more than it did at four: the
+  # Income Tax Act, added 2026-09-17, is 14 MB of XML. Its HEAD is the same
+  # single cheap request as any other Act, and the probe is what stops the sweep
+  # downloading it every week to learn nothing.
   #
   # THE PROBE WAS RE-RUN 2026-09-13, FOUR DAYS AND ONE BANNER ROLL LATER. The
   # site-wide banner moved 2026-06-21 -> 2026-07-21 in that window. All four
@@ -1035,11 +1038,58 @@ sources:
   # Confirming costs one fetch on the documents that actually moved and is
   # correct under either reading.
   #
-  # STILL NOT SETTLED as of 2026-09-13, and the 2026-09-13 re-probe does not
-  # settle it. That re-probe shows a BANNER roll does not rewrite the files,
-  # which is a different question: B-1.01 asks whether a FILE rewrite always
-  # means the text changed, and answering it needs a rewrite to happen. None
-  # has since 2026-08-20. Keep `confirm: true` until one does.
+  # STILL NOT SETTLED as of 2026-09-17. The 2026-09-13 re-probe does not settle
+  # it: that showed a BANNER roll does not rewrite the files, which is a
+  # different question. B-1.01 asks whether a FILE rewrite always means the text
+  # changed, and answering it needs a rewrite to happen to a document we already
+  # hold a baseline for.
+  #
+  # The five Acts added 2026-09-17 make that likelier rather than answering it.
+  # Three of them had been rewritten since 2026-08-20 — F-11 on 2026-09-11, and
+  # A-1 on 2026-07-22 — so rewrites in this corpus are ordinary, not rare. They
+  # prove nothing yet because there was no stored baseline to compare against;
+  # the first sweep after this workbook is promoted is the one to read. Keep
+  # `confirm: true` until then.
+  #
+  # PROBE THE XML, NOT THE PDF — AND THE PROBE TARGET IS `document_url`.
+  # `inventory_sweep.py` HEADs whatever is in `document_url`, so that column is
+  # the signal, not just a link. It is the XML deliberately. Swapping it to the
+  # PDF is the obvious-looking improvement, because a reviewer opening raw XML
+  # is nobody's idea of readable, and it would quietly ruin this signal.
+  #
+  # Measured 2026-09-17, XML against PDF, nine Acts plus the I-21 and F-27
+  # controls:
+  #
+  #     act     XML Last-Modified   PDF Last-Modified
+  #     B-3     2026-08-20          2026-08-31
+  #     A-17    2022-08-17          2026-08-31
+  #     F-3.3   2019-09-24          2026-08-31
+  #     P-21    2026-03-18          2026-08-31
+  #     I-3.3   2026-08-20          2026-08-31
+  #     I-21    2025-01-14          2026-08-31   (control, never re-cut)
+  #     F-27    2025-04-29          2026-08-31   (control, never re-cut)
+  #     F-11    2026-09-11 14:43    2026-09-11 15:06
+  #
+  # TEN OF ELEVEN PDFs CARRY ONE IDENTICAL TIMESTAMP, including Acts whose text
+  # has not moved since 2019 and 2022 and both controls. The PDFs are bulk
+  # re-rendered, so their Last-Modified is a SITE-WIDE BATCH STAMP — the same
+  # family as the "Act current to" banner and CMA's Last-Modified.
+  #
+  # F-11 is the other half: a real re-cut moved the XML at 14:43 and the PDF at
+  # 15:06. So the PDF never MISSES a change; it also fires for hundreds that did
+  # not happen. Probing it would report all nine Acts modified on every bulk
+  # re-render and crawl ~19 MB, the Income Tax Act being 14 MB of it. `confirm:
+  # true` would stop false version rows — the hash basis is the XML either way —
+  # so the data would survive and the signal would not.
+  #
+  # The reviewer's readable link is `source_page_url` (the Act's landing page),
+  # which is a first-class column on every row. `extra_meta.pdf_url` holds the
+  # PDF but overflows into the sidecar on eight of nine rows, so it is recorded
+  # and not legible; see the findings doc.
+  #
+  # `UC-2-Scratch/JUSTICE_CANADA/harness/content_accuracy_proof.py` ASSERTS that
+  # document_url is the XML, so a later swap fails a test instead of passing
+  # review.
   #
   # NOTE ON THE ETag: B-3 and C-21 return the SAME ETag ("0ac4b96ad30dd1:0")
   # despite being 1.1 MB and 146 KB. IIS derives it from the file's write time
@@ -1052,6 +1102,166 @@ sources:
   - regulator: "Department of Justice Canada (JUS)"
     source_system: "Consolidated Acts"
     signal: stored-inventory
+    confirm: true
+
+  # ---------------------------------------------------------------------------
+  # GOVINFO (GPO) (CANADA, by the business team's classification) — ONE
+  # DOCUMENT, AND THE ONLY SOURCE HERE THAT SHOULD NEVER
+  # REPORT A CHANGE AT ALL
+  # ---------------------------------------------------------------------------
+  # Added 2026-09-22. `confirm: true`, and the reasoning is the inverse of most
+  # entries: the probe token is not merely unreliable, EVERY DATE THIS PUBLISHER
+  # OFFERS IS THE SAME BULK RE-INGEST STAMP.
+  #
+  #     HTTP Last-Modified (.htm and .pdf)   Sun, 04 Jan 2026 06:02:27 GMT
+  #     MODS <recordChangeDate>              2026-01-04
+  #     sitemap <lastmod>                    2026-01-04T06:03:00.018Z
+  #
+  # They agree because they are ONE EVENT. Measured 2026-09-22: the PLAW 2001
+  # sitemap holds 108 public laws and ALL 108 carry a lastmod inside one ~90
+  # minute window that morning. Nothing happened to 108 enacted laws that day.
+  # Six unrelated packages spanning 1970 to 2020 were checked the same way and
+  # every one sits in the same early-January window. This is CMA's
+  # `Last-Modified` fault in a third costume.
+  #
+  # SO THE TOKEN IS A RE-INGEST DETECTOR, NOT A CHANGE DETECTOR. It fires for
+  # the whole corpus at once and never in between. `confirm: true` makes the
+  # sweep fetch the document and hash it before believing the token, which costs
+  # one 460 KB GET on the days GPO re-ingests and nothing on every other day.
+  #
+  # THE CONFIRM HASH IS THE VISIBLE TEXT, WHICH IS CORRECT HERE. `.htm` is
+  # served as `text/html`, so `inventory_sweep.confirm` takes the visible-text
+  # branch (inventory_sweep.py:203). The file is one `<pre>` block, so its
+  # visible text IS the law — the same basis the crawler hashes. One artefact,
+  # one basis, no split.
+  #
+  # A PUBLISHED SLIP LAW IS FROZEN, which is the real point. GPO prints what
+  # Congress enacted and does not amend it afterwards, so the correct long-run
+  # behaviour of this signal is to report nothing, forever. A `modified` here is
+  # a reason to look at the crawler before believing it. That also means:
+  #
+  #   THE ROW IS THE LAW AS ENACTED IN 2001, NOT CURRENT U.S. LAW. It was
+  #   amended by the USA PATRIOT Improvement and Reauthorization Act (2006) and
+  #   the USA FREEDOM Act (2015), and §215 SUNSET on 2020-03-15 unreauthorised.
+  #   MONITORING THIS PACKAGE WILL NEVER SURFACE ANY OF THAT, because the
+  #   changes did not happen to this document — they happened to other public
+  #   laws and to the U.S. Code. No change signal on this url can fix that; only
+  #   adding those packages can. See the "NOT LISTED" note in
+  #   config/sources/govinfo.yml.
+  #
+  # PROBE THE .htm, WHICH IS ALSO `document_url`. `inventory_sweep.py` probes
+  # whatever is in that column, so it is the signal and not just a link. The PDF
+  # would give a marginally stronger token — govinfo returns a real
+  # `Content-Range` for it and none for the chunked `.htm`, so the tokens read
+  # `'Sun, 04 Jan 2026 06:02:27 GMT|494039'` against
+  # `'Sun, 04 Jan 2026 06:02:27 GMT|'`. It is still the `.htm`, because both
+  # files carry the SAME stamp — the length is the only difference and it buys
+  # nothing against a stamp that is wrong in the same way for both — and because
+  # pointing the probe at a different artefact from the one the hash is built on
+  # is how two things that must agree come to disagree.
+  #
+  # NO ETag ON ANY GOVINFO URL, so `dynamic_crawler/fingerprint.py` falls
+  # through to `Last-Modified|<length>` (fingerprint.py:81). Both tokens above
+  # were stable across repeated probes.
+  #
+  # THE `sama-feed` EXISTS HERE AND IS NOT WIRED. `api.govinfo.gov/collections/
+  # PLAW/<since>` lists every package modified after a timestamp — one request,
+  # and it DISCOVERS documents we do not hold, which a probe structurally
+  # cannot. It needs an api.data.gov key (verified 2026-09-22: unkeyed returns
+  # `401 API_KEY_MISSING`; `api_key=DEMO_KEY` reaches a 400 about `offsetMark`,
+  # so only the credential is missing). A key is an operator decision and with
+  # ONE document the feed and the probe both cost one request, so there is
+  # nothing to gain today. It becomes the right answer the moment a second U.S.
+  # law is added.
+  - regulator: "United States Government Publishing Office (GPO)"
+    source_system: "Public Laws"
+    signal: stored-inventory
+    confirm: true
+
+  # FINTRAC (CANADA) — two tabs, two signals, one job (monitor_fintrac).
+  # Measured 2026-09-29, UC-2-Scratch/FINTRAC/FINTRAC_FINDINGS.md §5.
+  #
+  # REGULATIONS: the laws-lois XML carries an honest per-file ETag/Last-Modified,
+  # stable across refetch. The page banner "Regulations are current to <date>"
+  # is identical on every regulation and is not probed. `document_url` is the
+  # XML, so it is the probe target. confirm: true until a file rewrite has been
+  # read against a stored baseline.
+  - regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+    source_system: "Regulations"
+    signal: stored-inventory
+    confirm: true
+
+  # GUIDELINES: no cheap question exists. Pages are no-store with no ETag or
+  # Last-Modified; static files share one deploy stamp (0x6abbb77c = 2026-09-29
+  # 13:05 UTC); sitemap.xml has no lastmod and lacks 7 current pages; the Date
+  # Modified footer lags (pep-eng says 2021-05-04 over a section added
+  # 2025-11-26); the Atom feed missed >=3 edits and points some items at the
+  # hub. Two fetches ~20 min apart were byte-identical, no render-time date.
+  # 68 GETs, ~1.5 min.
+  - regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+    source_system: "Guidelines"
+    signal: crawl
+    confirm: true
+
+  # OSFI (CANADA) — both tabs crawl-as-signal, one job (monitor_osfi). Measured
+  # 2026-09-29, UC-2-Scratch/OSFI/OSFI_FINDINGS.md §5.
+  #
+  # A CHEAPER SIGNAL EXISTS AND IS NOT USED YET: sitemap.xml has honest per-page
+  # lastmods (98 distinct of 105 guidelines, never earlier than the page's own
+  # Date modified, 68/68). dynamic_crawler/sitemap_signal.py cannot read it: it
+  # raises on a sitemap index (/sitemap.xml is an index of two), and every entry
+  # is http:// against stored https://, so overlap would be 0. Both are changes
+  # to shared code, flagged in the handoff rather than made. Until then, crawl.
+  #
+  # Rejected: page ETag/Last-Modified are the render time; RSS is news only and
+  # missed all 13 guidelines published 2026-09-10; the listing Date is the
+  # publication date; the Date modified footer is batch-stamped (15 of 68 say
+  # 2024-11-21). A 2024-11-18 bulk save moved 19 of 68 lastmods with no change,
+  # hence confirm: true for when the sitemap takes over.
+  #
+  # ~280 GETs at 1.5 s, ~7 min; the 41 book pages are ~0.57 MB each. Two crawls
+  # ~15 min apart: 268/268 hashes identical. Visible text differs by 0 bytes
+  # between renders (only view-dom ids, a form token and echoed query strings
+  # differ, all in markup).
+  - regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+    source_system: "Guidance Library"
+    signal: crawl
+    confirm: true
+
+  # Data and Forms: rows are identified by page, and the attached template urls
+  # are in the hash, so a replaced (re-dated) template reads as `modified`. A
+  # template overwritten under the SAME name is not detected; probing every
+  # attachment (~360 requests) was declined 2026-09-29.
+  - regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+    source_system: "Data and Forms"
+    signal: crawl
+    confirm: true
+
+  # Supervision (added 2026-09-30): 23 pages under /en/supervision/financial-
+  # institutions, ~25 GETs. The sitemap lists all 23 with 23 distinct lastmods,
+  # but it is the same unreadable index as above. ETag/Last-Modified = render
+  # time again. "Date modified" disagrees with the sitemap on 7 of 23 and sits
+  # outside article.full, so it is neither the signal nor in the hash. Two
+  # fetches (cache hit vs forced miss): 0 lines of visible text differ.
+  - regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+    source_system: "Supervision"
+    signal: crawl
+    confirm: true
+
+  # ALBERTA KING'S PRINTER (AKP) — `crawl`, 2 GETs. Measured 2026-10-02.
+  #
+  # No cheap question: the HTML rendering sends no ETag or Last-Modified; the
+  # real PDFs (serve_pdf.cfm) send only Content-Length, which fingerprint.py does
+  # not read. "Current as of" is honest per document (3 distinct dates matching
+  # Open Alberta) but a consolidation can move it without moving the text, as on
+  # Justice — so it is provenance, not the signal. Two fetches were byte-identical.
+  # The "© 1995 - <year>" footer would roll every January; it is outside the
+  # hashed element. robots.txt disallows crawlers (crawled by the user's
+  # decision): if the host starts refusing, suspect a block, do not retry on a
+  # schedule.
+  - regulator: "Alberta King's Printer (AKP)"
+    source_system: "Laws Online"
+    signal: crawl
     confirm: true
 
 # Not listed, deliberately:

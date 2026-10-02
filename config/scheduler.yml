@@ -362,9 +362,10 @@ jobs:
       hour: 16
       minute: 0
 
-  # JUSTICE CANADA - FOUR Acts, and a CHEAP PROBE rather than a crawl: four HEAD
-  # requests against `/eng/XML/<CODE>.xml` to detect, and a crawl of the Act
-  # itself only for the ones whose file moved. Seconds, not minutes.
+  # JUSTICE CANADA - TEN Acts as of 2026-09-22, and a CHEAP PROBE rather than a
+  # crawl: ten ranged GETs against `/eng/XML/<CODE>.xml` to detect, and a crawl
+  # of the Act itself only for the ones whose file moved. Seconds, not minutes, even though
+  # the Income Tax Act added 2026-09-17 is 14 MB — the probe never downloads it.
   #
   # WEEKLY IS DELIBERATE AND MATCHES THE PUBLISHER. Justice re-cuts its
   # consolidation roughly monthly and publishes it weeks later — B-3's June 21
@@ -381,6 +382,63 @@ jobs:
     schedule:
       day_of_week: 'sun'
       hour: 17
+      minute: 0
+
+  # GOVINFO (GPO) (CANADA, by the business team's classification) - ONE U.S.
+  # public law, and a CHEAP PROBE: one ranged GET
+  # against the stored `.htm` to detect, and a 2-request crawl (~600 KB) only if
+  # it moved.
+  #
+  # WEEKLY IS ALREADY GENEROUS, because this document is FROZEN. GPO prints what
+  # Congress enacted and never amends a published slip law, so the correct
+  # long-run result of this job is "nothing moved", forever. The only thing it
+  # can actually catch is GPO re-ingesting its own corpus — which happened on
+  # 2026-01-04 for every public law of 2001 at once — and `confirm: true` on the
+  # change_signals.yml entry is what stops that from writing a version row.
+  #
+  # IT IS SCHEDULED ANYWAY rather than skipped, because "this never changes" is
+  # a claim about the publisher that should be CHECKED rather than assumed, and
+  # checking it costs one request a week.
+  #
+  # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. A detected change crawls
+  # straight to MSSQL, so enabling it before the review would make the first
+  # scheduled run be the ingest. Turn it on after the workbook is approved and
+  # promoted — and at that point prefer moving the source into
+  # CHEAP_PROBE_SOURCES and deleting this slot, so it is swept once, not twice.
+  monitor_govinfo:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 18
+      minute: 0
+
+  # FINTRAC (CANADA) - 67 guidance pages (crawl) + 6 regulations (probe first).
+  monitor_fintrac:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 19
+      minute: 0
+
+  # OSFI (CANADA) - 105 guidelines + 163 reporting instructions + 23 supervision
+  # pages, crawl as signal.
+  monitor_osfi:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 20
+      minute: 0
+
+  # ALBERTA KING'S PRINTER (CANADA) - ATB Financial Act + Regulation, crawl as signal.
+  monitor_akp:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 21
       minute: 0
 
   # ----------------------------------------------------------

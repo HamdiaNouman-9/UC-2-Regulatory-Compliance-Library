@@ -1,0 +1,132 @@
+# FINTRAC — tabs "Regulations" and "Guidelines", one controller (FintracCrawler);
+# each entry names its `tab`. Measured 2026-09-29, see UC-2-Scratch/FINTRAC/.
+#
+# REGULATIONS
+#
+# FINTRAC's page /act-loi/1-eng holds no regulation text: it links six
+# regulations on laws-lois.justice.gc.ca, the only place their text is
+# published. One row per regulation, filed under FINTRAC. FINTRAC's own list is
+# the scope; it omits SOR/2021-181 and SOR/2025-67, listed under the Act there.
+#
+# The hash is the XML minus its consolidation-cut dates (lims:current-date,
+# lims:pit-date, <ConsolidationDate>), which move monthly while the text stands
+# still. The page banner "Regulations are current to <date>" is the same on
+# every regulation and never enters the hash.
+
+regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+owner: Fakih
+
+sources:
+  - name: "Proceeds of Crime (Money Laundering) and Terrorist Financing Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2002-184"
+      reg_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Proceeds of Crime (Money Laundering) and Terrorist Financing Regulations (SOR/2002-184)"
+      # A floor, not the count: 330,134 chars measured 2026-09-29.
+      min_text_chars: 100000
+
+  - name: "Proceeds of Crime (Money Laundering) and Terrorist Financing Suspicious Transaction Reporting Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2001-317"
+      reg_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Suspicious Transaction Reporting Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Proceeds of Crime (Money Laundering) and Terrorist Financing Suspicious Transaction Reporting Regulations (SOR/2001-317)"
+      # A floor, not the count: 34,275 chars measured 2026-09-29.
+      min_text_chars: 10000
+
+  - name: "Cross-border Currency and Monetary Instruments Reporting Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2002-412"
+      reg_folder: "Cross-border Currency and Monetary Instruments Reporting Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Cross-border Currency and Monetary Instruments Reporting Regulations (SOR/2002-412)"
+      # A floor, not the count: 25,931 chars measured 2026-09-29.
+      min_text_chars: 8000
+
+  - name: "Proceeds of Crime (Money Laundering) and Terrorist Financing Registration Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2007-121"
+      reg_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Registration Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Proceeds of Crime (Money Laundering) and Terrorist Financing Registration Regulations (SOR/2007-121)"
+      # A floor, not the count: 16,875 chars measured 2026-09-29.
+      min_text_chars: 5000
+
+  - name: "Proceeds of Crime (Money Laundering) and Terrorist Financing Administrative Monetary Penalties Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2007-292"
+      reg_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Administrative Monetary Penalties Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Proceeds of Crime (Money Laundering) and Terrorist Financing Administrative Monetary Penalties Regulations (SOR/2007-292)"
+      # A floor, not the count: 12,948 chars measured 2026-09-29.
+      min_text_chars: 4000
+
+  - name: "Financial Transactions and Reports Analysis Centre of Canada Assessment of Expenses Regulations"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      tab: regulations
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Regulations"
+      reg_code: "SOR-2023-195"
+      reg_folder: "Financial Transactions and Reports Analysis Centre of Canada Assessment of Expenses Regulations"
+      # The page's own <h1>, recorded 2026-09-29.
+      expected_title: "Financial Transactions and Reports Analysis Centre of Canada Assessment of Expenses Regulations (SOR/2023-195)"
+      # A floor, not the count: 9,536 chars measured 2026-09-29.
+      min_text_chars: 3000
+
+  # GUIDELINES — the brief's tab is the "Obligations and guidance" hub. One row
+  # per guidance page, one flat folder: a page moved between hub sections must
+  # not read as new + disappeared. The hub section is kept in extra_meta.
+  # 62 of the 67 pages embed a hidden 57,659-char glossary, and every page has a
+  # hand-kept Date Modified that lags edits; both are stripped before hashing.
+  # Images (flowcharts, infographics) are recorded in extra_meta.image_urls:
+  # about half have no text description, so their content is not in the text.
+  - name: "Guidelines"
+    mode: custom
+    crawler_class: "crawler.fintrac_crawler.FintracCrawler"
+    init_kwargs:
+      regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
+      source_system: "Guidelines"
+      tab: guidelines
+      hub_url: "https://fintrac-canafe.canada.ca/guidance-directives/guidance-directives-eng"
+      # The brief's tab = these hub sections. A section that disappears stops the crawl.
+      sections:
+        - "Implementing a compliance program"
+        - "Knowing your client"
+        - "Transaction reporting"
+        - "Record keeping"
+        - "Other requirements"
+        - "Ministerial directives"
+        - "Private-to-private information sharing (voluntary)"
+      # An index of three links, not guidance.
+      skip_urls: ["/obligations/directives-eng"]
+      # Floors, not counts: 67 documents, smallest 1,125 chars, measured 2026-09-29.
+      min_documents: 60
+      min_text_chars: 1000

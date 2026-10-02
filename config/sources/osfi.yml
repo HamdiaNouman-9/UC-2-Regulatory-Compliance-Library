@@ -1,0 +1,95 @@
+# OSFI — tabs "Guidelines" and "OSFI Forms and Reporting", one controller and one
+# code path (OSFICrawler). Measured 2026-09-29, see UC-2-Scratch/OSFI/.
+#
+# Both tabs are the same Drupal node type: a server-rendered listing table, then
+# `article.full` per item. Per-tab differences are settings, not code:
+#   group  book           chapters under their book root (CAR, LAR, LICAT)
+#          sections       "<Return> – Section IV – …" under the return page that
+#                         links them (OSFI's titles disagree, so not by title)
+#   files  linked         PDF renderings of the guideline, recorded in extra_meta
+#          attachments    the return templates, as attachment_links
+#
+# The brief's other two tabs build nothing:
+#   "Outsourcing of Business Activities" = Third-Party Risk Management (B-10),
+#     already one of the Guidelines. A second source would give it two identities.
+#   "Prudent Person Approach" (B-1) was RESCINDED 2025-04-01 and is gone from the
+#     site. Tell the client.
+#
+# The hash is the article's visible text with the embedded book TOC removed
+# (a book page carries every chapter, ~1.7M chars). Never the HTML: it ships
+# random view ids, a form token and Twig debug comments. Never "Generate PDF":
+# it is rebuilt per request with new dates and ID.
+
+regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+owner: Fakih
+
+sources:
+  - name: "Guidelines"
+    mode: custom
+    crawler_class: "crawler.osfi_crawler.OSFICrawler"
+    init_kwargs:
+      regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+      source_system: "Guidance Library"
+      folder: "Guidelines"
+      # Publication type 49 = Guideline. 2 pages of 100.
+      listing_url: "https://www.osfi-bsif.gc.ca/en/guidance/guidance-library?publication_type=49&items_per_page=100&page={page}"
+      group: book
+      files: linked
+      # Floors, not counts: 105 listed, smallest 379 chars, measured 2026-09-29.
+      min_documents: 90
+      min_text_chars: 150
+      delay: 1.5
+
+  - name: "Financial Reporting Instructions"
+    mode: custom
+    crawler_class: "crawler.osfi_crawler.OSFICrawler"
+    init_kwargs:
+      regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+      source_system: "Data and Forms"
+      folder: "Financial Reporting Instructions"
+      # Page size fixed at 20. 9 pages.
+      listing_url: "https://www.osfi-bsif.gc.ca/en/data-forms/reporting-returns/filing-financial-returns/financial-reporting-instructions?page={page}"
+      group: sections
+      # Rows are identified by their page, not their files: template filenames
+      # carry dates and change when OSFI replaces one. A file replaced under the
+      # SAME name is not detected; probing every attachment (~360 requests) was
+      # declined 2026-09-29.
+      files: attachments
+      # Floors, not counts: 163 listed, smallest 247 chars, measured 2026-09-29.
+      min_documents: 140
+      min_text_chars: 100
+      delay: 1.5
+
+  # SUPERVISION — the brief's "Financial Institutions / Deposit-taking
+  # Institutions / Insurance Companies" (2026-09-30). Only the first exists: the
+  # landing page /en/supervision/financial-institutions. The other two are OSFI's
+  # words for groups of cards on it (Banks, Foreign bank branches, Trust and loan;
+  # Life, P&C). No such folders are invented: rows follow OSFI's own breadcrumb,
+  # and a landing page with children sits inside its own folder, like a book root.
+  #
+  # No listing table here, so `listing: subtree` follows links inside
+  # article.full that stay under root_url's path. Pages outside it (TLAC, MCT
+  # 2024, Corporate Governance are linked) are rows of other sources and are not
+  # followed. The DSB backgrounder is reachable only 4 levels down.
+  #
+  # Included by the user's decision: the A–Z "Canadian and Foreign Insurance
+  # Companies and Fraternal Benefits Societies" page (732 company histories).
+  # Excluded: "Who we regulate", which redirects off-site to an open.canada.ca
+  # CSV carrying named company representatives.
+  - name: "Financial institutions"
+    mode: custom
+    crawler_class: "crawler.osfi_crawler.OSFICrawler"
+    init_kwargs:
+      regulator: "Office of the Superintendent of Financial Institutions (OSFI)"
+      source_system: "Supervision"
+      folder: "Financial institutions"
+      listing: subtree
+      root_url: "https://www.osfi-bsif.gc.ca/en/supervision/financial-institutions"
+      group: breadcrumb
+      files: linked
+      # Floors, not counts: 23 pages, smallest 454 chars, measured 2026-09-30.
+      min_documents: 20
+      min_text_chars: 200
+      # A safety stop on the walk, not a count.
+      max_pages: 60
+      delay: 1.5

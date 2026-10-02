@@ -117,6 +117,21 @@ def _text_of(markup: str) -> str:
     return _norm(_html.unescape(_TAG.sub(" ", markup)))
 
 
+#: Elements measured mid-sentence across the ten Acts (2026-09-30). Their tags
+#: vanish rather than become a space ("Act ." otherwise). A letter touching the
+#: OUTSIDE of one keeps a space: I-3.3's own XML reads "of the<XRefExternal>Income".
+#: Sup and FootnoteRef keep their space ("1.02<Sup>B</Sup>" is an exponent).
+_INLINE = (r"(?:DefinedTermEn|DefinedTermFr|DefinitionEnOnly|DefinitionRef|"
+           r"XRefExternal|XRefInternal|Repealed|Language|Emphasis)")
+_INLINE_TOUCHING = re.compile(r"(?<=\w)<%s\b[^>]*>|</%s>(?=\w)" % (_INLINE, _INLINE))
+_INLINE_TAG = re.compile(r"</?%s\b[^>]*>" % _INLINE)
+
+
+def _xml_text_of(xml: str) -> str:
+    """The Act's text: inline elements close up, every other tag is a space."""
+    return _text_of(_INLINE_TAG.sub("", _INLINE_TOUCHING.sub(" ", xml)))
+
+
 def _inline_text_of(markup: str) -> str:
     """Visible text of a run of INLINE markup, closing up rather than spacing out.
 
@@ -273,7 +288,7 @@ class JusticeCanadaActCrawler:
         # The text stored and analysed. The consolidation stage block is dropped
         # here too: it is site plumbing, not law, and leaving it in would make the
         # stored text churn monthly even though the hash would not.
-        content_text = _ILLEGAL_XLSX.sub(" ", _text_of(_strip_volatile(xml)))
+        content_text = _ILLEGAL_XLSX.sub(" ", _xml_text_of(_strip_volatile(xml)))
         if len(content_text) < self.min_text_chars:
             raise RuntimeError(
                 "Justice Canada %s: %d characters of text, below the floor of "
