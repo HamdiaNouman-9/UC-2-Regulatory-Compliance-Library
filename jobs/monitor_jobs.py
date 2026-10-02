@@ -285,6 +285,9 @@ CRAWL_AS_SIGNAL = {
     #: AKP joined 2026-10-02. No ETag or Last-Modified on either rendering;
     #: measurements on the change_signals.yml entry.
     "Alberta King's Printer (AKP)": ("akp", False),
+    #: ASFI joined 2026-10-02. No honest token; measurements on the
+    #: change_signals.yml entry.
+    "Alberta Superintendent of Financial Institutions (ASFI)": ("asfi", False),
 }
 
 
@@ -1033,6 +1036,20 @@ def _monitor_akp_impl() -> dict:
     # crawlers, so this stays weekly and never retries a refusal on a schedule.
     res = _crawl_into_db("akp", False)
     logger.info("AKP: %s", res)
+    return res
+
+
+def monitor_asfi() -> dict:
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
+    change_signals.yml entry.
+    """
+    return _run_exclusive("monitor_asfi", _monitor_asfi_impl)
+
+
+def _monitor_asfi_impl() -> dict:
+    # 1 request: the regulatory framework page.
+    res = _crawl_into_db("asfi", False)
+    logger.info("ASFI: %s", res)
     return res
 
 

@@ -441,6 +441,15 @@ jobs:
       hour: 21
       minute: 0
 
+  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (CANADA) - one page, crawl as signal.
+  monitor_asfi:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 21
+      minute: 30
+
   # ----------------------------------------------------------
   # NO JOB FOR Saudi Exchange OR SIMAH — deliberately.
   #

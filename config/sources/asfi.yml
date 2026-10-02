@@ -1,0 +1,21 @@
+# Alberta Superintendent of Financial Institutions — the brief's "Financial
+# Institutions - Regulatory Framework", single page. Measured 2026-10-02, see
+# UC-2-Scratch/ALBERTA_FIRF/. One row: the page's text block. Its links to Acts
+# on open.alberta.ca are kept in extra_meta.related_links, not crawled.
+
+regulator: "Alberta Superintendent of Financial Institutions (ASFI)"
+owner: Fakih
+
+sources:
+  - name: "Regulatory Framework"
+    mode: custom
+    crawler_class: "crawler.asfi_crawler.ASFICrawler"
+    init_kwargs:
+      regulator: "Alberta Superintendent of Financial Institutions (ASFI)"
+      source_system: "Alberta.ca"
+      folder: "Regulatory Framework"
+      path: "financial-institutions-regulatory-framework"
+      expected_title: "Financial institutions – Regulatory framework"
+      # A floor, not the count: 6,022 chars measured 2026-10-02.
+      min_text_chars: 2000
+      delay: 3.0

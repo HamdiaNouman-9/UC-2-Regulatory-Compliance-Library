@@ -1264,5 +1264,14 @@ sources:
     signal: crawl
     confirm: true
 
+  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (ASFI) — `crawl`, 1 GET.
+  # No ETag; Last-Modified is Cloudflare's cache fill, not an edit date.
+  # Measured 2026-10-02: two fetches hash identically despite Cloudflare's
+  # per-request email cipher; a simulated year rollover does not move it.
+  - regulator: "Alberta Superintendent of Financial Institutions (ASFI)"
+    source_system: "Alberta.ca"
+    signal: crawl
+    confirm: true
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.
