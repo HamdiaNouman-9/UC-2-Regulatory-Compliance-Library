@@ -1347,6 +1347,8 @@ _MONITOR_JOBS = {
     "monitor_simah", "monitor_saudi_exchange",
     # NCA, 2026-09-25.
     "monitor_nca",
+    # CBI, 2026-09-23 (feature/iran-regulators).
+    "monitor_cbi",
 }
 
 _monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -1593,6 +1595,7 @@ REGULATOR_REGISTRY: Dict[str, Dict[str, Any]] = {
     "SIO":  {"job": "monitor_sio",  "display": "Social Insurance Organisation (SIO)", "status": "active"},
     "LLOC": {"job": "monitor_lloc", "display": "Legislation and Legal Opinion Commission (LLOC)", "status": "active"},
     "CBJ":  {"job": "monitor_cbj",  "display": "Central Bank of Jordan (CBJ)", "status": "active"},
+    "CBI":  {"job": "monitor_cbi",  "display": "Central Bank of Iran (CBI)", "status": "active"},
     "EDB":  {"job": "monitor_edb",  "display": "Bahrain Economic Development Board (EDB)", "status": "active"},
     "MLSD": {"job": "monitor_mlsd", "display": "Ministry of Labour and Social Development (MLSD)", "status": "active"},
     "LMRA": {"job": "monitor_lmra", "display": "Labour Market Regulatory Authority (LMRA)", "status": "active"},
@@ -1844,6 +1847,139 @@ def get_regulations_by_category(
         return response
     except Exception as e:
         logger.exception("Error fetching regulations by category")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _resolve_category(cursor, category: str) -> int:
+    """`category` can be the numeric compliancecategory_id OR the category's
+    title, case-insensitively -- e.g. both "60244" and "Capital Markets" work.
+    Mirrors resolve_country/resolve_regulator (utils/countries.py) accepting
+    either a code or a name.
+
+    Raises HTTPException: 404 if nothing matches; 409 if the name matches
+    more than one category (titles aren't unique across the tree -- e.g. the
+    same sub-category name reused under different parents) -- pass the
+    numeric id instead to disambiguate.
+    """
+    category = category.strip()
+    if category.lstrip("-").isdigit():
+        cid = int(category)
+        cursor.execute("SELECT 1 FROM compliancecategory WHERE compliancecategory_id = ?", cid)
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Unknown category_id: {cid}")
+        return cid
+
+    cursor.execute(
+        "SELECT compliancecategory_id, title, parentid FROM compliancecategory "
+        "WHERE LOWER(title) = LOWER(?)", category)
+    matches = cursor.fetchall()
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Unknown category name: {category!r}")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail={
+            "error": f"{len(matches)} categories are titled {category!r} -- pass the "
+                    f"numeric category_id instead of the name to disambiguate.",
+            "candidates": [{"id": m[0], "title": m[1], "parent_id": m[2]} for m in matches],
+        })
+    return matches[0][0]
+
+
+@app.get("/categories/subtree/{category}")
+def get_category_subtree(
+    category: str,
+    include_descendants: bool = Query(
+        True, description="Include child categories, grandchildren, etc. Set false to "
+                          "get just this one category, no children."),
+    lang: str = Query("en"),
+):
+    """The folder tree under one compliance category -- NOT the regulations
+    in it. `category` in the URL can be the numeric category_id or the
+    category's title (case-insensitive) -- see _resolve_category. For the
+    regulations themselves, use /regulations/by-category/{category_id} --
+    no need to duplicate that here.
+
+    Returns "categories": the subtree rooted at the category requested,
+    nested through however many levels of children it has, each node
+    carrying its own regulation count (same shape /categories uses). The
+    walk is a live recursive self-join on compliancecategory.parentid,
+    capped at 100 levels -- no separate table needed.
+    """
+    lang = _validate_lang(lang)
+    try:
+        if lang == "ar":
+            cache_key = f"GET /categories/subtree/{category}?descendants={include_descendants}"
+            cached = _get_ar_cache(cache_key)
+            if cached:
+                return cached
+
+        with repo._get_conn() as conn:
+            cursor = conn.cursor()
+
+            category_id = _resolve_category(cursor, category)
+
+            if include_descendants:
+                # Self-join down through parentid, however deep the tree
+                # goes -- children, grandchildren, etc.
+                cursor.execute("""
+                    ;WITH sub AS (
+                        SELECT compliancecategory_id FROM compliancecategory
+                        WHERE compliancecategory_id = ?
+                        UNION ALL
+                        SELECT c.compliancecategory_id FROM compliancecategory c
+                        JOIN sub s ON c.parentid = s.compliancecategory_id
+                    )
+                    SELECT compliancecategory_id FROM sub OPTION (MAXRECURSION 100)
+                """, category_id)
+                category_ids = [r[0] for r in cursor.fetchall()]
+            else:
+                category_ids = [category_id]
+
+            cat_placeholders = ", ".join("?" for _ in category_ids)
+            cursor.execute(
+                f"SELECT compliancecategory_id, title, parentid, type FROM compliancecategory "
+                f"WHERE compliancecategory_id IN ({cat_placeholders})", category_ids)
+            cat_rows = cursor.fetchall()
+            cat_columns = [col[0] for col in cursor.description]
+            cat_dicts = [row_to_dict(row, cat_columns) for row in cat_rows]
+            _attach_regulation_counts(cursor, cat_dicts)
+
+        if lang == "ar":
+            titles = [c.get("title") or "" for c in cat_dicts]
+            translated = translate_texts_batch(titles, lang)
+            for cat, tr in zip(cat_dicts, translated):
+                cat["title"] = tr
+
+        # Two passes, same reasoning as /categories: a row's parent might be
+        # reached later in the loop, so children can't be attached in the
+        # same pass that builds them.
+        cats_by_id = {c["compliancecategory_id"]: c for c in cat_dicts}
+        for c in cat_dicts:
+            c["children"] = []
+        category_tree = []
+        for c in cat_dicts:
+            parent = cats_by_id.get(c["parentid"])
+            if parent:
+                parent["children"].append(c)
+            elif c["compliancecategory_id"] == category_id:
+                # The requested category is this tree's root regardless of
+                # whether IT has a parent -- that parent is OUTSIDE this
+                # subtree, so the lookup above misses on purpose.
+                category_tree.append(c)
+
+        response = {
+            "success": True, "lang": lang,
+            "category": category, "category_id": category_id,
+            "include_descendants": include_descendants,
+            "categories": category_tree,
+            "total_categories": len(cat_dicts),
+        }
+        if lang == "ar":
+            _set_ar_cache(cache_key, response)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching category subtree (category={category!r})")
         raise HTTPException(status_code=500, detail=str(e))
 
 

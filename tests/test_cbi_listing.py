@@ -603,3 +603,98 @@ def test_the_library_tree_and_the_site_trail_disagree_on_purpose():
     assert d.doc_path[:2] == ["Central Bank of Iran (CBI)", "Prudential Regulations"]
     assert "Bank Supervision" in d.extra_meta["section_path"]
     assert "Bank Supervision" not in " | ".join(d.doc_path)
+
+
+# --------------------------------------------------------------------------- #
+#  the text: PDFs read through the browser, because `requests` gets the WAF    #
+# --------------------------------------------------------------------------- #
+
+def _texting(tmp_path, files, **kw):
+    """A fixture source with fetch_text ON and BOTH network seams stubbed.
+
+    `files` stands in for `_files`: a dict of url -> bytes, or an exception to
+    raise. `_pdf_text` is stubbed too so these tests need no real PDF and no
+    OCR -- the extraction itself is OCRProcessor's, tested where it lives.
+    """
+    src = _source(fetch_text=True, text_cache_dir=str(tmp_path), **kw)
+    calls = []
+
+    def _fake_files(urls):
+        calls.append(list(urls))
+        if isinstance(files, Exception):
+            raise files
+        return {u: files[u] for u in urls if u in files}
+
+    src._files = _fake_files
+    src._pdf_text = lambda data: (
+        ("TEXT " * 100).strip(), "browser") if data == b"%PDF-ok" else (
+        "", "not-a-pdf" if data else "fetch-failed")
+    return src, calls
+
+
+def _all_urls():
+    return [d.document_url for d in _source().fetch_documents()]
+
+
+def test_text_is_off_unless_the_yaml_turns_it_on():
+    """The default must never open a browser: a test that forgets to stub
+    `_files` would otherwise launch Chrome against the live regulator."""
+    src = _source()
+    src._files = lambda urls: (_ for _ in ()).throw(AssertionError("opened"))
+    docs = src.fetch_documents()
+    assert all("content_text" not in d.extra_meta for d in docs)
+
+
+def test_pdf_text_lands_where_the_orchestrator_reads_it(tmp_path):
+    src, calls = _texting(tmp_path, {u: b"%PDF-ok" for u in _all_urls()})
+    docs = src.fetch_documents()
+    assert len(calls) == 1 and len(calls[0]) == 11
+    for d in docs:
+        assert len(d.extra_meta["content_text"]) >= 200
+        assert d.extra_meta["text_origin"] == "browser"
+
+
+def test_the_second_run_reads_the_cache_and_never_opens_the_browser(tmp_path):
+    _texting(tmp_path, {u: b"%PDF-ok" for u in _all_urls()})[0].fetch_documents()
+    src, calls = _texting(tmp_path, RuntimeError("browser must not open"))
+    docs = src.fetch_documents()
+    assert calls == []
+    assert all(d.extra_meta["text_origin"] == "cache" for d in docs)
+
+
+def test_a_changed_row_downloads_again(tmp_path):
+    """The cache is keyed by the fingerprint, so a row whose size moved is a
+    miss and the rest stay hits."""
+    _texting(tmp_path, {u: b"%PDF-ok" for u in _all_urls()})[0].fetch_documents()
+    pages = dict(PAGES)
+    pages["1457.aspx"] = LAWS_PAGE.replace("781 KB", "790 KB", 1)
+    assert pages["1457.aspx"] != LAWS_PAGE
+    src, calls = _texting(tmp_path, {u: b"%PDF-ok" for u in _all_urls()},
+                          pages=pages)
+    src.fetch_documents()
+    assert len(calls) == 1 and len(calls[0]) == 1
+
+
+def test_the_waf_page_is_not_text(tmp_path):
+    urls = _all_urls()
+    src, _ = _texting(tmp_path, {urls[0]: b"<html>Request Rejected</html>"})
+    docs = src.fetch_documents()
+    d = next(x for x in docs if x.document_url == urls[0])
+    assert "content_text" not in d.extra_meta
+    assert d.extra_meta["text_origin"] == "not-a-pdf"
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_a_browser_failure_stores_the_documents_without_text(tmp_path):
+    src, _ = _texting(tmp_path, RuntimeError("chrome died"))
+    docs = src.fetch_documents()
+    assert len(docs) == 11
+    assert all(d.extra_meta["text_origin"] == "fetch-failed" for d in docs)
+
+
+def test_text_does_not_move_the_fingerprint(tmp_path):
+    """Hashes stay url|title|size: a later run where one download fails must
+    not report that row modified."""
+    plain = {d.document_url: d.content_hash for d in _source().fetch_documents()}
+    src, _ = _texting(tmp_path, {u: b"%PDF-ok" for u in plain})
+    assert {d.document_url: d.content_hash for d in src.fetch_documents()} == plain

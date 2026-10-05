@@ -337,7 +337,7 @@ jobs:
   #      server this job fails every week until somebody looks. Re-measure
   #      headless, or give the box a session, BEFORE enabling.
   monitor_cbi:
-    enabled: false
+    enabled: true
     trigger: cron
     schedule:
       day_of_week: 'sun'

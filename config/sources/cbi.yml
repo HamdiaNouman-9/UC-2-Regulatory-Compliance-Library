@@ -250,7 +250,7 @@ sources:
       #                    (gitignored) when left empty. It is a cache: delete it
       #                    and the next run simply pays the challenge again.
       browser_channel: "chrome"
-      headless: false
+      headless: true
       user_data_dir: ""
 
       # Attempt 1 gets the challenge BY DESIGN and attempt 2 gets the page, so
@@ -273,6 +273,15 @@ sources:
       # call, and the stamps become real. Until then this stays false and every
       # row's `hash_basis` says url|title|size, honestly.
       fetch_stamps: false
+
+      # ON. Download each PDF THROUGH THE BROWSER and store its text in
+      # extra_meta["content_text"]. Without it the orchestrator downloads with
+      # `requests`, gets the WAF page, and skips every row -- measured
+      # 2026-10-05, 26 of 26 "SKIP -- nothing reached 200 chars", so nothing was
+      # analysed. Text is cached under output/.cache/cbi_text by fingerprint, so
+      # only the first run (and a changed row) downloads; a failed download
+      # stores the row without text, it does not fail the crawl.
+      fetch_text: true
 
       # Three listing loads plus one per row, on a host that answers a refused
       # request with a 200. Politeness, not throttle protection -- but read §4
@@ -340,11 +349,13 @@ sources:
         Prudential Regulations: 15
       content_selector: "ul.simplelist"
       browser_channel: "chrome"
-      headless: false
+      headless: true
       # SHARED WITH THE OTHER SOURCE ON PURPOSE -- the challenge is paid once and
       # the cookie carries. Safe only because the composite runs sources
       # sequentially; Chrome locks a profile directory (crawler/cbi_crawler.py §4).
       user_data_dir: ""
       max_attempts: 3
       fetch_stamps: false
+      # Same as the first source -- see the note there.
+      fetch_text: true
       request_delay: 3.0

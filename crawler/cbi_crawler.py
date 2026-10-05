@@ -163,8 +163,13 @@ fetched in parallel on one profile would fail; give them separate
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
+import os
 import re
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -188,6 +193,32 @@ SITE_URL = "https://www.cbi.ir"
 #: which .gitignore already covers -- a profile is a cache, not source.
 _DEFAULT_PROFILE = str(
     Path(__file__).resolve().parents[1] / "output" / ".browser" / "cbi")
+
+#: Where extracted PDF text is kept between runs, one JSON file per fingerprint.
+#: Also under output/, also a cache: delete it and the next run downloads every
+#: PDF again.
+_DEFAULT_TEXT_CACHE = str(
+    Path(__file__).resolve().parents[1] / "output" / ".cache" / "cbi_text")
+
+#: Under this many characters the orchestrator ignores `content_text` anyway
+#: (orchestrator.MIN_TEXT_LEN), so a shorter extraction is not cached as a result.
+_MIN_TEXT_CHARS = 200
+
+#: Download one file from INSIDE the page. Runs on a cbi.ir page, so it is a
+#: same-origin request that carries the TSPD cookie and goes through whatever
+#: F5's injected script does to fetch -- the same client the listings pass as.
+#: A bare `requests` call, which is what the orchestrator would otherwise use,
+#: gets the challenge page (§4). Bytes come back base64 because evaluate()
+#: returns JSON.
+_FETCH_JS = """async (u) => {
+  const r = await fetch(u, {credentials: 'include', cache: 'no-store'});
+  const b = new Uint8Array(await r.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000)
+    s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return {status: r.status, ctype: r.headers.get('content-type') || '',
+          url: r.url, b64: btoa(s)};
+}"""
 
 #: The breadcrumb, which is READ and never constructed.
 #:
@@ -373,6 +404,14 @@ class CBIListingSource:
         #: lowering it.
         request_delay: float = 3.0,
         timeout: int = 90,
+        #: Download each PDF through the browser and store its text in
+        #: extra_meta["content_text"], which the orchestrator reads before it
+        #: tries a download of its own -- its own is `requests`, and this host
+        #: refuses `requests`. OFF unless the YAML turns it on, so a test that
+        #: forgets to stub `_files` can never start a real Chrome.
+        fetch_text: bool = False,
+        #: Where extracted text is cached between runs. Empty -> under output/.
+        text_cache_dir: str = "",
     ):
         if not source_system:
             raise ValueError("CBIListingSource needs a source_system -- it is "
@@ -391,6 +430,8 @@ class CBIListingSource:
         self.fetch_stamps = bool(fetch_stamps)
         self.request_delay = float(request_delay)
         self.timeout = int(timeout)
+        self.fetch_text = bool(fetch_text)
+        self.text_cache_dir = str(text_cache_dir or _DEFAULT_TEXT_CACHE)
         self.last_result: dict = {}
 
         if self.doc_path_prefix[:1] != [regulator]:
@@ -736,6 +777,182 @@ class CBIListingSource:
         return "", ""
 
     # ------------------------------------------------------------------ #
+    #  the text                                                            #
+    # ------------------------------------------------------------------ #
+    #
+    # WHY THE CRAWLER READS THE PDFs AND NOT THE ORCHESTRATOR. The orchestrator
+    # downloads with `requests`, gets F5's challenge page, finds no %PDF- header
+    # and skips -- measured 2026-10-05, 26 of 26 rows "SKIP -- nothing reached
+    # 200 chars". The browser is the one client this host answers, so the files
+    # come through it and the text goes into extra_meta["content_text"], which
+    # `decide()` prefers over any fetch of its own (MLCU and QCB do the same).
+    #
+    # THE FINGERPRINT IS NOT TOUCHED. Hashing the bytes would close the known
+    # same-size gap, but a run where one download failed would fall back to
+    # url|title|size and report that row `modified` when nothing changed.
+
+    def _files(self, urls: Sequence[str]) -> Dict[str, bytes]:
+        """{url: pdf bytes} for every url the browser could fetch.
+
+        THE SECOND NETWORK SEAM, beside `_pages`, and stubbed by the tests for
+        the same reason. A url missing from the result failed; the caller
+        treats that as "no text", never as an error.
+
+        One listing is loaded first because the fetch must run ON a cbi.ir page
+        -- from about:blank it is cross-origin and carries no cookie. The
+        profile normally still holds TSPD_101 from `_pages`, so that load
+        usually lands on its first attempt.
+        """
+        from playwright.sync_api import sync_playwright
+        out: Dict[str, bytes] = {}
+        with sync_playwright() as pw:
+            ctx = self._browser(pw)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                first = next(iter(self.listings.values()))
+                self._render_on(page, self._listing_url(first))
+                for u in urls:
+                    if self.request_delay:
+                        time.sleep(self.request_delay)
+                    data = self._fetch_in_page(page, u)
+                    if data:
+                        out[u] = data
+            finally:
+                ctx.close()
+        return out
+
+    def _fetch_in_page(self, page, url: str) -> Optional[bytes]:
+        """One file through the page, asked at most twice.
+
+        Twice because F5 may challenge the first request for a new url the way
+        it challenges the first listing (§4). Anything that does not start with
+        %PDF- is the WAF, not the file, whatever the status says.
+        """
+        for attempt in (1, 2):
+            try:
+                r = page.evaluate(_FETCH_JS, url)
+                data = base64.b64decode(r.get("b64") or "")
+            except Exception as e:
+                logger.warning("CBI text: %s attempt %d failed (%s: %s)", url,
+                               attempt, type(e).__name__, str(e)[:120])
+                data, r = b"", {}
+            if data.startswith(b"%PDF-"):
+                return data
+            if data:
+                logger.warning(
+                    "CBI text: %s attempt %d returned %d bytes of %r (status %s), "
+                    "not a PDF", url, attempt, len(data), r.get("ctype"),
+                    r.get("status"))
+            if attempt == 1 and self.request_delay:
+                time.sleep(self.request_delay)
+        return None
+
+    @staticmethod
+    def _pdf_text(data: Optional[bytes]) -> Tuple[str, str]:
+        """(text, origin) -- the orchestrator's own extraction, on our bytes.
+
+        Same checks as orchestrator._download_and_extract_pdf: a %PDF- header,
+        then OCRProcessor's smart extraction, then its low-quality flag. A
+        fragment is worse than nothing, so it comes back empty with the reason.
+        """
+        if not data:
+            return "", "fetch-failed"
+        if not data.startswith(b"%PDF-"):
+            return "", "not-a-pdf"
+        from processor.Text_Extractor import OCRProcessor
+        fd, tmp = tempfile.mkstemp(suffix=".pdf")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            text, meta = OCRProcessor.extract_text_from_pdf_smart(pdf_path=tmp)
+        except Exception as e:
+            logger.warning("CBI text: extraction failed (%s: %s)",
+                           type(e).__name__, str(e)[:120])
+            return "", "extract-failed"
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if (meta or {}).get("low_quality"):
+            return "", "low-quality"
+        text = (text or "").strip()
+        if len(text) < _MIN_TEXT_CHARS:
+            return "", "empty"
+        return text, "browser"
+
+    def _cache_path(self, doc: RegulatoryDocument) -> Path:
+        # The fingerprint IS the key: it moves when the listing row does (url,
+        # title or size), which is exactly when the text needs reading again.
+        key = hashlib.sha1((doc.content_hash or "").encode("utf-8")).hexdigest()
+        return Path(self.text_cache_dir) / f"{key}.json"
+
+    def _cache_read(self, doc: RegulatoryDocument) -> Optional[str]:
+        try:
+            blob = json.loads(self._cache_path(doc).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if blob.get("content_hash") != doc.content_hash:
+            return None
+        text = blob.get("text") or ""
+        return text if len(text) >= _MIN_TEXT_CHARS else None
+
+    def _cache_write(self, doc: RegulatoryDocument, text: str) -> None:
+        try:
+            path = self._cache_path(doc)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(
+                {"url": doc.document_url, "title": doc.title,
+                 "content_hash": doc.content_hash, "chars": len(text),
+                 "text": text}, ensure_ascii=False), encoding="utf-8")
+        except OSError as e:
+            logger.warning("CBI text: could not cache %s (%s)",
+                           doc.document_url, e)
+
+    def _attach_text(self, docs: List[RegulatoryDocument]) -> None:
+        """Fill extra_meta["content_text"] from the cache, else through the browser.
+
+        NEVER FAILS THE CRAWL. A document without text is still a document: it
+        is stored, and the orchestrator logs its own skip exactly as before this
+        existed. `text_origin` records why a row has no text, in the row.
+        """
+        need: List[RegulatoryDocument] = []
+        for d in docs:
+            if (d.file_type or "").upper() != "PDF":
+                d.extra_meta.update(text_origin="not-pdf", text_chars=0)
+                continue
+            cached = self._cache_read(d)
+            if cached is not None:
+                d.extra_meta.update(content_text=cached, text_origin="cache",
+                                    text_chars=len(cached))
+            else:
+                need.append(d)
+
+        got: Dict[str, bytes] = {}
+        if need:
+            logger.info("CBI text: %d of %d document(s) to download (%d cached)",
+                        len(need), len(docs), len(docs) - len(need))
+            try:
+                got = self._files([d.document_url for d in need])
+            except Exception as e:
+                logger.warning("CBI text: browser download failed (%s: %s) -- "
+                               "%d document(s) stored without text", type(e).__name__,
+                               str(e)[:160], len(need))
+
+        missing = []
+        for d in need:
+            text, origin = self._pdf_text(got.get(d.document_url))
+            d.extra_meta.update(text_origin=origin, text_chars=len(text))
+            if text:
+                d.extra_meta["content_text"] = text
+                self._cache_write(d, text)
+            else:
+                missing.append(f"{d.title} [{origin}]")
+        if missing:
+            logger.warning("CBI text: %d document(s) have no text: %s",
+                           len(missing), "; ".join(missing))
+
+    # ------------------------------------------------------------------ #
     #  the pipeline entry point                                            #
     # ------------------------------------------------------------------ #
 
@@ -904,6 +1121,9 @@ class CBIListingSource:
         }
         if limit and limit > 0:
             docs = docs[:limit]
+        # AFTER the limit, so a limited run downloads only what it returns.
+        if self.fetch_text:
+            self._attach_text(docs)
         # The single exit. Every hash above is already set and stamp_ never
         # overwrites one; this is the backstop for a branch added later.
         return stamp_content_hashes(docs)
