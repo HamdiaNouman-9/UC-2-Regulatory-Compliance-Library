@@ -653,3 +653,75 @@ jobs:
       day_of_week: 'sat'
       hour: 22
       minute: 0
+
+  # DISABLED: output/workbooks/fdic.xlsx has not been promoted, and this job's
+  # signal is a crawl that writes through `_crawl_into_db` straight to MSSQL.
+  # Like monitor_fema, monitor_ffiec and monitor_fincen, the crawl IS the signal,
+  # so there is no CHEAP_PROBE_SOURCES entry to graduate into — flip `enabled`
+  # once the workbook is approved and leave the slot in place.
+  #
+  # SATURDAY 21:00, opening the United States hour-apart run rather than joining
+  # the full Sunday schedule:
+  #     21:00  monitor_fdic    plain GET, one page
+  #     22:00  monitor_fincen  plain GET, one page + one declared stamp
+  #     23:00  monitor_ffiec   real browser against a Cloudflare challenge
+  # Cheapest and most predictable first, slowest last, which is the order
+  # monitor_fincen's note already argues for: a long FFIEC run cannot then delay
+  # anything through `_run_exclusive`'s lock and show up as a skip that reads
+  # like a failure. FEMA keeps Sunday 23:30, which is a separate lock.
+  #
+  # ONE HOUR IS AMPLE. The source is a single page load, and the only thing about
+  # it that is large is the 120,579 characters it brings back — a parse cost, not
+  # a network one.
+  monitor_fdic:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sat'
+      hour: 21
+      minute: 0
+
+  # DISABLED: output/workbooks/dfa.xlsx has not been promoted, and this job's
+  # signal is a crawl that writes through `_crawl_into_db` straight to MSSQL.
+  # Like the four US jobs above, the crawl IS the signal, so there is no
+  # CHEAP_PROBE_SOURCES entry to graduate into — flip `enabled` once the workbook
+  # is approved and leave the slot in place.
+  #
+  # SUNDAY 00:00 — the Saturday chain continuing past midnight, not a Sunday job:
+  #
+  #     sat 21:00  monitor_fdic    plain GET, one page
+  #     sat 22:00  monitor_fincen  plain GET, one page + one declared stamp
+  #     sat 23:00  monitor_ffiec   real browser against a Cloudflare challenge
+  #     sun 00:00  monitor_dfa     real browser against a Cloudflare challenge
+  #
+  # which keeps the cheapest-first order monitor_fincen's comment argues for, with
+  # the two challenged browser-driven jobs last.
+  #
+  # THE GAP IS THE POINT, AND IT IS THE REASON THIS IS NOT ON SUNDAY EVENING.
+  # `_run_exclusive` takes ONE GLOBAL lock with timeout=0 — every monitor_* job
+  # shares `_LOCK_PATH` — so a collision is a SKIP, not a queue, and the skipped
+  # job waits a full week. This slot was first written as sun 22:00 and that is
+  # already held by `monitor_nca`, which ships ENABLED: a live job would have
+  # taken the lock and this one would have been skipped every week, silently.
+  # Sunday 20:00 is no better, sitting between monitor_pdpa (19:30) and
+  # monitor_qcb (21:00), both enabled. Sunday 00:00 has four clear hours — the
+  # next job of any kind is monitor_mc at 04:00 — and nothing on Saturday or
+  # early Sunday is enabled at all.
+  #
+  # (The FDIC comment above calls FEMA's Sunday 23:30 slot "a separate lock". It
+  # is not — it is the same lock at a different hour. Left as written rather than
+  # edited inside another regulator's block; the fact is recorded here.)
+  #
+  # THIS IS THE US JOB MOST LIKELY TO BE SLOW. heritage.org answers a JS-less
+  # client with a Cloudflare managed challenge (HTTP 403, CF-Mitigated:
+  # challenge), so the run must launch a real browser and solve it; the
+  # supervised export did, with 0 retries. If a scheduled run is ever refused it
+  # reports blocked and stops — DO NOT ADD A RETRY. ONBOARDING section 3: a
+  # scheduled retry is not a way out of a block, it is what makes one.
+  monitor_dfa:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 0
+      minute: 0

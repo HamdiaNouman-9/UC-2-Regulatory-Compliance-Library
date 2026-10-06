@@ -365,6 +365,26 @@ CRAWL_AS_SIGNAL = {
     #: THE PAGE RETURNS NO TOKEN AT ALL, and the page is the document. Full
     #: measurements on the change_signals.yml entry.
     "Financial Crimes Enforcement Network (FINCEN)": ("fincen", False),
+    #: FDIC joined 2026-09-30. ONE page load on a host that answers a plain GET,
+    #: so a stored-inventory sweep was genuinely available here and was measured
+    #: before being ruled out. version_token over the three stored urls returned
+    #: a stable last-modified+length for both pdfs and, for THE PAGE, an ETag
+    #: that is the CURRENT TIME — 1790753931-gzip at 07:38:51 UTC and
+    #: 1790760482-gzip at 09:28:02 UTC, with the page's own "Last Updated"
+    #: unchanged at August 2025 throughout. A probe would report `modified` on
+    #: every sweep: the CMA false-change pattern, on a different host. Full
+    #: measurements on the change_signals.yml entry.
+    "Federal Deposit Insurance Corporation (FDIC)": ("fdic", False),
+    #: DODD-FRANK joined 2026-10-05, and it is the first US source where a cheap
+    #: probe was not weighed and rejected but found to be IMPOSSIBLE. version_token
+    #: returns ('', 'probe-failed'); the same request by hand is HTTP 403 with
+    #: Server: cloudflare and CF-Mitigated: challenge, no ETag and no
+    #: Last-Modified. robots.txt answers 200 from the same address and names no
+    #: sitemap, so there is no second cheap question either. The crawl passes the
+    #: challenge where a probe cannot — one page load, 1 row. Full measurements on
+    #: the change_signals.yml entry, including the two safety checks that a
+    #: ONE-ROW source needs and the count gate does not provide.
+    "Dodd-Frank Wall Street Reform and Consumer Protection Act": ("dfa", False),
 }
 
 
@@ -1612,6 +1632,142 @@ def _monitor_fincen_impl() -> dict:
     return {"Financial Crimes Enforcement Network (FINCEN)": rep}
 
 
+def monitor_fdic() -> dict:
+    """WEEKLY, AND OFF. FDIC's Fair Lending laws — section IV-1 of the Consumer
+    Compliance Examination Manual. ONE page, 3 rows.
+
+    THE CRAWL IS THE SIGNAL, AND THE ALTERNATIVE WAS MEASURED TO LIE. This host
+    is cooperative — www.fdic.gov answers a plain GET with 200, no challenge and
+    no JS — so `stored-inventory` was a real option here in a way it is not on
+    ffiec.gov or fema.gov. It was measured through
+    dynamic_crawler.fingerprint.version_token, the function the sweep calls:
+
+        FIL-5-2015        fil15005.pdf       last-modified+length   stable
+        FDIC Final Rule   ...sum-b-fr.pdf    last-modified+length   stable
+        IV-1 Fair Lending the page           etag-opaque            MOVES
+
+    THE PAGE'S ETag IS THE CURRENT TIME — an epoch with "-gzip" on it:
+
+        1790753931-gzip = 2026-09-30 07:38:51 UTC   (the 1st request)
+        1790760482-gzip = 2026-09-30 09:28:02 UTC   (the 2nd)
+
+    while the page's own "Last Updated: August 29, 2025" never moved. So a probe
+    loop would report this source `modified` on every sweep — the CMA
+    false-change pattern (1,134 of them) on a different host, caught before it
+    was wired rather than after.
+
+    THAT IS A DIFFERENT FAILURE FROM FINCEN'S, worth keeping straight: FINCEN's
+    page returns no token and a sweep there would be SILENT about the only row
+    that can detect an edit. FDIC's returns one that always moves, so a sweep
+    here would be LOUD about a row that never changed — which costs more, because
+    a reviewer who stops opening the diffs misses the real edit when it arrives.
+
+    WHAT THE CRAWL SEES INSTEAD: the page row's content_hash is taken over
+    120,579 characters of visible text, the largest stored document in this
+    library. An edit to the examination procedures, a statute added, a citation
+    re-pointed — each moves that hash, and none of them touches a header.
+
+    THIS JOB WRITES A SIDECAR'S WORTH OF TEXT. `fdic.xlsx` is the first US
+    workbook whose cells overflow Excel's 32,767 limit; a change detected here
+    goes through `_crawl_into_db` to MSSQL, which has no such limit, so the
+    sidecar is an export concern rather than a monitoring one. It is named here
+    only so nobody reads a 32k preview out of the workbook and thinks the job
+    stored a truncated page.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/fdic.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db`, which writes STRAIGHT TO MSSQL — enabling it first
+    would make the first scheduled run the ingest.
+
+    NOT COVERED: the rest of the manual. This source is section IV-1 and `scope:
+    prefix` resolves to that page's own path, so the other sections are invisible
+    here. Each is its own source with its own source_system when the library
+    wants it, and each will need its own line on this dict.
+    """
+    return _run_exclusive("monitor_fdic", _monitor_fdic_impl)
+
+
+def _monitor_fdic_impl() -> dict:
+    # Both sources, so the declared final rule is re-stamped alongside the
+    # crawled rows and `disappeared` compares a complete inventory over the
+    # (regulator, source_system) pair it is scoped by. No `only_sources`.
+    rep = _crawl_into_db("fdic", False)
+    logger.info("Federal Deposit Insurance Corporation (FDIC): %s", rep)
+    return {"Federal Deposit Insurance Corporation (FDIC)": rep}
+
+
+def monitor_dfa() -> dict:
+    """WEEKLY, AND OFF. The Dodd-Frank Act — ONE page, 1 row.
+
+    READ THE SOURCE CAVEAT FIRST. The page this job watches is a Heritage
+    Foundation "Heritage Explains" article: a policy advocacy organisation's
+    commentary ON the Act, not the Act, and not a regulator's publication. The
+    statute itself was briefly carried as a declared govinfo row and has been
+    removed from config/sources/dfa.yml, so THIS JOB WATCHES A COMMENTARY PAGE
+    AND NOTHING WATCHES PUBLIC LAW 111-203. That is a library decision, recorded
+    here because the job name reads like it covers the Act.
+
+    THE CRAWL IS THE SIGNAL BECAUSE NO CHEAP QUESTION EXISTS — not because one
+    was weighed and found expensive. Measured 2026-10-05 through
+    dynamic_crawler.fingerprint.version_token, the function the sweep calls:
+
+        the page     ('', 'probe-failed')  in 0.7s
+
+    and the same request by hand, same User-Agent and same Range header, to learn
+    why:
+
+        HTTP 403, Server: cloudflare, CF-Mitigated: challenge
+        <title>Just a moment...</title>, no ETag, no Last-Modified
+
+    A CHALLENGE IS NOT A BLOCK. robots.txt answers 200 from this address and none
+    of its 34 Disallow rules matches our path, so the host is not refusing us —
+    it is refusing a client that cannot run JavaScript. A browser clears it; the
+    supervised export did, with status ok, 1 page, 0 blocked, 0 errors, 0
+    retries. This is therefore NOT a skip_hosts case, and it must not become one
+    by being retried badly: ONBOARDING section 3 — "a scheduled retry is not a way
+    out of a block, it is what makes one."
+
+    THIS IS THE THIRD WAY A US HOST HAS DEFEATED A PROBE, and the three are not
+    equivalent: FINCEN answers with no token (a sweep would be silent), FDIC
+    answers with an ETag that is the request time (a sweep would be loud), and
+    this one does not answer a probe at all (a sweep would be blind). The first
+    two were judgement calls. This one is not.
+
+    TWO THINGS WERE CHECKED BEFORE PUTTING A CRAWL ON A SCHEDULE AGAINST A
+    CHALLENGED HOST, because a refused run can fail in two opposite ways:
+
+      1. IT RETURNS NOTHING. One stored row, zero observed, a 100% drop.
+         `withdrawal.count_drop(0, 1)` returns None — max(1, 5% of 1) = 1 and the
+         loss is 1 — so THE COUNT GATE IS INERT HERE. `withdrawal.gate` is what
+         refuses, on its empty-run rule. Both were called rather than assumed,
+         because the count gate is the one a reader expects to be doing the work.
+      2. IT STORES THE CHALLENGE AS THE DOCUMENT, which is worse: the row
+         survives and its content_hash becomes the hash of an interstitial.
+         `blockcheck.text_is_blocked` returns "Just a moment" for this host's 403
+         title and "" for the real title "The Dodd-Frank Act", so the run reports
+         blocked instead of writing a version row.
+
+    WHAT THE CRAWL DETECTS: the page row's content_hash is taken over 9,518
+    characters of visible text. Heritage revising or withdrawing the explainer
+    moves it; nothing in a header would.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/dfa.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db`, which writes STRAIGHT TO MSSQL — enabling it first
+    would make the first scheduled run the ingest.
+    """
+    return _run_exclusive("monitor_dfa", _monitor_dfa_impl)
+
+
+def _monitor_dfa_impl() -> dict:
+    # One source, so no `only_sources` — there is nothing to scope away. If the
+    # govinfo statute is ever declared again, it belongs in this same run so
+    # `disappeared` compares a complete inventory for the pair.
+    rep = _crawl_into_db("dfa", False)
+    logger.info("Dodd-Frank Wall Street Reform and Consumer Protection Act: %s", rep)
+    return {"Dodd-Frank Wall Street Reform and Consumer Protection Act": rep}
+
+
 def monitor_ffiec() -> dict:
     """WEEKLY, AND OFF. FFIEC's Cybersecurity Awareness resources — ONE page.
 
@@ -1715,4 +1871,4 @@ __all__ = ["monitor_cheap_probes", "monitor_sama", "monitor_mc", "monitor_cma",
            "monitor_lmra", "monitor_justice_canada", "monitor_nbr",
            "monitor_simah", "monitor_saudi_exchange", "monitor_qcb", "monitor_qfcl",
            "monitor_nca", "monitor_fema",
-           "monitor_ffiec", "monitor_fincen"]
+           "monitor_ffiec", "monitor_fincen", "monitor_fdic", "monitor_dfa"]

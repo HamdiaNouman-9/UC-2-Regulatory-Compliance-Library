@@ -667,6 +667,30 @@ def _with_link_title(breadcrumb, link_title, prof) -> list:
     return crumbs + [lt]
 
 
+#: A crumb that IS a year, not one that merely contains a number. Anchored at
+#: both ends so "2026 Annual Report" and "Part 1026" do not match, and capped at
+#: 19xx/20xx so a four-digit section number like "3500" does not either.
+_YEAR_CRUMB = re.compile(r"^(19|20)\d{2}$")
+
+
+def year_only_sections(section_path: str) -> str:
+    """Reduce a section trail to the year crumb(s) it contains.
+
+    A TRAIL WITH NO YEAR COMES BACK UNCHANGED. This is the load-bearing half:
+    the key that turns this on is per-HOST, and on fdic.gov three of the four
+    sections have no year crumb anywhere (measured: 269 rows, zero). Returning
+    an empty trail for those would have silently deleted the `Policy` folder
+    that page_group_headings exists to build.
+
+    Multiple year crumbs are all kept, in order, rather than the first winning.
+    No page in the library has two -- so that is a choice about which behaviour
+    is less surprising, not a measurement, and it is the one that loses nothing.
+    """
+    crumbs = [c.strip() for c in (section_path or "").split(">") if c.strip()]
+    years = [c for c in crumbs if _YEAR_CRUMB.match(c)]
+    return " > ".join(years) if years else (section_path or "")
+
+
 def doc_section_path(breadcrumb: list, group: str = "", nav_path: str = "",
                      heading_path=None) -> str:
     """The folder trail for a document: the page's breadcrumb, then optionally the
@@ -1182,6 +1206,288 @@ SITE_PROFILES = {
         # the FDIC report. Same defect as fema.gov and ffiec.gov; see
         # `page_pdf_link` in DEFAULT_PROFILE.
         "page_pdf_link": False,
+    },
+    "www.fdic.gov": {
+        # FDIC (United States). MEASURED 2026-09-30 on
+        # /consumer-compliance-examination-manual/iv-1-fair-lending-laws-and-regulations
+        # with one plain GET -- HTTP 200, 222,178 bytes, no challenge, no JS
+        # needed. A cooperative host, like fincen.gov and unlike ffiec.gov.
+        #
+        # content_selector ADDED 2026-10-05, AND THE NOTE BELOW IT WAS WRONG --
+        # not in its measurement, but in its scope. It was taken on the Fair
+        # Lending page alone and generalised to the host, and the section
+        # LANDING pages use a different template where the default list picks
+        # the About region instead.
+        #
+        # MEASURED on the stored document_html of /laws-and-regulations, in the
+        # 12:25 export (before any drop_selectors existed) and again at 14:16:
+        # the captured headings are "Leadership", "FDIC Careers", "Initiatives",
+        # "History of the FDIC", "Additional Links", "Featured" -- the FDIC's
+        # About region -- and the page's own three headings (Policy, Delegations
+        # of Authority, Appointment of Administrative Law Judges) appear nowhere
+        # in it. That row has never held the page it names.
+        #
+        # SAME CAUSE AS fincen.gov AND obamawhitehouse.archives.gov below:
+        # querySelector returns the first match in DOCUMENT ORDER, and on this
+        # template the About region matches first.
+        #
+        # main#main-content IS SAFE FOR BOTH TEMPLATES, which is why it is the
+        # pin: it is the landing page's own wrapper, and it is ALSO what the
+        # default list already resolves to on the Fair Lending page (measured at
+        # 121,048 chars, below). content_selector is tried FIRST and falls back
+        # to the default list when it does not match, so nothing else on this
+        # host changes.
+        "content_selector": "main#main-content",
+
+        # THE ORIGINAL FAIR LENDING MEASUREMENT, kept because it is what makes
+        # the pin above safe rather than a guess. JS_MAIN_CONTENT falls back to
+        # `document.querySelector('main, [role="main"], article, #content,
+        # .content, #main')` and querySelector returns the FIRST MATCH IN
+        # DOCUMENT ORDER -- the trap that captured a blank body on fincen.gov
+        # and a YouTube player on obamawhitehouse.archives.gov. On the Fair
+        # Lending page there are exactly two matches and the first is correct:
+        #     [0] main#main-content     121,048 chars   <- picked
+        #     [1] article.node--wholepage 121,018
+        # and main has only two children, the article (121,018) and a 29-char
+        # "Last Updated: August 29, 2025" block. There is no sidebar, no table of
+        # contents and no nav inside it -- 11 anchors in the whole content, all
+        # of them citations. Naming a selector here would buy nothing and add a
+        # second thing to keep true.
+        #
+        # THE PAGE IS THE DOCUMENT AND THE TWO PDFs ARE FOOTNOTE CITATIONS: an
+        # FDIC final rule on the Role of Supervisory Guidance, and FIL-5-2015.
+        # Neither is "this page's own file", so the page must not claim one --
+        # without this the wrapper hands pdf_links[0] to the orchestrator as
+        # `org_pdf_link` and the page row's document_url becomes the final rule,
+        # while file_type still says HTML. Fourth host to need the opt-out after
+        # fema.gov, ffiec.gov and fincen.gov; the wrapper bug it works around
+        # (generic_crawler_wrapper.py:816) is still open.
+        "page_pdf_link": False,
+
+        # HEADINGS ARE FOLDERS ON THIS HOST. Opt-in per site, and the flag's own
+        # note says why: "a page's headings are a real section grouping on SOME
+        # sites only ... SECP headings are dates, CBB's is FOLLOW US, and CMA's
+        # are the document titles themselves".
+        #
+        # MEASURED on /laws-and-regulations, 2026-10-05: main#main-content holds
+        # exactly three <h2>s and each one groups the links beneath it --
+        #     Policy                                    10 links
+        #     Delegations of Authority                   1 link
+        #     Appointment of Administrative Law Judges    2 links
+        # which is the grouping the library was asked to reproduce. These are
+        # subject headings, not dates and not document titles, so this host is
+        # the case the flag exists for.
+        #
+        # IT REACHES DOCUMENTS, NOT PAGES. crawler.py:4052 passes `group` through
+        # doc_section_path for a DOCUMENT; crawler.py:4150 sets a PAGE record's
+        # section_path to its own breadcrumb and passes neither group nor
+        # heading_path. So a PDF linked under "Policy" is filed there, while a
+        # crawled child page is filed under its own breadcrumb. Do not read a
+        # child page sitting outside its parent's heading as a bug in this key.
+        #
+        # AND IT APPLIES TO ALL FOUR FDIC SECTIONS, because this is a host
+        # profile. Intended: Supervision and Examinations and Financial
+        # Institution Letters are the same CMS and group the same way.
+        "group_headings": True,
+
+        # AND PAGES ARE FILED BY HEADING TOO, not only documents. Measured on
+        # /laws-and-regulations 2026-10-05: of the three <h2>s, "Policy" holds
+        # ten links and EVERY ONE IS AN HTML PAGE, so `group_headings` on its own
+        # files nothing there -- the folder would be created empty while the ten
+        # pages sat under the site's breadcrumb. With this key the seven that are
+        # in scope land under Policy, which is the tree that was asked for.
+        #
+        # THE OTHER THREE STILL CANNOT: they point outside /laws-and-regulations
+        # (Financial Institution Letters, FDIC Federal Register Citations,
+        # Resolution Authority), and so does the single "Delegations of
+        # Authority" link, so `scope: prefix` never reaches any of them. Four of
+        # the fourteen links on that page need declaring or a wider scope; this
+        # key does not pretend to fix that.
+        "page_group_headings": True,
+
+        # AND ROWS ARE FILED UNDER THE YEAR THEIR BREADCRUMB NAMES. fdic.gov
+        # draws "Home > News > Financial Institution Letters > 2026 > <letter>"
+        # and the library wants the 2026. The year is matched by SHAPE, so the
+        # first letter FDIC publishes in 2027 opens its own folder with no edit
+        # here -- which is the point, since this section gains a year every
+        # January for as long as the library runs.
+        #
+        # MEASURED INERT ON THE OTHER THREE SECTIONS, which is what makes a
+        # host-level key safe: Laws and Regulations (104 rows) and Supervision
+        # and Examinations (165 rows) have ZERO year crumbs between them, and a
+        # trail with no year is returned untouched. In particular the `Policy`
+        # folder built by page_group_headings above is not disturbed.
+        "year_sections": True,
+
+        # FURNITURE THAT IS NOT THE DOCUMENT. Each one measured in the stored
+        # rows of the 2026-10-05 export rather than guessed from the live page.
+        #
+        #   p.text-align-right inside a body paragraph is the "Back to the Top"
+        #     link (found on Deposit Insurance Assessment Appeals). NOT the same
+        #     element as the Last Updated stamp, which is a DIV --
+        #     div.text-align-right.block-fdic-node-last-updated-block -- so this
+        #     selector cannot take the stamp with it. "Last Updated" is content:
+        #     it is the only date on these pages and it is deliberately kept.
+        #
+        #   p:has(a[href="/acrobat/"]) is the "__________PDF Help - Information
+        #     on downloading and using the PDF reader." footer. Matched by the
+        #     anchor's target so no text matching is needed; :has is supported by
+        #     the Chromium this runs under.
+        #
+        #   div.field--name-field-cards is the promo card deck -- the
+        #     "Consumer Resources" grid that ends the Laws and Regulations page
+        #     and repeats its own title. It is navigation, it is most of that
+        #     page's 4,685 captured characters, and the FDIC rotates it, so it is
+        #     also a content-side false-change source of exactly the kind
+        #     config/sources/dfa.yml records for Heritage's issue-breaker.
+        # div.field--name-field-cards WAS HERE AND IS REMOVED, 2026-10-05. It was
+        # measured against the STATIC html, where main#main-content holds the
+        # three headings and no card container. `drop_selectors` edits the
+        # RENDERED CAPTURE, and in that DOM the two card decks are the only
+        # things on the seed row worth anything -- dropping them took the seed's
+        # captured text from 4,685 to 2,282 characters and removed its last
+        # recognisable content. Measure a drop_selector against a stored
+        # document_html, never against a static fetch.
+        #   div.fdic-share is the social row under the headline: "Share on
+        #     Facebook / Share on X / Follow the FDIC on LinkedIn / Share
+        #     through email / Print". MEASURED on stored html: 24 of 36 pages,
+        #     44,592 characters of markup for 2,232 characters of text, and
+        #     every one of those characters is a share verb. Print is INSIDE
+        #     this container, so it goes with it and needs no selector of its
+        #     own -- checked, not assumed.
+        #
+        #   div.news-contacts is the "Contact(s)" fieldset that closes a letter:
+        #     a mailto to a division, not a statement of the rule. Same 24
+        #     pages, 6,088 characters of markup, 1,476 of text.
+        #
+        #     ITS SIBLING div.news-related-topics IS DELIBERATELY KEPT. Both are
+        #     div.news-field-wrapper.usa-fieldset, so the obvious selector would
+        #     take both -- but the topic tags ("Applications and Notices",
+        #     "Community Reinvestment Act", "Credit") name what the letter is
+        #     ABOUT and are the only classification the page carries. Naming the
+        #     narrower class is the whole point.
+        #
+        #   img removes the icons. MEASURED: 20 images across 2 of the 36 pages,
+        #     and dropping them costs ZERO characters of text -- an <img> never
+        #     reaches content_text, so no content_hash moves on account of this
+        #     one and the other two are the only churn this edit causes.
+        #
+        #     THE BARE ELEMENT, NOT div.card-thumbnail, and that is a choice: a
+        #     selector naming today's card class would miss tomorrow's wrapper,
+        #     and the ask was for icons wherever they appear. THE COST, stated
+        #     plainly: a genuine content image -- a chart inside a letter --
+        #     would be dropped too. Nothing in this library reads an image, and
+        #     the precedent is already here (obamawhitehouse.archives.gov drops
+        #     a bare `img` for the same reason).
+        #
+        #     IT DOES NOT FIX WHAT PUT THOSE IMAGES THERE. All 20 sit on the two
+        #     rows that captured the FDIC "About" landing page instead of the
+        #     page they name -- row 393 (fdic-law-regulations-related-acts) and
+        #     row 460 (rescission-board-statement-...). Both URLs answer 200
+        #     with the correct node--news article and no trace of the About
+        #     region, so that is a run artifact, not a selector problem. This
+        #     selector hides its most visible symptom; only a re-export clears
+        #     the rows.
+        # `img` NARROWED TO THREE CONTAINERS, 2026-10-06. The bare element was
+        # here and it was wrong: it runs INSIDE the browser, before any wrapper
+        # sees the capture, so it stripped the five content diagrams from
+        # /bank-examinations/privacy-rule-handbook ("This table reflects the
+        # rule's requirements", "A diagram displaying two concentric circles")
+        # and crawler/fdic_crawler.py could not put back what was never stored.
+        #
+        # div.media--type-image IS NOT THE DISCRIMINATOR -- it is Drupal's
+        # generic media wrapper and sits around both kinds. The paragraph it
+        # sits in is:
+        #     content ... < div.media--type-image < div.paragraph--type--text
+        #     promo   ... < div.media--type-image < div.paragraph--type--image
+        #     promo   ... < div.media--type-image < div.image-opposite-content
+        #     icons   ... < div.card-thumbnail    < div.paragraph--type--card
+        # Measured on 40 stored pages: the three promo containers remove all 10
+        # About-region icons and keep all 5 handbook diagrams.
+        "drop_selectors": "div.paragraph--type--text p.text-align-right, "
+                          "p:has(a[href=\"/acrobat/\"]), "
+                          "div.fdic-share, "
+                          "div.news-contacts, "
+                          "div.card-thumbnail, "
+                          "div.paragraph--type--image, "
+                          "div.field--name-field-image-opposite-content",
+    },
+    "www.heritage.org": {
+        # THE HERITAGE FOUNDATION (United States). Shape MEASURED 2026-09-30 from
+        # the Internet Archive capture 20260216233003 of
+        # /markets-and-finance/heritage-explains/the-dodd-frank-act -- NOT from a
+        # live read: the host answered a plain GET with HTTP 403, server
+        # cloudflare, <title>Just a moment...</title> and a _cf_chl_opt challenge
+        # payload. That is ffiec.gov's managed-challenge signature, which a real
+        # browser solves; it is NOT fema.gov's flat Akamai denial. See
+        # config/sources/dfa.yml, which must be confirmed by one supervised run.
+        #
+        # NO content_selector, AND THAT IS MEASURED. JS_MAIN_CONTENT's fallback
+        # list is resolved with querySelector, which returns the FIRST MATCH IN
+        # DOCUMENT ORDER -- the trap that stored a blank body on fincen.gov and a
+        # YouTube player on obamawhitehouse.archives.gov. The order here is kind:
+        #     [0] div#main.layout-main          7,627 chars   <- picked
+        #     [1] main#content.main-content     7,627         its only child
+        #     [2] article.node--type-explainer  7,608         the article
+        #     [3..] article.timeline__card      64-263 each   timeline cards
+        # so the pick is the article plus 19 characters of wrapper.
+        #
+        # BUT NOTE THE NINE TIMELINE CARDS. `article` is in that fallback list,
+        # so if the outer wrappers ever lose their id or class, querySelector
+        # would pick an 89-character card and this source would store almost
+        # nothing. The fix then is
+        #     "content_selector": "article.node--type-explainer"
+        # here, NOT a wider fallback list in JS_MAIN_CONTENT.
+        #
+        # THE BANNER PHOTOGRAPH, DROPPED ON THE LEAD'S STANDING INSTRUCTION --
+        # "we need no picture in the html", the same call made for ffiec.gov and
+        # fincen.gov.
+        #
+        # THREE SELECTORS, AND EACH EARNS ITS PLACE:
+        #   .explainer-banner__image-wrapper  the site's OWN name for the banner
+        #       box. The image sits at
+        #           section.explainer-banner > div.explainer-banner__image-wrapper
+        #             > div > div > picture > img
+        #       so dropping the wrapper takes the <picture> and its <source>
+        #       elements with it and leaves NO empty box behind. Dropping the
+        #       <img> alone would leave the picture element and the gap.
+        #   picture   any other <picture> an author adds to the body later.
+        #   img       a bare <img>, same reason.
+        #
+        # UNCONDITIONAL, NOT KEYED ON alt="". The one image measured here does
+        # carry alt="" -- the page declaring it decorative -- so the ffiec.gov
+        # rule's shape would have worked today. It is written unconditionally
+        # because the instruction is "no picture", and an image with real alt
+        # text would slip through the narrower rule the way fincen.gov's dome
+        # photograph did.
+        #
+        # THE COST, SO IT IS NOT A SURPRISE: a genuine content chart published
+        # inside a Heritage article would also go. Scoped to the explainer
+        # article, so it can never reach site furniture on some other
+        # heritage.org page a later source crawls.
+        # AND THE RELATED-CONTENT PROMO, ADDED 2026-09-30 AFTER READING THE FIRST
+        # EXPORT. The stored capture ended on three articles about other
+        # subjects entirely — "Pulling the Plug on Bidenomics' War on Affordable
+        # Power", "The Great Migration Remaking Higher Ed", "State Anti-ESG Laws
+        # and Local Finance" — which is div.issue-breaker, Heritage's
+        # related-content widget. It sits INSIDE article.node--type-explainer,
+        # so no choice of content_selector excludes it.
+        #
+        # THIS IS A MONITORING BUG, NOT A TIDINESS ONE. The page row's
+        # content_hash is taken over that text and is the signal this source
+        # will be watched by; Heritage rotates the widget, so every rotation
+        # would report the Dodd-Frank explainer as modified. That is the
+        # false-change failure measured on fdic.gov's ETag and recorded against
+        # CMA in config/change_signals.yml, arriving through the content instead
+        # of through a header.
+        #
+        # MEASURED on output/workbooks/dfa.xlsx: 282 of 7,618 characters, and
+        # the article then ends on its own last sentence — "...To learn more
+        # read Heritage's report 'The Case Against Dodd-Frank...'".
+        "drop_selectors": "article.node--type-explainer .explainer-banner__image-wrapper, "
+                          "article.node--type-explainer picture, "
+                          "article.node--type-explainer img, "
+                          "article.node--type-explainer .issue-breaker",
     },
     "nca.gov.sa": {
         # NCA (Next.js), MEASURED 2026-09-24 on /en/enablement/ and
@@ -1738,6 +2044,29 @@ DEFAULT_PROFILE = {
     "unwrap_forms": False,
     "sharepoint_main": False,
     "group_headings": False,
+    #: Also file a crawled PAGE under the heading that linked to it, instead of
+    #: under its own breadcrumb. OFF, and separate from `group_headings` on
+    #: purpose: four hosts already set that flag, and widening its meaning would
+    #: re-file every page on all four. doc_path is part of
+    #: changesignal.DEFAULT_IDENTITY, so re-filing a page re-identifies it.
+    #:
+    #: Needed where a landing page groups LINKS TO PAGES under subject headings
+    #: rather than links to files -- fdic.gov/laws-and-regulations puts ten page
+    #: links under "Policy" and one PDF under another heading, so
+    #: `group_headings` alone files the PDF correctly and leaves "Policy" empty.
+    #:
+    #: Requires `group_headings` to be on as well: the heading is harvested by
+    #: the same JS and this key only decides whether PAGES may use it.
+    "page_group_headings": False,
+    #: File a row under the four-digit YEAR in its breadcrumb, when there is one.
+    #: OFF. The year is matched by shape, never listed, so a new year needs no
+    #: edit -- see year_only_sections() for the rule, and for why a trail with
+    #: no year is returned untouched rather than emptied.
+    #:
+    #: Needs `doc_path_sections: true` on the SOURCE as well: this key decides
+    #: what the section trail SAYS, that one decides whether the trail becomes
+    #: folders at all. Neither does anything without the other.
+    "year_sections": False,
     "keep_modals": False,
     #: A CSS selector for the site's real content wrapper, prepended to
     #: JS_MAIN_CONTENT's list. Empty means "use the defaults", which is what every
@@ -3543,6 +3872,24 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
     #  seed's own filename must not end up in the prefix.)
     prof = profile_for(seed_norm)
     group_headings = group_headings or prof["group_headings"]
+    # Page-level heading filing. Gated on `group_headings` too, because the
+    # heading it reads is only harvested when that flag is on -- enabling this
+    # alone would quietly do nothing, which is worse than refusing.
+    page_group_headings = bool(prof["page_group_headings"]) and bool(group_headings)
+    # Year filing. NOT gated on group_headings: the year comes from the site's
+    # own breadcrumb, which is read on every crawl, so this one stands alone.
+    year_sections = bool(prof["year_sections"])
+
+    def _sec(path: str) -> str:
+        """The one place the year reduction is applied.
+
+        A function rather than two inline conditionals because the DOCUMENT and
+        the PAGE record build their section_path by different routes -- the
+        document through doc_section_path with group/nav/heading, the page from
+        its bare breadcrumb -- and those two have already drifted apart once
+        this month. Anything that must hold for both belongs in one place.
+        """
+        return year_only_sections(path) if year_sections else path
     seed_prefix = scope_prefix(urlparse(seed_norm).path)  # "under the seed path" for prefix scope
     # If the seed sits under a 2-3 letter language segment (/en/...), lock the crawl
     # to that language so we don't load every page's /ar/ mirror just to reject it.
@@ -3565,6 +3912,7 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
     chrome_documents = {}   # same, for links found only in the site header/footer
     link_titles = {}        # normalized url -> the anchor text that linked to it
     link_parents = {}       # normalized url -> the page it was linked from
+    link_groups = {}        # normalized url -> the heading the link sat under
     section_anchor = None   # set from the seed's breadcrumb (last item)
 
     # What the walk learned about itself. These were all emitted as events and
@@ -3940,7 +4288,7 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                         "doc_url": dn,
                         "type": doc_type_of(href, seed_host),
                         "found_on": url,
-                        "section_path": doc_section_path(
+                        "section_path": _sec(doc_section_path(
                             # `link_title_is_section`: the rail link that reached
                             # this page names what the page is a filtered view OF,
                             # and nothing on the page itself says it. Appended to
@@ -3953,7 +4301,7 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
                             l.get("group") if group_headings else "",
                             nav_path_map.get(
                                 (dn, (l.get("text") or "").strip()), ""),
-                            l.get("heading_path") if group_headings else None),
+                            l.get("heading_path") if group_headings else None)),
                     }
                     # Site furniture (header/footer) is not this section's content:
                     # a "Privacy Policy" PDF or a site-wide guidebook banner would
@@ -4037,8 +4385,18 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
             html_file = f"html/{slug}.html"
             write_page_html(out, html_file, content["html"], url, title)
 
+            # THE PAGE'S SECTION. Normally its own breadcrumb. With
+            # `page_group_headings` the heading that linked to it is appended, so
+            # a page listed under "Policy" is filed under Policy rather than
+            # beside every other page sharing the site's breadcrumb. Built with
+            # doc_section_path -- the same function documents use -- so both
+            # kinds of row get identical de-duplication and spacing rules.
+            # The seed has no linking heading and is unaffected.
+            _page_group = link_groups.get(url, "") if page_group_headings else ""
             rec = {
-                "section_path": " > ".join(breadcrumb),
+                "section_path": _sec(
+                    doc_section_path(breadcrumb, group=_page_group)
+                    if _page_group else " > ".join(breadcrumb)),
                 "title": title,
                 "url": url,
                 "depth": depth,
@@ -4123,6 +4481,25 @@ def crawl(seed_url, out_dir, max_pages=150, max_depth=8, scope="auto",
             for l in links:
                 href = l["href"]
                 nh = normalize_url(href)
+                # THE HEADING THIS LINK SAT UNDER -- recorded HERE, before the
+                # `visited` check below, and only from a non-chrome link.
+                #
+                # Both halves are load-bearing. A site whose header menu lists
+                # the same pages enqueues them from the menu first (the header
+                # precedes the content in document order), so by the time the
+                # real listing link is reached the url is already `visited` and
+                # every line after that check is skipped -- which is why
+                # recording this next to `link_titles` did nothing on fdic.gov.
+                # And a heading harvested from inside a mega-menu describes the
+                # MENU, not the page, so skipping `chrome` is what stops moving
+                # it earlier from simply letting the nav win sooner.
+                #
+                # setdefault: the first NON-CHROME link still wins, which keeps
+                # this map consistent with link_titles and link_parents.
+                if page_group_headings and not l.get("chrome"):
+                    _g = (l.get("group") or "").strip()
+                    if _g:
+                        link_groups.setdefault(nh, _g)
                 if nh in visited:
                     continue
                 pu = urlparse(nh)

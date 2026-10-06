@@ -144,4 +144,19 @@ countries:
     - "Federal Emergency Management Agency (FEMA)"
     - "Federal Financial Institutions Examination Council (FFIEC)"
     - "Financial Crimes Enforcement Network (FINCEN)"
+    - "Federal Deposit Insurance Corporation (FDIC)"
+  # THE DODD-FRANK ACT NAMES AN INSTRUMENT, NOT AN AUTHORITY, so it does not
+  # take the "Full Name (ACRONYM)" shape the four entries above use — and it has
+  # no "(DFA)" suffix, although its config is config/sources/dfa.yml. It is the
+  # string the lead typed, and `regulator` is doc_path[0] and therefore
+  # identity: tidying it re-identifies every row. Kuwait's KDIPA entry is the
+  # same case, and the Regulations DD entry that used to sit here carried the
+  # same note.
+  #
+  # Added 2026-09-30, after the first supervised export, because `check` warned
+  # that these folders were sitting at the tree root. The publisher may later
+  # get an entry of its own — the United States Congress, or an agency that
+  # administers a Title — and that would be a SEPARATE entry rather than a
+  # rename of this one.
+    - "Dodd-Frank Wall Street Reform and Consumer Protection Act"
 

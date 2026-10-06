@@ -1,0 +1,327 @@
+# DFA — Dodd-Frank Wall Street Reform and Consumer Protection Act
+# Public Law 111-203, United States
+#
+# ===========================================================================
+# THE SHAPE, SET BY THE LEAD 2026-09-30: TWO LEVELS, NOTHING IN BETWEEN
+# ===========================================================================
+#     United States of America
+#       Dodd-Frank Wall Street Reform and Consumer Protection Act
+#         The Dodd-Frank Act                                    <- the page
+#         Dodd-Frank Wall Street Reform and Consumer Protection
+#           Act, Public Law 111-203                             <- the statute
+#
+# HOW A TWO-LEVEL TRAIL IS PRODUCED, because it is not obvious and it is not a
+# hack. `_doc_path` always builds [regulator, source_system, ...] and then runs
+# `_clean_trail`, which DROPS any crumb whose `_crumb_key` already appeared
+# earlier in the trail. So setting `source_system` to the SAME STRING as
+# `regulator` makes the second crumb fold into the first, and the title — which
+# is appended AFTER `_clean_trail` and is never de-duplicated against it — lands
+# directly beneath. MEASURED 2026-09-30:
+#     ['Dodd-Frank Wall Street Reform and Consumer Protection Act',
+#      'The Dodd-Frank Act']
+#
+# THIS IS AN ESTABLISHED PRECEDENT HERE, not an invention. config/sources/
+# kdipa.yml does the same thing, and jobs/monitor_jobs.py carries the pair in
+# CHEAP_PROBE_SOURCES with a note saying so outright: "Both halves are the same
+# string on purpose."
+#
+# DO NOT ADD `doc_path_category`. It would insert a third level between the Act
+# and its documents, which is the level the lead removed. `category` below is a
+# COLUMN only.
+#
+# THE NAME HAS NO "(DFA)" SUFFIX. It is written here exactly as the lead typed
+# it. `regulator` is doc_path[0] and therefore identity — every row is
+# re-identified if this string moves, so it is not tidied, abbreviated or given
+# the "Full Name (ACRONYM)" shape most of countries.yml uses. An instrument
+# rather than an authority in that slot is itself precedented: Kuwait's KDIPA
+# entry, and the Regulations DD entry whose note said plainly that the
+# publisher may later get an entry OF ITS OWN rather than this one being
+# renamed.
+#
+# ===========================================================================
+# READ THIS BEFORE TRUSTING THE FIRST SOURCE: IT IS COMMENTARY, NOT THE ACT
+# ===========================================================================
+# The page this file was asked for —
+#     https://www.heritage.org/markets-and-finance/heritage-explains/the-dodd-frank-act
+# — is a Heritage Foundation "Heritage Explains" article. The Heritage
+# Foundation is a policy research and advocacy organisation: not the publisher
+# of this Act, not an agency that administers it, not a regulator. The page
+# argues a position rather than summarising one.
+#
+# MEASURED from the page's own text (Internet Archive capture 20260216233003):
+#     "It is touted by the left as a law that regulates financial markets and
+#      protects consumers. But within the 800-plus pages of Dodd-Frank is a
+#      regulatory approach that relies on the federal go[vernment]..."
+# and its three Key Takeaways are arguments, not provisions:
+#     "Financial markets were not deregulated prior to the 2008 financial crisis"
+#     "Dodd-Frank did not end the too-big-to-fail problem"
+#     "Consumer protection existed prior to Dodd-Frank"
+#
+# THE PAGE LINKS NO DOCUMENTS AT ALL. Ten anchors inside the article and not one
+# is a file: two share buttons, a print view, the section landing page, one
+# related Heritage report, and three unrelated commentary teasers — a
+# minimum-wage piece, "Trump Accounts", and "Why Are Americans Fleeing Blue
+# States for Red States?". No statute text, no Title list, nothing to build
+# folders from.
+#
+# THE RESIDUAL RISK OF THE FLAT SHAPE, STATED ONCE AND THEN ACCEPTED. An earlier
+# draft put the publisher in the tree as a folder — Act > Commentary > The
+# Heritage Foundation > ... — so that nobody could read the row without knowing
+# whose argument it was. The lead removed that level. The consequence is that
+# the leaf reads "The Dodd-Frank Act" (the page's own <h1>) sitting directly
+# under the Act's own name, and only the `category` column says "Commentary".
+#
+# WHAT ACTUALLY KEEPS IT HONEST IS THE SECOND SOURCE. With Public Law 111-203
+# stored beside it, a reader sees the real statute and the explainer side by
+# side and the titles separate them. DELETE THE SECOND SOURCE AND THIS PROTECTION
+# GOES WITH IT: the folder would then be named after an Act it does not contain,
+# holding one think tank's case against that Act. If that is wanted, say so on
+# the onboarding sheet rather than leaving it to be discovered.
+#
+# A REVIEWER WHO WANTS THE LEAF RENAMED does it at `status = ''` — "Heritage
+# Explains: The Dodd-Frank Act" would be unambiguous. It CANNOT be done from
+# this file: `page_title_selector` was checked and there is no element carrying
+# both halves. The eyebrow is <p class="explainer-banner__eyebrow">Heritage
+# Explains</p> and the name is <h1 class="explainer-banner__title">The Dodd-Frank
+# Act</h1>; their shared parent's innerText is "Heritage Explains The Dodd-Frank
+# Act Copied" — JS_DOC_TITLE reads the LIVE document, so the copy-link button's
+# label comes with it.
+#
+# ===========================================================================
+# THE HOST REFUSED A JS-LESS CLIENT — AND THAT IS NOT A BLOCK
+# ===========================================================================
+# MEASURED 2026-09-30, one plain GET to the seed, and only one:
+#
+#     HTTP 403   5,703 bytes   server: cloudflare   cf-ray: ...-SIN
+#     <title>Just a moment...</title>
+#     body: "Enable JavaScript and cookies to continue", with Cloudflare's
+#           window._cf_chl_opt challenge payload
+#
+# THIS IS THE ffiec.gov SIGNATURE, not the fema.gov one. A Cloudflare MANAGED
+# CHALLENGE is an interstitial a real browser solves; Akamai's flat 420-byte
+# "Access Denied" is a reputation decision a headless browser gets too.
+# config/sources/ffiec.yml records the same 403 being misread as a block and
+# then answered cleanly by a real crawl: 1 page, 8 documents, 0 blocked.
+#
+# DO NOT READ THE cf-ray SUFFIX AS A GEO-BLOCK. "SIN" is the Cloudflare edge
+# nearest this machine and appears on every response from here, refused or
+# served. ffiec.yml carried exactly that wrong inference ("KHI") and had to be
+# corrected.
+#
+# ONE GOOD THING ABOUT THIS SKIN. ffiec.yml documents two engine gaps that make
+# a WAF wall report as `zero` ("check shape and scope") instead of `blocked`;
+# the first is that blockcheck's BLOCK_RE does not match the "CAPTCHA Error"
+# skin. It DOES match this one — the pattern holds "just a moment" — so a
+# refused run here should be reported honestly. If it says `zero` instead, check
+# the HTTP status before believing it, and do NOT respond by retrying:
+# ONBOARDING §3 is explicit that a scheduled retry is not a way out of a block,
+# it is what makes one.
+#
+# ---------------------------------------------------------------------------
+# WHAT THE PAGE IS — CONFIRMED LIVE 2026-09-30
+# ---------------------------------------------------------------------------
+# This section was first written from Internet Archive capture 20260216233003,
+# because the live host refuses a JS-less client. IT HAS SINCE BEEN CONFIRMED BY
+# A REAL SUPERVISED RUN, the way ffiec.yml's archive-derived inventory was.
+#
+# THE CRAWL PASSED THE CLOUDFLARE CHALLENGE. Measured on the 17:09 export:
+#     status ok, 1 page, 0 blocked, 0 errors, 0 retries
+#     19,211 characters of html / 7,756 of visible text
+# and the stored capture carries "Key Takeaways", the too-big-to-fail claim and
+# the timeline, with NO "Just a moment", no "Enable JavaScript" and no
+# _cf_chl payload anywhere in it. `strategy: generic` + `scope: prefix` was the
+# difference, exactly as ffiec.yml predicted it would be.
+#
+# THE ARCHIVE'S NUMBERS HELD. 7,756 visible characters live against 7,627 on the
+# February capture — the same article, slightly grown. Both h1s, the eyebrow,
+# the Key Takeaways and the timeline are all where the archive said.
+#
+# THE PHOTOGRAPH IS GONE, confirmed in the stored row: 0 <img>, no <picture>, no
+# <source>, no .explainer-banner__image-wrapper.
+#
+#   <title>  The Dodd-Frank Act | The Heritage Foundation
+#   <h1>     The Dodd-Frank Act   (twice, neither in a banner or nav, so
+#                                  JS_DOC_TITLE takes it — no page_title_selector)
+#   sections Key Takeaways / a prose body / a "2007-2009 Financial Crisis"
+#            timeline built from <article class="timeline__card"> blocks
+#
+# NO BREADCRUMB ELEMENT AT ALL — checked every nav/ol/ul/div for a breadcrumb
+# class, id or aria-label. Two consequences, both handled below: `scope:
+# breadcrumb` is impossible, and `section_path` comes back empty, so
+# `_category_for` would fall through to the source_system unless `category` is
+# set — which it is.
+#
+# THE DEFAULT CONTENT CAPTURE IS ALREADY RIGHT, measured rather than assumed.
+# JS_MAIN_CONTENT's fallback list is resolved with querySelector, which returns
+# the FIRST MATCH IN DOCUMENT ORDER — the trap that stored a blank body on
+# fincen.gov and a YouTube player on obamawhitehouse.archives.gov. The order
+# here is kind:
+#     [0] div#main.layout-main            7,627 chars   <- picked
+#     [1] main#content.main-content       7,627         its only child
+#     [2] article.node--type-explainer    7,608         the article
+#     [3..] article.timeline__card        64-263 each   the timeline cards
+# so the pick is the article plus 19 characters of wrapper. NOTE the nine
+# timeline cards: `article` is in that fallback list, so if the outer wrappers
+# ever lose their id or class, querySelector would pick an 89-character card and
+# this source would store almost nothing. The fix then is
+# `"content_selector": "article.node--type-explainer"` on the host profile, NOT
+# a wider fallback list.
+#
+# THE BANNER PHOTOGRAPH IS DROPPED, on the lead's standing instruction — "we
+# need no picture in the html", the same call made for ffiec.gov and fincen.gov.
+# A "www.heritage.org" entry in generic_crawler/crawler.py::SITE_PROFILES sets
+#     drop_selectors: article.node--type-explainer .explainer-banner__image-wrapper,
+#                     article.node--type-explainer picture,
+#                     article.node--type-explainer img
+# VERIFIED against the capture: one element removed, the <picture> and all three
+# <source> elements go with the wrapper, no empty box is left, and 0 characters
+# of text are lost (7,627 before and after). The first selector does the work;
+# the other two are guards against an author adding a body image later.
+#
+# ---------------------------------------------------------------------------
+# WHAT READING THE WORKBOOK FOUND — ONE FINDING, AND IT IS A MONITORING BUG
+# ---------------------------------------------------------------------------
+# ONBOARDING Step 5: "check catches shape, not sense." `check` returned OK with
+# zero errors. Reading the row found this.
+#
+# THE CAPTURE ENDED IN A ROTATING PROMO BLOCK. The stored text closed on
+#     "COMMENTARY 3 min read Pulling the Plug on Bidenomics' War on Affordable
+#      Power ... The Great Migration Remaking Higher Ed ... BACKGROUNDER 27 min
+#      read State Anti-ESG Laws and Local Finance: Evidence from the Municipal
+#      Bond Market"
+# None of which is about Dodd-Frank. It is `div.issue-breaker`, Heritage's
+# related-content widget, and it sits INSIDE article.node--type-explainer — so
+# no choice of `content_selector` would have excluded it, and the header's note
+# about the article being the right container was correct but incomplete.
+#
+# IT IS NOT A TIDINESS PROBLEM. The page row's content_hash is taken over that
+# text, and the crawl is the signal this source will be monitored by. Heritage
+# rotates the widget, so every rotation would report the Dodd-Frank explainer as
+# `modified` — the false-change failure measured on fdic.gov's ETag and recorded
+# against CMA in config/change_signals.yml, arriving through the CONTENT instead
+# of through a header. Catching it before Step 8 is the entire point of reading
+# a workbook rather than trusting `check`.
+#
+# FIXED 2026-09-30 on the host profile, by adding
+#     article.node--type-explainer .issue-breaker
+# to `drop_selectors`. MEASURED: 282 of 7,618 characters, after which the
+# article ends on its own last sentence — "...To learn more read Heritage's
+# report 'The Case Against Dodd-Frank: How the "Consumer Protection" Law
+# Endangers Americans.'"
+#
+# RE-EXPORTED 2026-10-02 17:37, AND THE FIX HOLDS. Measured on the new workbook:
+# content_text falls 10,372 -> 9,518 characters, the stored content_hash is
+# content_key(content_text) exactly, and that text contains no "Bidenomics", no
+# "Great Migration" and no "Anti-ESG" — it ends on the article's own last
+# sentence. The hash moved 398224e48b4f -> 9da6399e84a6 and the anchor count fell
+# from ten to four. Step 8 was wired after this, not before, so no scheduled
+# crawl ever inherited the churn.
+#
+# ONE LEFTOVER, CHECKED RATHER THAN ASSUMED. `drop_selectors` removes the
+# widget's children, not its Drupal wrapper, so document_html still carries an
+# EMPTY div.view-issue-breaker with a js-view-dom-id-<64 hex> class. That would
+# be a churn source if the fingerprint covered markup. It does not —
+# crawler/fingerprint.py hashes visible text for exactly this reason, and
+# removing the wrapper by hand leaves the hashed text byte-identical at 7,347
+# characters. Left alone deliberately; do not add a selector for it.
+#
+# ---------------------------------------------------------------------------
+# NO page_pdf_link OPT-OUT IS NEEDED, for once. That key exists because the
+# wrapper hands the first of a page's `pdf_links` to the orchestrator as
+# `org_pdf_link`, which is promoted into `document_url` — the defect fema.gov,
+# ffiec.gov, fincen.gov and fdic.gov all had to opt out of. This page links no
+# files at all, so `pdf_links` is empty and there is nothing to claim.
+#
+# ---------------------------------------------------------------------------
+# config/countries.yml — DONE 2026-09-30
+# ---------------------------------------------------------------------------
+# Listed under "United States of America" as
+#     - "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+#
+# It was deliberately NOT added when this file was first written, because a
+# dfa.yml had been written and deleted once already that week and its
+# countries.yml entry outlived it as a dangling reference an audit had to catch.
+# The first export settled that, and `check` had warned on it exactly as this
+# section predicted: "its folders will stay at the tree root".
+#
+# THAT STRING AND `regulator:` BELOW MUST STAY BYTE-IDENTICAL, including the
+# absence of "(DFA)". country_for() matches EXACTLY and a near miss does NOT
+# error — it silently drops the regulator to the tree root, which is what
+# happened to QFCL on 2026-09-28.
+
+# ---------------------------------------------------------------------------
+# ONBOARDING Step 8 — DONE 2026-10-05. SIGNAL: crawl. SLOT: sun 00:00, DISABLED.
+# ---------------------------------------------------------------------------
+# `crawl` IS THE RESIDUAL HERE, NOT A PREFERENCE. Step 8 lists five signals and
+# four were ruled out by measurement, in four requests:
+#
+#   stored-inventory  version_token(page) -> ('', 'probe-failed') in 0.7s. The
+#                     same request by hand: HTTP 403, Server: cloudflare,
+#                     CF-Mitigated: challenge, <title>Just a moment...</title>,
+#                     NO ETag and NO Last-Modified. There is no token to read.
+#   sitemap           robots.txt answers 200 (2,027 bytes) and names NO
+#                     `Sitemap:` line. 34 Disallow rules, none matching our path.
+#   snapshot-articles one article page, not a listing holding many.
+#   sama-feed         Heritage publishes no "what changed" feed, and is not this
+#                     Act's publisher in any case.
+#
+# A CHALLENGE IS NOT A BLOCK, and that distinction is what makes this wirable.
+# robots.txt answering 200 from the same address says we are unverified, not
+# banned — so this is NOT a skip_hosts case like saudiexchange.sa or simah.com,
+# where there is nothing to solve. A browser clears it and the supervised run
+# did, with 0 retries. It must not BECOME a block by being retried badly:
+# ONBOARDING section 3, "a scheduled retry is not a way out of a block — it is
+# what makes one." If a scheduled run is refused it reports blocked. Leave it.
+#
+# TWO SAFETY PROPERTIES WERE CHECKED BEFORE SCHEDULING A CRAWL AGAINST A
+# CHALLENGED HOST, because a refusal can fail in two opposite directions:
+#
+#   1. THE RUN RETURNS NOTHING. One stored row, zero observed — a 100% drop.
+#      withdrawal.count_drop(0, 1) returns None: the allowance is
+#      max(1, 5% of 1) = 1 and the loss is exactly 1, SO THE COUNT GATE IS INERT
+#      on a one-row source. What refuses is withdrawal.gate's empty-run rule
+#      ("the sweep observed nothing"). Both were called. Written down because the
+#      count gate is the one a reader assumes is doing the work.
+#   2. THE RUN STORES THE CHALLENGE AS THE DOCUMENT, which is worse — the row
+#      survives and its hash becomes the hash of an interstitial. MEASURED:
+#      blockcheck.text_is_blocked("Just a moment...") -> "Just a moment", and the
+#      real title "The Dodd-Frank Act" -> "" (no false positive).
+#
+# CONFIRM IS FALSE. `confirm` re-hashes visible text when a version TOKEN cannot
+# be trusted; there is no token here, and `crawl` already hashes the text as its
+# primary act.
+#
+# THE SLOT IS SUNDAY 00:00 — Saturday's US chain continuing past midnight
+# (21:00 fdic, 22:00 fincen, 23:00 ffiec, 00:00 dfa), keeping the two
+# browser-driven challenged jobs last. It was first written as sun 22:00, which
+# is already held by monitor_nca — and that job ships ENABLED, so this one would
+# have lost `_run_exclusive`'s single global lock and been skipped every week,
+# silently. Sunday 00:00 has four clear hours before monitor_mc at 04:00.
+#
+# ENABLED: FALSE, and it stays that way until a person has read the workbook.
+# A detected change goes through `_crawl_into_db`, which writes STRAIGHT TO
+# MSSQL, so enabling it first would make the first scheduled run the ingest.
+#
+# WHAT NOTHING WATCHES: Public Law 111-203. The statute was briefly carried here
+# as a declared govinfo source and has been removed, so this job watches a
+# commentary page about the Act and no part of this library watches the Act. If
+# that is wanted it is a declared source again, and GPO serves it a real
+# `last-modified`.
+
+regulator: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+owner: Abeer
+
+sources:
+  - name: "Heritage Explains"
+    mode: generic
+    seed_url: "https://www.heritage.org/markets-and-finance/heritage-explains/the-dodd-frank-act"
+    source_system: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    strategy: generic
+    scope: prefix
+    max_pages: 3
+    max_depth: 2
+    include_pages: always
+    doc_path_title: true
+    doc_path_sections: false
+
+  

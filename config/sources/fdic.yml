@@ -1,0 +1,282 @@
+# FDIC — Federal Deposit Insurance Corporation (United States)
+#
+# Four sections, each holding its content directly:
+#     FDIC > Fair Lending                  IV-1 of the Consumer Compliance Examination Manual
+#     FDIC > Laws and Regulations          /laws-and-regulations
+#     FDIC > Supervision and Examinations  /bank-examinations
+#     FDIC > Financial Institution Letters /news/financial-institution-letters
+#
+# THE HOST. Plain GET, HTTP 200, no challenge and no JS (measured 2026-09-30).
+# The host profile in generic_crawler/crawler.py sets ONE key, `page_pdf_link:
+# False` — without it a page row claims its first linked PDF as its own
+# document_url, and the Fair Lending page would have been stored as the final
+# rule. No content_selector: the default already picks main#main-content
+# (121,048 chars) over article.node--wholepage (121,018).
+#
+# THE ETag LIES, SITE-WIDE — which is why `signal: crawl`. Every page returns an
+# epoch-plus-"-gzip" ETag that is the TIME OF THE REQUEST (1790753931-gzip at
+# 07:38:51 UTC, 1790760482-gzip at 09:28:02 UTC) while the page's own "Last
+# Updated" stayed at August 2025. Confirmed on all four seeds. The PDFs do return
+# a stable last-modified+length. A probe-based signal would report this regulator
+# modified on every sweep — the CMA false-change pattern. `confirm: false`
+# because `crawl` already hashes the visible text as its primary act.
+#
+# THE WORKBOOK NEEDS ITS SIDECAR. Cells overflow Excel's 32,767 limit, so
+# output/workbooks/fdic.xlsx does not travel without fdic.fulltext.json;
+# `check` calls a missing sidecar an ERROR, and promoting without it makes the
+# truncation permanent.
+#
+# STATE 2026-10-05. Fair Lending is exported (3 rows) but STALE — flattening
+# changed its doc_path, which is part of changesignal.DEFAULT_IDENTITY, so the
+# next export replaces those rows. The three new sections have NEVER been
+# exported; their numbers below are static GETs, not crawls. `monitor_fdic` runs
+# all four (no `only_sources`), so its scheduler slot — still `enabled: false` —
+# would now crawl ~90 pages, not 1. Do not flip it on the strength of the Fair
+# Lending measurement. Step 6 promote: not done.
+#
+# FOR A REVIEWER at `status = ''`: the stored title is "FIL-5-2015 (PDF)". The
+# FDIC's theme appends the suffix client-side, so file_type says PDF twice. Left
+# alone — the FIL number still identifies the document.
+
+regulator: "Federal Deposit Insurance Corporation (FDIC)"
+owner: Abeer
+
+sources:
+
+  # The examination manual section. ONE page: `scope: prefix` resolves to its own
+  # path, so max_depth: 2 has nothing to walk into.
+  #
+  # `category` IS A COLUMN, NOT A FOLDER. It carried `doc_path_category: true`
+  # until 2026-10-05, putting rows at Fair Lending > Laws and Regulations >
+  # <title>. Removed so the four sections are siblings and "Laws and Regulations"
+  # names one thing. The comment that justified it predicted the next FDIC source
+  # would be another category here; it wasn't — the next three were whole
+  # sections of fdic.gov. Add the level when the second thing under it exists.
+  # - name: "Fair Lending Laws and Regulations"
+  #   mode: generic
+  #   seed_url: "https://www.fdic.gov/consumer-compliance-examination-manual/iv-1-fair-lending-laws-and-regulations"
+  #   source_system: "Fair Lending"
+  #   strategy: generic
+  #   scope: prefix
+  #   max_pages: 5
+  #   max_depth: 2
+  #   include_pages: always
+  #   category: "Laws and Regulations"
+  #   doc_path_title: true
+  #   doc_path_sections: false
+  #   # Excluded because the crawl cannot name it: the FDIC splits the rule's name
+  #   # across the markup, so every title route yields "FDIC Final Rule" or worse.
+  #   # Declared below instead, at the FDIC's own url.
+  #   exclude_documents:
+  #     - "2021-01-19-notice-sum-b-fr"
+
+  # The row the crawl could not name. The title is the publisher's own words from
+  # the page, not invented. Declared also fingerprints better: `stamp_declared`
+  # asks the server and gets a real `last-modified` here, where a crawled file
+  # link would be hashed `document_url | title` — the weakest preference, which
+  # cannot move when a PDF is replaced behind an unchanged link.
+  #
+  # TWO-PART SPEC. A 3-part spec reads as `<section> :: <title> :: <url>` and
+  # would hold this one row at the old depth after the crawled rows were
+  # flattened — DeclaredDocumentsSource builds its trail from the spec's section
+  # and never consults `category`.
+  # - name: "Role of Supervisory Guidance"
+  #   mode: declared
+  #   regulator: "Federal Deposit Insurance Corporation (FDIC)"
+  #   source_system: "Fair Lending"
+  #   category: "Laws and Regulations"
+  #   documents:
+  #     - "FDIC Final Rule: Role of Supervisory Guidance :: https://www.fdic.gov/sites/default/files/2024-03/2021-01-19-notice-sum-b-fr.pdf"
+
+  # ---------------------------------------------------------------------------
+  # Added 2026-10-05. All three are HUB pages — their own visible text is 706,
+  # 1,572 and 4,362 characters of navigation, so the content is one level down.
+  #
+  # `max_depth: 1` MEANS SEED + CHILDREN, and the off-by-one is real: the seed
+  # enters at depth 0 and crawler.py:4302 queues a link `elif depth < max_depth`.
+  # 2 would reach the grandchildren, and every child here is itself a listing.
+  # `scope: prefix` resolves to each seed's own path, so the sections cannot walk
+  # into each other.
+  # ---------------------------------------------------------------------------
+
+  # 21 links below this path (measured 2026-10-05); 30 leaves headroom.
+  #
+  # THE 2026-10-05 EXPORT STORED ONLY 6 HTML PAGES out of those 21, and the cap
+  # is NOT the explanation -- 6 is well under 30, so nothing was truncated. Why
+  # the other 15 were not walked is unanswered: the monitoring path crawls into a
+  # temp dir it discards, so there is no run record to read. The next export
+  # settles it. Do not raise max_pages to "fix" this; a cap that was never
+  # reached is not the constraint.
+  #
+  # HEADINGS ARE FOLDERS HERE. The page carries exactly three <h2>s --
+  # "Policy", "Delegations of Authority", "Appointment of Administrative Law
+  # Judges" -- and the library was asked to file documents under them. Two keys
+  # do it: `group_headings: True` on the "www.fdic.gov" host profile passes a
+  # link's nearest heading into doc_section_path, and `doc_path_sections: true`
+  # below turns the resulting crumbs into folders.
+  #
+  # IT APPLIES TO DOCUMENTS, NOT TO CRAWLED PAGES, and the difference is in the
+  # engine rather than in this file: crawler.py:4052 builds a DOCUMENT's
+  # section_path from breadcrumb + heading, while crawler.py:4150 sets a PAGE
+  # record's section_path to its own breadcrumb and passes no heading at all. So
+  # a PDF linked under "Policy" is filed under Policy; a child page linked under
+  # "Policy" is filed under its own breadcrumb instead. Changing that means
+  # changing how page records are built, which is shared by every regulator.
+  #
+  # `drop_sections` REMOVES "Resources". fdic.gov's breadcrumb is
+  # "Home > Resources > Laws and Regulations": _clean_trail already drops "Home"
+  # (it is in _NON_SUBJECT_CRUMBS) and already drops the repeat of the
+  # source_system, which leaves a bare "Resources" level that names nothing.
+  # Listed by the name the site uses; `_crumb_key` does the matching, so case and
+  # "&"/"and" differences do not matter.
+  #
+  # max_depth STAYS AT 1 rather than dropping to 0. At 0 only the seed is
+  # crawled, and the seed is a 4,685-character link list -- the section would
+  # hold one page of navigation plus the single PDF the seed links. The child
+  # pages are where the text actually is (Chronology of Selected Banking Laws is
+  # 28,126 characters), and a page's text hash is the strongest change signal
+  # this library has. The cost is that each child's own PDFs come too, which is
+  # what makes this section 104 rows rather than 14.
+  # ON THE CUSTOM CRAWLER, 2026-10-06. crawler/fdic_crawler.py runs the SAME
+  # generic engine and then re-files its output under the <h2> headings this
+  # page draws -- Policy, Delegations of Authority, Appointment of
+  # Administrative Law Judges. Three things made that impossible to express as
+  # profile keys, all measured rather than argued:
+  #
+  #   * a document carries the breadcrumb of the page it was FOUND on, so a
+  #     heading two pages up never reaches it;
+  #   * heading links leave the scope (3 of Policy's 10 do);
+  #   * some links redirect, and the heading was keyed on the pre-redirect url.
+  #
+  # `mode: custom` passes NOTHING but init_kwargs -- build_source() calls
+  # cls(**init_kwargs) and does not merge the regulator in the way it does for
+  # a generic source -- so every key the crawler needs is named here, including
+  # `regulator`.
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.fdic_crawler.FDICSectionCrawler"
+    init_kwargs:
+      seed_url: "https://www.fdic.gov/laws-and-regulations"
+      regulator: "Federal Deposit Insurance Corporation (FDIC)"
+      source_system: "Laws and Regulations"
+      category: "Laws and Regulations"
+      strategy: generic
+      scope: prefix
+      max_depth: 1
+      max_pages: 30
+      include_pages: always
+      doc_path_title: true
+  # REQUIRED FOR THE HEADING FOLDERS. The crawler rewrites section_path to the
+  # heading; this is what lets that trail become folders at all. With it false
+  # the heading is computed and then discarded, which looks exactly like the
+  # feature not working.
+      doc_path_sections: true
+  # `Resources` is kept from the generic config: on a row the crawler could not
+  # place it has no heading to use, and the site trail is what remains.
+      drop_sections: ["Resources"]
+
+  # 37 links below this path. THE FOLDER NAME IS NOT THE PAGE'S: its <h1> reads
+  # "Bank Examinations". source_system is an IDENTITY key — half of what
+  # config/change_signals.yml matches on — so renaming it to match the site means
+  # moving that entry in the same commit.
+  # ON THE CUSTOM CRAWLER TOO, and this is the section that needs it most.
+  # MEASURED on the 00:40 export: 161 of 165 rows were found on CHILD pages,
+  # and 14 of the seed's 22 heading links resolve outside the scope -- all
+  # THREE "Information Technology" links do, two of them to other hosts. A
+  # profile key would have built that folder empty; the crawler fetches or
+  # declares what the crawl could not reach, so the folder holds the three
+  # things the page says it holds.
+  #
+  # `heading_links: host` fetches the fdic.gov ones and records the off-host
+  # ones (ithandbook.ffiec.gov, federalreserve.gov) as rows with a title, a url
+  # and a heading but no captured html. Reaching into another regulator's site
+  # for content is a decision about what this library CONTAINS, not about how
+  # it crawls, so it is opt-in: set `all` to capture those too.
+  #
+  # `unmatched: drop` is the other half, and it DEFINES THE SECTION: what the
+  # landing page lists under its headings -- html, pdf or doc -- is the library,
+  # and one level under each heading is the end of the tree.
+  #
+  # scope: prefix reaches ~26 child pages, most of which /bank-examinations
+  # never mentions (Applications Procedures Manual and its 39 files, Mutual to
+  # Stock Conversions, Decisions on Bank Applications). Those were 122 of 184
+  # rows. They are not a tidy-up problem, they are a different library, so they
+  # are discarded rather than parked under a folder nobody asked for.
+  # Set `flat` to keep them under the source system, or `keep` to leave them on
+  # the site's own trail.
+  - name: "Supervision and Examinations"
+    mode: custom
+    crawler_class: "crawler.fdic_crawler.FDICSectionCrawler"
+    init_kwargs:
+      seed_url: "https://www.fdic.gov/bank-examinations"
+      regulator: "Federal Deposit Insurance Corporation (FDIC)"
+      source_system: "Supervision and Examinations"
+      category: "Supervision and Examinations"
+      strategy: generic
+      scope: prefix
+      max_depth: 1
+      max_pages: 50
+      include_pages: always
+      doc_path_title: true
+      doc_path_sections: true
+      heading_links: host
+      unmatched: drop
+
+  # READ THIS BEFORE PROMOTING. `max_pages` here DEFINES what the library holds,
+  # it does not merely cap it: the listing is paginated 39 pages deep (~975
+  # letters back to 2019) and crawler.py:4295 queues a `nav` link WITHOUT
+  # consuming the depth budget — "Only max_pages bounds it". 30 takes the seed
+  # plus the 25 letters linked from it and stops before ?pg=2, because the
+  # content queue drains before the pagination queue (crawler.py:3812).
+  #
+  # SO THIS IS A ROLLING WINDOW OF THE 25 MOST RECENT LETTERS. As the FDIC
+  # publishes, the displaced ones go absent for two runs and `disappeared`
+  # PROPOSES THEM FOR WITHDRAWAL though nothing was withdrawn. The completeness
+  # gate cannot catch it — the count stays at 26, only the membership changes.
+  # Nothing is withdrawn by a proposal, so this is noise, not loss; but it is the
+  # same cry-wolf failure this file rejects for the ETag.
+  #
+  # The two settings without that problem: `max_pages: ~1050` holds the whole
+  # archive (~1,000 rows and ~1,000 page loads a week, set stops rolling), or
+  # `max_depth: 0, max_pages: 1` holds only the listing page, whose hash still
+  # moves when a letter is published. The first is right if these letters belong
+  # IN the library; the second if they are only to be WATCHED.
+  # - name: "Financial Institution Letters"
+  #   mode: generic
+  #   seed_url: "https://www.fdic.gov/news/financial-institution-letters"
+  #   source_system: "Financial Institution Letters"
+  #   strategy: generic
+  #   scope: prefix
+  #   max_depth: 1
+  #   max_pages: 30
+  #   include_pages: always
+  #   category: "Financial Institution Letters"
+  #   doc_path_title: true
+  # YEAR FOLDERS, and BOTH LINES BELOW ARE REQUIRED. The crawler's
+  # `year_sections` key (www.fdic.gov profile) reduces the site's trail --
+  # Home > News > Financial Institution Letters > 2026 > <letter> > Attachment(s)
+  # -- to just the 2026. THIS key decides whether that trail becomes folders at
+  # all. With year_sections on and this false, the year is computed and then
+  # discarded, which looks exactly like the feature not working.
+  #
+  #     Federal Deposit Insurance Corporation (FDIC)
+  #       > Financial Institution Letters
+  #           > 2025   (13 documents in the 20:25 export)
+  #           > 2026   (51)
+  #
+  # The year is detected BY SHAPE, never listed, so 2027 opens its own folder
+  # with no edit here or in the crawler.
+  #   doc_path_sections: true
+  # `News` is the only crumb that survives on rows that have NO year -- the
+  # listing page and the ?pg= pagers, whose trail is Home > News > Financial
+  # Institution Letters and which year_sections deliberately leaves untouched.
+  # `Home` is dropped for free (_NON_SUBJECT_CRUMBS) and the repeat of the
+  # source system folds out in _clean_trail, so naming News here is all that is
+  # needed to keep the listing row at FDIC > Financial Institution Letters
+  # rather than FDIC > Financial Institution Letters > News.
+  #
+  # IT ALSO TURNS ON STORAGE OF THE RAW TRAIL: the wrapper writes
+  # extra_meta.section_path only where a source declares drop_sections, so this
+  # line is what makes the year auditable in the workbook instead of visible
+  # only in the folder tree.
+  #   drop_sections: ["News"]

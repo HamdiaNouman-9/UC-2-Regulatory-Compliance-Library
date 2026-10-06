@@ -1678,5 +1678,159 @@ sources:
     signal: crawl
     confirm: false
 
+  # FDIC (United States), Fair Lending. `crawl`, and this is the strongest case
+  # of the four US sources rather than the weakest — because here the probe was
+  # not merely unhelpful, it was MEASURED TO LIE.
+  #
+  # THE HOST INVITES THE CHEAP ANSWER. www.fdic.gov returns 200 to a plain GET
+  # with no challenge, no JS and no cookie, so a `stored-inventory` sweep is
+  # genuinely available in a way it is not on ffiec.gov (Cloudflare) or fema.gov
+  # (Akamai). That is exactly why it was measured before being ruled out.
+  #
+  # MEASURED 2026-09-30 through dynamic_crawler/fingerprint.py::version_token —
+  # the function the sweep calls — over every stored url:
+  #
+  #   FIL-5-2015              fil15005.pdf        last-modified+length  STABLE
+  #     'Wed, 06 Mar 2024 18:31:01 GMT|50364'
+  #   FDIC Final Rule         ...sum-b-fr.pdf     last-modified+length  STABLE
+  #     'Thu, 14 Mar 2024 13:54:20 GMT|280973'
+  #   IV-1 Fair Lending...    the page            etag-opaque           MOVES
+  #
+  # THE PAGE'S ETag IS THE CURRENT TIME. It is an epoch with "-gzip" appended,
+  # and it decodes to the moment of the request that asked for it:
+  #
+  #     1790753931-gzip  =  2026-09-30 07:38:51 UTC   <- the 1st request
+  #     1790760482-gzip  =  2026-09-30 09:28:02 UTC   <- the 2nd, 17 seconds
+  #                                                      before the wall clock
+  #                                                      read 09:28:19
+  #
+  # Nothing on the page changed between those two readings: it still states
+  # "Last Updated: August 29, 2025", thirteen months earlier. `Last-Modified`
+  # carries the same value, so there is no second header to fall back to.
+  #
+  # SO A PROBE-BASED SIGNAL HERE WOULD REPORT `modified` ON EVERY SWEEP. That is
+  # the CMA case this file already records — "Last-Modified is the current time,
+  # 1,134 false changes" — reproduced on a different host and caught before it
+  # was wired instead of after.
+  #
+  # AND IT IS WORSE THAN FINCEN'S PROBLEM, NOT THE SAME ONE. FINCEN's page
+  # returns NO token, so a sweep there would be blind to the one row that can
+  # detect an edit. FDIC's page returns a token that always moves, so a sweep
+  # here would be LOUD about a row that never changed. A signal that cries wolf
+  # costs more than a silent one, because the reviewer stops opening the diffs
+  # and then misses the real edit when it comes.
+  #
+  # THE COST COMPARISON IS THE USUAL ONE AND IT POINTS THE SAME WAY: 3 requests
+  # per sweep against ONE page load for the crawl. `scope: prefix` on this seed
+  # resolves to the page's own path, so nothing is below it to walk, and the
+  # 2026-09-30 run reported n_pages: 1, blocked_pages: 0, errors: 0.
+  #
+  # WHAT THE CRAWL DETECTS THAT NOTHING ELSE CAN. The page row's content_hash is
+  # taken over 120,579 characters of VISIBLE TEXT — ONBOARDING Step 2's first
+  # preference, and the largest single stored document in this library. An edit
+  # to the examination procedures, a statute added to the discrimination list, a
+  # citation re-pointed, the "Last Updated" line moving — every one of those
+  # moves that hash, and none of them touches an HTTP header.
+  #
+  # CONFIRM IS FALSE, and note this is NOT because there is no token to distrust.
+  # There is one, and it lies. `confirm` re-hashes the visible text when a
+  # version token cannot be trusted — but it is a modifier on a TOKEN-BASED
+  # signal, and `crawl` already hashes the text as its primary act. Setting it
+  # would re-fetch to learn what the run just computed.
+  #
+  # WHAT THIS CANNOT SEE, stated plainly:
+  #   * THE REST OF THE MANUAL. This source is section IV-1 and `scope: prefix`
+  #     holds it there. The Consumer Compliance Examination Manual has dozens of
+  #     other sections; each is its own source with its own source_system when
+  #     the library wants it, and none of them is watched by this entry.
+  #   * fil15005.pdf REPLACED BEHIND ITS LINK. It is a crawled row hashed
+  #     `document_url | title`, the weakest preference. The declared row beside
+  #     it is not: `stamp_declared` re-asks the server every run and got a real
+  #     `last-modified`, so the final rule IS covered.
+  - regulator: "Federal Deposit Insurance Corporation (FDIC)"
+    source_system: "Fair Lending"
+    signal: crawl
+    confirm: false
+
+  # DODD-FRANK, added 2026-10-05. `crawl` here is the RESIDUAL, not a preference:
+  # the other four signals were ruled out by measurement rather than by
+  # inspection, which on this host took four requests.
+  #
+  # stored-inventory IS NOT EXPENSIVE HERE, IT IS IMPOSSIBLE. Measured through
+  # dynamic_crawler/fingerprint.py::version_token, the function the sweep calls,
+  # against the one stored url:
+  #
+  #     token='', basis='probe-failed', 0.7s
+  #
+  # and the same request repeated by hand, with the same User-Agent and the same
+  # `Range: bytes=0-1` header, to find out WHY — because `probe-failed` covers
+  # both a transport error and any 4xx, and those argue differently:
+  #
+  #     HTTP 403, 5,873 bytes
+  #     Server: cloudflare
+  #     CF-Mitigated: challenge
+  #     <title>Just a moment...</title>, "Enable JavaScript", _cf_chl present
+  #     NO ETag. NO Last-Modified.
+  #
+  # THAT IS A CHALLENGE, NOT A BLOCK, and the difference decides whether this
+  # entry may exist at all. It is not an Error 1020 and not "Access denied";
+  # robots.txt from the same address answers HTTP 200 (2,027 bytes), and none of
+  # its 34 Disallow rules matches our path. We are unverified, not banned. So
+  # this is NOT a skip_hosts case — contrast saudiexchange.sa and simah.com
+  # above, where there is nothing to solve. A browser solves this one, and the
+  # supervised run proved it: status ok, 1 page, 0 blocked, 0 errors, 0 retries.
+  #
+  # sitemap: ruled out by the same robots.txt read. It names NO `Sitemap:` line,
+  # so there is no lastmod feed to watch.
+  #
+  # snapshot-articles: the source is one article, not a page holding many.
+  #
+  # sama-feed: Heritage publishes no "what changed" feed for this Act, and is
+  # not the Act's publisher in the first place — which is the larger caveat on
+  # this whole entry and is recorded in config/sources/dfa.yml.
+  #
+  # THREE US HOSTS HAVE NOW DEFEATED A PROBE IN THREE DIFFERENT WAYS. Keeping
+  # them apart is the point, because they do not justify equal caution:
+  #     FINCEN  answers, returns no token          -> a sweep would be SILENT
+  #     FDIC    answers, ETag is the request time  -> a sweep would be LOUD
+  #     DFA     does not answer a probe at all     -> a sweep would be BLIND
+  # The first two are judgements about a working probe. The third is not a
+  # judgement: there is no probe.
+  #
+  # WHAT THE CRAWL SEES INSTEAD. The page row's content_hash is
+  # content_key(extra_meta.content_text) over 9,518 characters of visible text —
+  # ONBOARDING Step 2's first preference. Heritage revising the explainer, or
+  # withdrawing it, moves that hash. Nothing in an HTTP header would.
+  #
+  # CONFIRM IS FALSE. `confirm` re-hashes visible text when a version TOKEN
+  # cannot be trusted. Here there is no token to distrust, and `crawl` already
+  # hashes the text as its primary act — so setting it would re-fetch to learn
+  # what the run just computed. Same conclusion as the FDIC entry above, reached
+  # from the opposite direction.
+  #
+  # THE ONE-ROW HAZARD, CHECKED RATHER THAN ASSUMED. A refused run returns zero
+  # rows against one stored, a 100% drop. `withdrawal.count_drop(0, 1)` returns
+  # None — the allowance is max(1, 5% of 1) = 1 and the loss is exactly 1, so the
+  # COUNT GATE IS INERT on a source this small. What stops it is
+  # `withdrawal.gate`'s empty-run rule: may_propose=False, "the sweep observed
+  # nothing". Both were called to confirm. Recorded because the count gate is the
+  # one a reader assumes is doing the work.
+  #
+  # AND THE CHALLENGE CANNOT BE STORED AS THE DOCUMENT, which is the worse
+  # failure: generic_crawler/blockcheck.py::text_is_blocked returns "Just a
+  # moment" for this host's 403 title and "" for the real one, "The Dodd-Frank
+  # Act". So a refused scheduled run reports blocked; it does not quietly write a
+  # version row of a Cloudflare interstitial.
+  #
+  # WHAT THIS CANNOT SEE: the Act itself. This source is one commentary page. The
+  # statute was briefly carried as a declared govinfo row and has been removed
+  # from config/sources/dfa.yml, so nothing in this library watches Public Law
+  # 111-203 — if that is wanted, it is a declared source again, and it gets a
+  # real `last-modified` from GPO.
+  - regulator: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    source_system: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.
