@@ -1313,11 +1313,36 @@ SITE_PROFILES = {
         # January for as long as the library runs.
         #
         # MEASURED INERT ON THE OTHER THREE SECTIONS, which is what makes a
-        # host-level key safe: Laws and Regulations (104 rows) and Supervision
-        # and Examinations (165 rows) have ZERO year crumbs between them, and a
-        # trail with no year is returned untouched. In particular the `Policy`
-        # folder built by page_group_headings above is not disturbed.
-        "year_sections": True,
+        # host-level key safe: a trail with no year is returned untouched, and
+        # the `Policy` folder built by page_group_headings above is undisturbed.
+        #
+        # "ZERO year crumbs" IS WHAT THIS NOTE USED TO SAY, AND IT WAS MEASURED
+        # ON THE 10-05 EXPORTS. Re-measured 2026-10-07 on the 20:14 one: 1 of
+        # the 129 Supervision/Laws trails carries a year -- a 2020 letter linked
+        # from the Supervision landing page under Safety & Soundness. It is
+        # still unaffected, but for a different reason than "there are none":
+        # it is a page INJECTED by _add_missing_links, whose trail comes from
+        # _breadcrumb_from() and never passes through _sec at all.
+        #
+        # TURNED OFF 2026-10-07, AND NOT BECAUSE IT FAILED -- it worked: the
+        # 14:03 export filed 97 of 102 rows under 2025 and 2026 with no
+        # non-year folder anywhere. It is off because filing by year COSTS THE
+        # SITE'S OWN TRAIL. `_sec()` reduces one section_path value, and that
+        # value is what BOTH the folder path and extra_meta.section_path are
+        # built from, so the stored trail came out as "2026" where the site
+        # draws "Home > News > Financial Institution Letters > 2026 > <letter>
+        # > Attachment(s)". The rule for this library is that the site's trail
+        # is recorded as the site draws it, whatever the folders do.
+        #
+        # THE YEAR FOLDERS WERE SEPARATING ALMOST NOTHING. Measured on those
+        # 102 rows: flattening merges exactly two pairs, and each pair is ONE
+        # file (ffiec.gov/cra/pdf/2010-4903.pdf and a deposit-insurance
+        # handbook) cross-referenced by letters in both years -- a merge that
+        # is more correct, not less. No other title collides across years.
+        #
+        # The machinery stays and is still covered by its test; only the opt-in
+        # is withdrawn, so turning it back on is one word.
+        "year_sections": False,
 
         # FURNITURE THAT IS NOT THE DOCUMENT. Each one measured in the stored
         # rows of the 2026-10-05 export rather than guessed from the live page.

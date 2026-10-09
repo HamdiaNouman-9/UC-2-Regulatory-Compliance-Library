@@ -59,24 +59,31 @@ WHAT IT DELIBERATELY DOES NOT DO:
     no amount of post-processing can recover it.
   * It does not invent a folder for a row it cannot place. An unmatched row goes
     flat under the source system -- see `unmatched`.
-  * It does not file by year. That is Financial Institution Letters' shape, that
-    section stays on the generic engine, and neither of these two has a single
-    year crumb in 269 measured rows.
+  * It does not file by year. Neither does Financial Institution Letters, which
+    is the other class in this file -- years were withdrawn there on 2026-10-07
+    because reducing the trail to the year cost the site's own breadcrumb.
+    Neither of these two has a single year crumb in 269 measured rows.
 """
 from __future__ import annotations
 
+import collections
+import difflib
 import logging
 import re
 import time
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from crawler.fingerprint import stamp_content_hashes
 from crawler.generic_crawler_wrapper import GenericSiteCrawler
 from dynamic_crawler.formfill.runner import _ext_type, _is_doc
-from generic_crawler.crawler import content_key
+from generic_crawler.crawler import (absolutize_html, best_doc_title,
+                                     content_key, disambiguate_titles,
+                                     doc_type_of, is_document_link,
+                                     normalize_url, profile_for)
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +148,17 @@ _BACKTOTOP_TEXT = re.compile(r"^\s*back\s+to\s+(the\s+)?top\s*$", re.I)
 #: The "(PDF Help)" link that follows a "Printable (PDF)" link. Only the ANCHOR
 #: is removed, not its paragraph: the paragraph also holds the Printable (PDF)
 #: link, which names a real document. The empty "()" left behind is tidied by
-#: _tidy_empties. Both spellings seen on fdic.gov: a relative /acrobat/ and an
-#: absolute https://www.fdic.gov/acrobat.html.
-_ACROBAT_HREF = re.compile(r"acrobat", re.I)
+#: _tidy_empties.
+#:
+#: THREE SPELLINGS, and the third was found by auditing a finished export rather
+#: than by reading the template:
+#:     /acrobat/                              relative
+#:     https://www.fdic.gov/acrobat.html      absolute
+#:     /help/pdf-help                         the CURRENT one, and it matches
+#:                                            neither of the other two
+#: Measured 2026-10-06 on the stored html of Consumer Compliance Supervisory
+#: Highlights, where a pattern of just "acrobat" left the link standing.
+_ACROBAT_HREF = re.compile(r"acrobat|pdf-help", re.I)
 
 _WS = re.compile(r"\s+")
 
@@ -616,13 +631,76 @@ class FDICSectionCrawler(GenericSiteCrawler):
     # ------------------------------------------------------------------ #
     #  3. the heading links the crawl never reached                       #
     # ------------------------------------------------------------------ #
-    def _add_missing_links(self, result: dict) -> None:
-        """Make a row for every heading link the crawl did not already produce.
+    def _harvest_documents(self, page_url: str, frag: str, heading: str,
+                           section_path: str, have: set) -> List[dict]:
+        """Every file a FETCHED heading page links, as document rows.
 
-        This is why "Information Technology" is a folder with three things in it
-        rather than an empty folder: all three of its links resolve outside
-        scope: prefix, two of them to other hosts, so the crawl cannot reach any
-        of them and no amount of configuration inside the crawl would.
+        WHY THIS EXISTS. `_add_missing_links` used to append the page row with
+        `n_pdfs: 0` and nothing else, so a heading link the crawl could not
+        reach contributed exactly one row and every file on it was lost. That is
+        not a judgement about depth -- a page the crawl DOES reach has its files
+        collected by the engine, which is where Policy's 58 PDFs come from -- it
+        was simply a hole. MEASURED on the 2026-10-06 20:14 export: 8 injected
+        pages, 190 file links, 0 rows, including all 41 files of the Risk
+        Management Manual of Examination Policies.
+
+        The engine's own helpers do the work -- `is_document_link`,
+        `normalize_url`, `doc_type_of`, `best_doc_title` -- so an injected page
+        yields the same rows the engine would have produced had it reached the
+        page, rather than a second, slightly different idea of what a document
+        is. Off-host files are kept for the same reason: the engine keeps them
+        (31 govinfo.gov and 17 gpo.gov rows in that export came off crawled
+        pages), and an unreachable page must not end up richer or poorer than a
+        reachable one.
+
+        Harvested from the CLEANED fragment, not the raw page, so the furniture
+        already removed -- the share row, the "PDF Help" link, the contact
+        block -- cannot come back in as documents.
+        """
+        host = urlparse(self.seed_url).netloc.lower()
+        out: List[dict] = []
+        for a in BeautifulSoup(frag, "html.parser").find_all("a", href=True):
+            href = urljoin(page_url, (a.get("href") or "").strip())
+            if urlparse(href).scheme not in ("http", "https"):
+                continue
+            if not is_document_link(href, host):
+                continue
+            dn = normalize_url(href)
+            if dn.rstrip("/") in have:
+                continue
+            row = a.find_parent(["li", "tr", "p"])
+            link = {"text": a.get_text(" ", strip=True),
+                    "title_attr": a.get("title") or "",
+                    "ctx": row.get_text(" ", strip=True) if row else ""}
+            out.append({
+                "title": best_doc_title(link, dn),
+                "doc_url": dn,
+                "type": doc_type_of(href, host),
+                "found_on": page_url,
+                # The SITE's trail of the page the file was found on -- the same
+                # rule every other row follows. The heading travels in
+                # HEADING_KEY, never in here.
+                "section_path": section_path,
+                HEADING_KEY: heading,
+            })
+            have.add(dn.rstrip("/"))
+        return out
+
+    def _rows_from_headings(self, result: dict) -> None:
+        """One row per link the landing page lists under a subheading. No more.
+
+        RENAMED FROM `_add_missing_links` 2026-10-08, because it is no longer a
+        patch over a crawl -- it IS the section. It used to run after the engine
+        and add only the heading links the crawl had failed to reach (all three
+        under "Information Technology", which resolve outside scope: prefix and
+        two of them to other hosts). Now nothing crawls, so every heading link
+        arrives here and `have` starts empty.
+
+        WHAT IT DELIBERATELY DOES NOT DO: open a link to see what IT links.
+        "Risk Management Manual of Examination Policies" is one heading link and
+        therefore ONE row, not 1 + the 41 PDFs on it. That is the requirement --
+        subheadings are the subfolders and the level below them is the last one.
+        It is also why `_harvest_documents` is not called from here any more.
         """
         if self.heading_links == "none":
             return
@@ -654,18 +732,33 @@ class FDICSectionCrawler(GenericSiteCrawler):
                         or _norm(title) in filed.get(heading, set()):
                     continue
                 off_host = urlparse(url).netloc.lower() != host
+                # HEADING_KEY, NOT section_path. These two branches were missed
+                # when the heading moved out of `section_path` into a key of its
+                # own, and the rows they build are the ones the crawl cannot
+                # reach -- so the bug landed on exactly the links that most
+                # needed the folder. MEASURED on the 17:09 export: the three
+                # off-host heading links (FFIEC handbook, the Federal Reserve's
+                # interagency guidelines, FDIC Enforcement Decisions & Orders)
+                # arrived carrying a heading nothing read and fell through to
+                # the flat case, leaving Information Technology holding 1 of 3.
+                #
+                # section_path stays EMPTY here rather than being invented: no
+                # page was fetched, so there is no trail the site drew, and a
+                # guess would be worse than a blank.
                 if off_host and self.heading_links != "all":
                     documents.append({
                         "title": title, "doc_url": url,
                         "type": _ext_type(url) if _is_doc(url) else "HTML",
-                        "found_on": self.seed_url, "section_path": heading,
+                        "found_on": self.seed_url, "section_path": "",
+                        HEADING_KEY: heading,
                     })
                     added += 1
                     continue
                 if _is_doc(url):
                     documents.append({
                         "title": title, "doc_url": url, "type": _ext_type(url),
-                        "found_on": self.seed_url, "section_path": heading,
+                        "found_on": self.seed_url, "section_path": "",
+                        HEADING_KEY: heading,
                     })
                     added += 1
                     continue
@@ -694,21 +787,58 @@ class FDICSectionCrawler(GenericSiteCrawler):
                     continue
                 soup = BeautifulSoup(html, "html.parser")
                 main = soup.select_one("main#main-content") or soup
-                frag = self._clean_html(str(main))
+                # ABSOLUTISED, as the engine's `_finish` does to every record it
+                # writes (crawler.py:4788). These rows never went through it, so
+                # their bodies stored "/sites/default/files/..." and every link
+                # in them was dead for a reader -- MEASURED on the 2026-10-08
+                # artifact, where the Laws-filed copy of the FIL listing offered
+                # 0 usable links against the FIL copy's 30. It matters more now
+                # that the files on a page are no longer rows: the body is the
+                # only place those links survive.
+                frag = absolutize_html(self._clean_html(str(main)), final)
                 text = _visible_text(BeautifulSoup(frag, "html.parser"))
+                crumb = _breadcrumb_from(html)
+                # THE FILES THIS PAGE CARRIES. Without this the page arrives as
+                # a lone row and everything it links is lost -- see
+                # `_harvest_documents`. The page's own url is registered FIRST,
+                # so a page that links to itself through a /documents/ path
+                # cannot also become a document row.
+                have.add(final.rstrip("/"))
+                # THE FILES ON THIS PAGE ARE NOT COLLECTED, and that is the
+                # requirement rather than an omission. A heading link is the last
+                # level: "Risk Management Manual of Examination Policies" is ONE
+                # row, not 1 + the 41 PDFs it lists. Harvesting them is what took
+                # Supervision to 163 rows against the 22 its landing page names.
+                # The page's body still holds every one of those links, so
+                # nothing the FDIC published becomes unreachable -- it simply
+                # stops being a row of its own.
                 pages.append({
                     # The SITE's trail, read from the page we just fetched --
                     # not the heading. Same rule as every other row.
-                    "section_path": _breadcrumb_from(html),
+                    "section_path": crumb,
                     HEADING_KEY: heading,
                     "title": title, "url": final,
                     "depth": 1, "linked_from_title": title,
                     "parent_page_url": self.seed_url, "status": "ok",
-                    "n_pdfs": 0, "pdf_links": "", "text_len": len(text),
+                    # ZERO BECAUSE NOTHING IS COLLECTED, which is the honest
+                    # value now. It was briefly the real count, when this method
+                    # harvested; a stale non-zero here would claim rows that do
+                    # not exist.
+                    "n_pdfs": 0,
+                    # EMPTY, AND IT WOULD HAVE TO BE EVEN IF FILES WERE HARVESTED.
+                    # The wrapper takes pdf_links.split(" | ")[0] as org_pdf_link
+                    # and the orchestrator PROMOTES that into document_url, so a
+                    # page citing several files would be stored under whichever
+                    # was linked first -- measured on the 2026-10-07 17:06
+                    # export, where 8 injected pages carried a joined link list
+                    # as their own url and "Risk Management Manual of Examination
+                    # Policies" held all 41 of its PDFs there. `page_pdf_link:
+                    # False` on www.fdic.gov exists to stop exactly that.
+                    "pdf_links": "",
+                    "text_len": len(text),
                     "html_file": "", "text": text, "html": frag,
                     "content_hash": content_key(text),
                 })
-                have.add(final.rstrip("/"))
                 added += 1
         if added:
             logger.info("FDIC headings: %d link(s) added that the crawl could "
@@ -718,11 +848,28 @@ class FDICSectionCrawler(GenericSiteCrawler):
     #  the seam                                                           #
     # ------------------------------------------------------------------ #
     def _run_crawl(self) -> dict:
+        # THE LANDING PAGE'S OWN LINKS, AND NOTHING THEY LEAD TO.
+        #
+        # This used to run the generic engine and KEEP WHAT IT FOUND -- the
+        # heading links, plus every page those opened and every file on those
+        # pages -- then re-file the lot under the nearest heading. The result
+        # was a section defined by how far a crawl happened to reach:
+        # "Information Technology" listed 22 rows where the landing page names
+        # 3, "Policy" listed 153 where it names 10, and Supervision came to 163
+        # rows against the 22 its own page sets out.
+        #
+        # The requirement is the landing page: its <h2> subheadings are the
+        # subfolders, and under each one sits exactly what that heading links --
+        # page, doc or pdf -- with no traversal into those links. So the heading
+        # map IS the section, and there is no crawl to re-file.
+        #
+        # `_clean_pages` and `_refile` are no longer in this path: both existed
+        # to repair crawl output, and both are kept below because they are the
+        # repair a crawl would still need if one is ever restored here.
         self._build_heading_map()
-        result = super()._run_crawl()
-        self._clean_pages(result)
-        self._refile(result)
-        self._add_missing_links(result)
+        result = {"shape": "generic", "pages": [], "documents": [],
+                  "run": {"seed": self.seed_url, "blocked_pages": 0}}
+        self._rows_from_headings(result)
         return result
 
     # ------------------------------------------------------------------ #
@@ -772,6 +919,19 @@ class FDICSectionCrawler(GenericSiteCrawler):
 
     def fetch_documents(self, limit: Optional[int] = None):
         docs = super().fetch_documents(limit=limit)
+        # STAMP AT THE SINGLE EXIT. GenericSiteCrawler does not -- its rows
+        # carry a hash the ENGINE computed, in pages.json. The rows this class
+        # injects in `_add_missing_links` never went through the engine, so they
+        # arrived with no hash at all: measured on the 17:09 export, the three
+        # off-host heading links had an empty content_hash and would therefore
+        # have classified `modified` on every run, for ever, writing a version
+        # row each time. hash_for falls back to content_key("url|title"), which
+        # is stable for a row that has no content to hash.
+        #
+        # An existing hash is never overwritten, so the 129 rows the engine
+        # hashed are untouched -- which is exactly why fingerprint.py says to
+        # call this at a crawler's single public exit rather than per branch.
+        docs = stamp_content_hashes(docs)
         run = dict((self.last_result or {}).get("run") or {})
         run["warnings"] = list(run.get("warnings") or []) + self._warnings
         self.last_result = {
@@ -782,4 +942,621 @@ class FDICSectionCrawler(GenericSiteCrawler):
         }
         logger.info("FDICSectionCrawler[%s] -> %d document(s) across %d heading(s)",
                     self.source_system, len(docs), len(self._headings))
+        return docs
+
+
+# ---------------------------------------------------------------------- #
+#  Financial Institution Letters                                         #
+# ---------------------------------------------------------------------- #
+class FDICLettersCrawler(GenericSiteCrawler):
+    """The FIL archive, enumerated over plain HTTP, plus two repairs.
+
+    FIL needs no heading map and no re-filing -- its rows sit in one folder --
+    so this is NOT an FDICSectionCrawler. It borrows that class's HTTP and
+    html-cleaning members explicitly (below) because those are about fdic.gov,
+    not about headings, and a second copy of them would be a second thing to
+    fix when the site changes.
+
+    IT DOES NOT RUN THE BROWSER ENGINE, AND THAT IS WHY THE SECTION EXISTS AT
+    ALL. Every other source here calls `super()._run_crawl()`, which shells the
+    generic crawler out to a subprocess with a 3600-second timeout
+    (generic_crawler_wrapper.py:679, `timeout: int = 3600`). On 2026-10-07 the
+    FIL crawl was killed by that timeout -- the subprocess started at 20:33:45,
+    was still fetching at 21:33:39 and was terminated at 21:33:45 exactly one
+    hour in, having written no pages.json. CompositeCrawler logs a failing
+    source and skips it, so the export shipped 327 rows with no Financial
+    Institution Letters at all and `verdict PASS` on every gate.
+
+    THE TIMEOUT WAS THE SYMPTOM. The cause was measured afterwards, on one
+    letter, both ways:
+
+        through Playwright   37.8 s   (page.goto itself:  1.7 s)
+        plain HTTP GET        0.84 s
+
+    FDIC serves these pages fully rendered -- no JS is needed to see either the
+    listing's 25 links or a letter's body. The browser was paying ~36 seconds a
+    page for a site that answers in under one, and 953 letters at the browser's
+    sustained rate is roughly two days against a one-hour budget. The same 953
+    at 0.9 s is about fifteen minutes. Nothing was tuned to achieve that; the
+    browser was simply removed.
+
+    SO THE WALK IS: the listing's own ?pg= pages, read in order until one adds
+    no letter we do not already hold, and then a GET per letter. The archive
+    states its own length -- page 39 carries 3 letters where every earlier page
+    carries 25 -- so the walk ENDS rather than being capped, which is what
+    `max_pages` could never give us. The old `max_pages: 30` produced a rolling
+    window: the 17:06 and 19:26 exports both stored 27 letter pages and shared
+    only 21 of them.
+
+    WHY NOT SPLIT THE SECTION BY YEAR, which was the other candidate: because
+    year-shaped filing is exactly what was withdrawn on 2026-10-07. Reducing
+    the trail to the year cost the site's own breadcrumb (`_sec` produces one
+    value and it feeds both doc_path and extra_meta.section_path), and a crawl
+    scoped per year would put a year back at the centre of completeness. It is
+    also unnecessary: every letter from 1994 to 2026 sits at /<year>/<slug>,
+    checked on listing pages 1, 20, 38 and 39, so a year split would have been
+    correct and still pointless.
+
+    1. PAGER ROWS. The listing paginates as ?pg=2..4. The engine followed those
+       links -- correctly, because that is how the older letters were reached --
+       but each pager ALSO became a page record carrying the listing's title,
+       so all four collapsed onto one doc_path: measured on the 14:03 export,
+       102 rows produced only 99 distinct paths and the folder tree showed ONE
+       node that four rows pointed at. `_drop_query_variants` is now inert by
+       construction, because `_walk_listing` reads the pagers for their links
+       and never records them. It is KEPT, and its synthetic test in
+       verify_letters.py with it, because "inert by construction" is a property
+       of the walk and not of the site -- a listing that starts linking its
+       pagers from inside the body would put them back.
+
+    2. A PAGE THAT CAPTURED SOMEBODY ELSE'S CONTENT. In both the 10-05 and the
+       10-07 exports, the letter "Rescission of the Board Statement on the
+       Development and Communication of Supervisory Recommendations" stored
+       fdic.gov/about -- "an independent agency created by Congress", links to
+       /about/leadership/ and /about/careers/ -- and none of its own text.
+       Checked rather than assumed: a plain GET of that url returns 200, no
+       redirect, no meta refresh, no scripted redirect, and
+       main#main-content > article.node--news with the right <h1>, under three
+       different user agents. The server served the About node to the browser
+       and the letter to a direct fetch, so a direct fetch is the repair.
+
+       WHY THIS MATTERS MORE THAN THE WRONG TEXT: content_hash is computed from
+       what was stored, so that row was tracking fdic.gov/about. It would never
+       have signalled when the letter itself changed -- a silent monitoring
+       failure, not a cosmetic one.
+
+       THE TEST IS THE <h1>, AND THE OBVIOUS TEST DOES NOT WORK. Matching the
+       title's words against the body text was tried first and MISSED it: the
+       About page says "The Board of Directors of the FDIC manages operations",
+       which contains "Board", so the page scored a hit and passed. Comparing
+       the stored <h1> with the row's title separates them completely --
+       measured across all 30 stored pages, every one of the 24 good letters
+       scores 1.00 and the bad one has no <h1> at all.
+    """
+
+    #: Borrowed, not re-implemented -- see the class docstring. `_tidy_empties`
+    #: is a staticmethod and has to be re-wrapped, or Python binds it as an
+    #: instance method and it receives `self` where it expects the soup.
+    _sess = FDICSectionCrawler._sess
+    _fetch = FDICSectionCrawler._fetch
+    _get = FDICSectionCrawler._get
+    _tidy_empties = staticmethod(FDICSectionCrawler._tidy_empties)
+    _clean_html = FDICSectionCrawler._clean_html
+    #: BORROWED RATHER THAN COPIED, for the same reason as the rest of this
+    #: block: it is about what a file link looks like on fdic.gov, not about
+    #: headings. `_walk_listing` calls it with heading="" -- FIL has no heading
+    #: map, and HEADING_KEY is only ever read by FDICSectionCrawler._apply_heading,
+    #: which this class does not inherit. The alternative was a second copy of
+    #: fifty lines that decide what counts as a document, which is precisely the
+    #: thing that must not drift between two sources of one regulator.
+    _harvest_documents = FDICSectionCrawler._harvest_documents
+
+    #: How close the stored <h1> must be to the row's title. 0.6 is wide of the
+    #: real split rather than tuned to it: the 24 good pages score 1.00 and the
+    #: bad one scores 0.00, so anything in between would do and a loose bound
+    #: cannot start failing on a letter whose <h1> gains a trailing word.
+    H1_MATCH = 0.6
+
+    def __init__(
+        self,
+        seed_url: str,
+        regulator: str,
+        source_system: str,
+        category: Optional[str] = None,
+        #: False leaves a mismatched capture alone and only warns. The repair
+        #: costs one GET per bad page and makes none when nothing is wrong.
+        repair_captures: bool = True,
+        request_timeout: int = 30,
+        delay: float = 0.0,
+        **generic_kwargs,
+    ):
+        super().__init__(seed_url=seed_url, regulator=regulator,
+                         source_system=source_system, category=category,
+                         **generic_kwargs)
+        self.repair_captures = repair_captures
+        self.request_timeout = request_timeout
+        self.delay = delay
+        self._session = None
+        self._warnings: List[str] = []
+        self._seed_path = urlparse(seed_url).path.rstrip("/")
+
+    # ------------------------------------------------------------------ #
+    #  helpers                                                            #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _bare(url: str) -> str:
+        """The url with its query and fragment removed."""
+        p = urlparse(url or "")
+        return urlunparse((p.scheme, p.netloc, p.path.rstrip("/"), "", "", ""))
+
+    def _is_item(self, url: str) -> bool:
+        """Is this a LETTER, or one of the listings that index them?
+
+        By url shape, because the alternative -- "has a year folder" -- stopped
+        existing when year filing was turned off. Under the seed path a letter
+        is /<year>/<slug> and every listing is shallower: the seed itself, its
+        ?pg= pagers, and the /<year> index. Measured on the 14:03 export: 25
+        pages at two segments, all of them letters; 5 at one or none, all of
+        them listings.
+        """
+        path = urlparse(url or "").path.rstrip("/")
+        if not path.startswith(self._seed_path):
+            return False
+        return len([s for s in path[len(self._seed_path):].split("/") if s]) >= 2
+
+    @staticmethod
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    def _h1_score(self, html: str, title: str) -> float:
+        """How well the body's first <h1> matches the row's title; 0.0 if none."""
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", html or "", re.S | re.I)
+        if not m:
+            return 0.0
+        got = self._norm(re.sub(r"<[^>]+>", " ", m.group(1)))
+        return difflib.SequenceMatcher(None, got, self._norm(title)).ratio()
+
+    # ------------------------------------------------------------------ #
+    #  0. the walk                                                        #
+    # ------------------------------------------------------------------ #
+    #: A listing walk that never stops adding is a bug, not a long archive.
+    #: FDIC's is 39 pages; 200 lets it quadruple before THIS rather than the
+    #: site ends the walk -- and hitting it is recorded as a warning, so a run
+    #: that silently returned a prefix of the archive is not possible.
+    MAX_LISTING_PAGES = 200
+
+    def _listing_url(self, n: int) -> str:
+        """Page n of the listing. PAGE 1 IS THE BARE SEED, not ?pg=1 -- the
+        parameter is read off our own data, not guessed: the 14:03 export filed
+        ?pg=2, ?pg=3 and ?pg=4 as rows, and the bare url is page one."""
+        return self.seed_url if n <= 1 else "%s?pg=%d" % (self.seed_url, n)
+
+    #: Each letter on the listing sits in its own <article>, and the FDIC's own
+    #: reference for it -- FIL-62-2026 -- is a field inside that article rather
+    #: than part of the link. Scoping to the article is what lets a number be
+    #: attached to the RIGHT letter; a page-wide scan finds 25 numbers and 25
+    #: letters with nothing tying them together.
+    _ROW_SELECTOR = "article.node--news"
+    _RELEASE_SELECTOR = ".field--name-field-release-number .field__item"
+
+    def _letter_links(self, html: str, base: str) -> List[Tuple[str, str, str]]:
+        """(url, title, release number) for every LETTER this listing page links.
+
+        THE TITLE IS THE ANCHOR TEXT, DELIBERATELY, and not the letter page's
+        own <h1>. Taking the title from the page would make `_h1_score` compare
+        the h1 with itself and score 1.00 by construction -- which is exactly
+        the check that caught fdic.gov serving the About node in place of the
+        Rescission letter. The listing's claim about what a letter is, tested
+        against what the letter page actually says, is the whole detector.
+
+        The release number is "" where the markup does not offer one, and the
+        caller must cope with that: it is only ever used to separate titles that
+        collide, so a missing one costs nothing until two letters share a name.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        rows = soup.select(self._ROW_SELECTOR)
+        # THE MARKUP CHANGED, AND THAT IS NOT A REASON TO LOSE THE ARCHIVE.
+        # Without the article wrapper there is no way to say which number
+        # belongs to which letter, so none is claimed -- but every letter is
+        # still found, because `_is_item` is a url shape and needs no markup.
+        fell_back = not rows
+        if fell_back:
+            rows = [soup]
+        best: Dict[str, Tuple[str, str]] = {}
+        order: List[str] = []
+        for row in rows:
+            el = None if fell_back else row.select_one(self._RELEASE_SELECTOR)
+            release = el.get_text(" ", strip=True) if el else ""
+            for a in row.find_all("a", href=True):
+                url = urljoin(base, (a.get("href") or "").strip())
+                if urlparse(url).scheme not in ("http", "https"):
+                    continue
+                url = self._bare(url)
+                if not self._is_item(url):
+                    continue
+                text = a.get_text(" ", strip=True)
+                if not text:
+                    continue
+                if url not in best:
+                    order.append(url)
+                # The longest anchor text is the title. A letter can be linked
+                # more than once from its own row, and taking whichever came
+                # first would file some letters under a fragment of their name.
+                if len(text) > len(best.get(url, ("", ""))[0]):
+                    best[url] = (text, release)
+        # ONLY WHEN IT COST US SOMETHING. The walk ends by asking for one page
+        # past the last, and FDIC answers that with a real page carrying no
+        # letters and no articles -- so warning on the fallback alone would put
+        # a scary line in every clean run. It matters only if letters were found
+        # without their numbers.
+        if fell_back and order:
+            logger.warning("FDIC letters: no %s on %s -- %d letter(s) found "
+                           "without release numbers", self._ROW_SELECTOR, base,
+                           len(order))
+        return [(u, best[u][0], best[u][1]) for u in order]
+
+    def _page_record(self, url: str, title: Optional[str], have: set,
+                     documents: List[dict], depth: int = 1,
+                     html: Optional[str] = None,
+                     final: Optional[str] = None,
+                     release: str = "") -> Optional[dict]:
+        """One fetched page, in the shape the inherited mapping expects.
+
+        This is the same record `FDICSectionCrawler._add_missing_links` builds
+        for a heading link the crawl cannot reach, and it is built the same way
+        on purpose -- breadcrumb from the raw page, furniture out of the stored
+        html, files harvested from the CLEANED fragment, hash over the text that
+        was actually kept. A letter reached by this walk must not be a different
+        kind of row from a heading link reached by that one.
+        """
+        if html is None:
+            html, final = self._fetch(url)
+        if html is None:
+            self._warnings.append("could not fetch %s" % url)
+            return None
+        final = final or url
+        # REGISTERED BEFORE ITS FILES ARE HARVESTED, so a page that links to
+        # itself cannot also become a document row -- same order, same reason as
+        # _add_missing_links.
+        key = final.rstrip("/")
+        if key in have:
+            return None
+        have.add(key)
+
+        soup = BeautifulSoup(html, "html.parser")
+        main = soup.select_one("main#main-content") or soup
+        # ABSOLUTISED, because the engine does it and this row has to be the
+        # same kind of row. `_finish` runs absolutize_html over every record it
+        # writes (crawler.py:4788); a page that skipped the engine would
+        # otherwise store "/sites/default/files/..." where a crawled page stores
+        # the full url, and every link in the stored body would be dead for a
+        # reader. Done BEFORE the files are harvested so the urljoin below has
+        # nothing left to resolve.
+        frag = absolutize_html(self._clean_html(str(main)), final)
+        text = _visible_text(BeautifulSoup(frag, "html.parser"))
+        crumb = _breadcrumb_from(html)
+        if not title:
+            # Only the listing itself arrives without one; it is not an item, so
+            # `_repair_captures` never scores it and nothing is weakened here.
+            h1 = soup.find("h1")
+            title = (h1.get_text(" ", strip=True) if h1 else "").strip() \
+                or final.rstrip("/").rsplit("/", 1)[-1]
+        # THE LETTER'S OWN ATTACHMENTS ARE NOT COLLECTED. Same rule as Laws and
+        # Supervision: the listing's links are the last level, and what a letter
+        # itself links is a step further than the section goes. Harvesting them
+        # took this section to 1,989 rows -- 954 letters carrying 1,035 files --
+        # where the archive is 953 letters. The files stay reachable in the
+        # stored body, which is absolutised above precisely so they still work.
+        return {
+            "section_path": crumb,
+            "title": title, "url": final,
+            "depth": depth, "linked_from_title": title,
+            "parent_page_url": self.seed_url if depth else "",
+            "status": "ok",
+            # FDIC's own reference for the letter, carried for
+            # `_disambiguate_pages` and ignored by everything else.
+            "release_no": release,
+            "n_pdfs": 0,
+            # EMPTY, AND IT WOULD HAVE TO BE EVEN IF FILES WERE HARVESTED. The
+            # wrapper takes pdf_links.split(" | ")[0] as org_pdf_link and the
+            # orchestrator promotes that into document_url, so a letter citing
+            # several files would be stored under whichever was linked first --
+            # measured on the 17:06 export, where 9 pages were filed under a
+            # file url. `page_pdf_link: False` on www.fdic.gov stops that.
+            "pdf_links": "",
+            "text_len": len(text),
+            "html_file": "", "text": text, "html": frag,
+            "content_hash": content_key(text),
+        }
+
+    def _walk_listing(self) -> dict:
+        """Read the listing's pages for their links, then fetch every letter.
+
+        Returns the same dict shape `generic_crawler` writes to pages.json, so
+        the inherited mapping cannot tell the difference -- `fetch_documents`
+        reads only `shape`, `pages` and `documents` from it
+        (generic_crawler_wrapper.py:979).
+        """
+        pages: List[dict] = []
+        documents: List[dict] = []
+        have: set = set()
+        best: Dict[str, Tuple[str, str]] = {}
+        order: List[str] = []
+        seed_html = seed_final = None
+        note = ""
+        read = 0
+
+        for n in range(1, self.MAX_LISTING_PAGES + 1):
+            html, final = self._fetch(self._listing_url(n))
+            if html is None:
+                # PAGE ONE IS FATAL AND THE REST ARE THE END. Past the last
+                # page the site answers 404, which `_fetch` reports the same way
+                # as a refusal -- so the distinction that matters is whether we
+                # already have an archive. Without page one we have nothing, and
+                # returning zero rows quietly is the failure this walk exists to
+                # stop.
+                if n == 1:
+                    raise RuntimeError(
+                        "the Financial Institution Letters listing could not be "
+                        "read (%s); refusing to report an empty section"
+                        % self._listing_url(1))
+                break
+            read += 1
+            if n == 1:
+                seed_html, seed_final = html, final
+            gained = 0
+            for url, text, release in self._letter_links(html, final):
+                if url not in best:
+                    order.append(url)
+                    gained += 1
+                if len(text) > len(best.get(url, ("", ""))[0]):
+                    best[url] = (text, release)
+            # THE WALK ENDS WHEN THE LISTING STOPS ADDING, which is also what
+            # happens if the site serves the last page for an out-of-range ?pg=.
+            if not gained:
+                break
+        else:
+            note = ("the listing was still producing letters at page %d "
+                    "(MAX_LISTING_PAGES) -- the archive may be incomplete"
+                    % self.MAX_LISTING_PAGES)
+            self._warnings.append(note)
+
+        logger.info("FDIC letters: %d listing page(s) read, %d letter(s) found",
+                    read, len(order))
+
+        rec = self._page_record(self.seed_url, None, have, documents, depth=0,
+                                html=seed_html, final=seed_final)
+        if rec:
+            pages.append(rec)
+        for i, url in enumerate(order, 1):
+            title, release = best[url]
+            rec = self._page_record(url, title, have, documents,
+                                    release=release)
+            if rec:
+                pages.append(rec)
+            if i % 100 == 0:
+                logger.info("  %d/%d letters fetched", i, len(order))
+
+        # THE ENGINE'S WRITE-OUT STEP, which this walk would otherwise skip.
+        # Both of these live in `_finish` (crawler.py:4754 and 4768) and both
+        # matter here:
+        #
+        #  * disambiguate_titles -- a title several DIFFERENT files share is not
+        #    a title. MEASURED on the first 50 letters of this walk: two
+        #    unrelated PDFs both linked as "Final Rule", which file at one
+        #    doc_path and are handed ONE folder node, because get_folder_id
+        #    matches on title+parent regardless of type.
+        #  * the document hash -- a file is not downloaded here, so what
+        #    identifies it is its url plus its title. AFTER the rename, never
+        #    before: a hash taken over a title the row no longer has makes every
+        #    renamed row read as modified on the next run.
+        renamed = disambiguate_titles(documents, profile_for(self.seed_url))
+        if renamed:
+            logger.info("FDIC letters: %d shared document title(s) rewritten",
+                        renamed)
+        for d in documents:
+            d["content_hash"] = content_key("%s|%s" % (d.get("doc_url") or "",
+                                                       d.get("title") or ""))
+
+        logger.info("FDIC letters: %d page row(s), %d document row(s)",
+                    len(pages), len(documents))
+        return {
+            "shape": "generic",
+            "pages": pages,
+            "documents": documents,
+            # NO `warnings` KEY HERE. `fetch_documents` appends self._warnings
+            # to whatever this holds, and `_repair_captures` adds to that list
+            # after this dict is built -- so filling it here would both duplicate
+            # the walk's warnings and still miss the repair's.
+            "run": {"seed": self.seed_url, "listing_pages": read,
+                    "letters": len(order), "blocked_pages": 0},
+        }
+
+    # ------------------------------------------------------------------ #
+    #  1. the pager rows                                                  #
+    # ------------------------------------------------------------------ #
+    def _drop_query_variants(self, result: dict) -> None:
+        """Drop a page row that is only a query-string view of a row we keep.
+
+        Stated as a RULE rather than as "?pg=", so the pager FDIC adds next
+        year under a different parameter is caught by the same line and there
+        is no list to keep current. A query view whose bare url is NOT already
+        a row is kept -- it is the only record of that content.
+        """
+        pages = result.setdefault("pages", [])
+        bare = {self._bare(p.get("url")) for p in pages
+                if not urlparse(p.get("url") or "").query}
+        keep, dropped = [], []
+        for p in pages:
+            url = p.get("url") or ""
+            if urlparse(url).query and self._bare(url) in bare:
+                dropped.append(url)
+                continue
+            keep.append(p)
+        pages[:] = keep
+        for url in dropped:
+            logger.info("  dropped pager row %s", url)
+        if dropped:
+            logger.info("FDIC letters: %d pagination row(s) dropped; the pages "
+                        "were still crawled", len(dropped))
+
+    # ------------------------------------------------------------------ #
+    #  2. the capture that belongs to another page                        #
+    # ------------------------------------------------------------------ #
+    def _repair_captures(self, result: dict) -> None:
+        """Re-fetch any letter whose stored body is not that letter."""
+        checked = repaired = 0
+        for p in result.get("pages") or []:
+            url = p.get("url") or ""
+            if not self._is_item(url):
+                continue
+            checked += 1
+            if self._h1_score(p.get("html") or "", p.get("title") or "") >= self.H1_MATCH:
+                continue
+            logger.warning("  stored body does not belong to %s -- re-fetching", url)
+            html, _final = self._fetch(url)
+            if html is None:
+                self._warnings.append(
+                    "could not re-fetch a page whose capture was wrong: %s" % url)
+                continue
+            soup = BeautifulSoup(html, "html.parser")
+            main = soup.select_one("main#main-content") or soup
+            frag = self._clean_html(str(main))
+            # ONLY IF THE REPLACEMENT IS ACTUALLY RIGHT. A re-fetch that comes
+            # back just as wrong would otherwise overwrite one bad capture with
+            # another and hide the problem, so the row is left as it is and the
+            # run carries a warning instead.
+            if self._h1_score(frag, p.get("title") or "") < self.H1_MATCH:
+                self._warnings.append(
+                    "re-fetch did not return the expected page either: %s" % url)
+                continue
+            text = _visible_text(BeautifulSoup(frag, "html.parser"))
+            p["html"] = frag
+            p["text"] = text
+            p["text_len"] = len(text)
+            # THE TRAIL COMES FROM THE RE-FETCH TOO. This replaced the body and
+            # left `section_path` as the bad capture had it, which is how a
+            # repaired row can end up with no trail at all.
+            #
+            # MEASURED on the 2026-10-08 export: 952 of 954 letters carry the
+            # site's trail, and the two that do not -- fil18046 (2018) and the
+            # 2013 social-media guidance -- both return
+            # "Home > News > Financial Institution Letters > <year>" when
+            # fetched by hand. The markup is there; the capture that was wrong
+            # about the body was wrong about the breadcrumb as well.
+            #
+            # ONLY WHEN THE RE-FETCH HAS ONE. An empty crumb here would overwrite
+            # a good trail with nothing, which is the failure this is fixing.
+            crumb = _breadcrumb_from(html)
+            if crumb:
+                p["section_path"] = crumb
+            # The hash has to move with the content. It was computed from the
+            # WRONG page, which is what made this a monitoring failure and not
+            # just a display one.
+            p["content_hash"] = content_key(text)
+            repaired += 1
+        logger.info("FDIC letters: %d letter page(s) checked, %d re-fetched",
+                    checked, repaired)
+
+    # ------------------------------------------------------------------ #
+    #  3. two letters with one name                                       #
+    # ------------------------------------------------------------------ #
+    def _disambiguate_pages(self, result: dict) -> None:
+        """Separate letters the FDIC gave the same name.
+
+        MEASURED ON THE WHOLE ARCHIVE: 35 titles are shared by more than one
+        letter, and 91 of the 953 letters -- 9.5% -- sit on one. "Bank Secrecy
+        Act" is eight different letters between 2004 and 2024. doc_path ends at
+        the title (`doc_path_title: true`) and get_folder_id matches on
+        title+parent regardless of type, so all eight are handed ONE folder node
+        and seven of them disappear from the tree.
+
+        THIS IS THE RULE THE ENGINE ALREADY APPLIES TO FILES, said again for
+        pages. `disambiguate_titles` -- "a title shared by several DIFFERENT
+        documents is not a title" -- rewrites only the colliding ones and leaves
+        every unique title alone. It runs over `documents` and never sees a page
+        row, so this is the same contract rather than a second idea.
+
+        THE REPLACEMENT IS FDIC'S OWN REFERENCE, not the url slug the engine
+        falls back to. The slug would name eight letters fil6704, fil11017,
+        fil16021 ... which is precisely the "two unreadable titles are worse
+        than one shared one" case `disambiguate_titles` guards against with
+        _OPAQUE_ID. FIL-67-2004 is what the FDIC itself calls the letter and it
+        is already on the listing row we fetched.
+
+        THE YEAR WOULD NOT HAVE FIXED THIS, recorded because a per-year split
+        was the alternative: only 15 of the 35 collisions are separated by the
+        year at all, and 20 collide WITHIN one year -- four letters titled
+        "Assessments Notice of Proposed Rulemaking" were all published in 2010.
+
+        LAST, AFTER `_repair_captures`, and that order is load-bearing. The
+        repair scores the stored <h1> against the row's title; appending a
+        reference pushes a short title toward the threshold -- "Assessments"
+        against "Assessments (FIL-14-2014)" scores 0.65 where H1_MATCH is 0.60.
+        Running this last means the detector always sees the listing's own
+        words and the stored rows carry the separated ones.
+        """
+        pages = result.get("pages") or []
+        counts = collections.Counter((p.get("title") or "").strip().lower()
+                                     for p in pages)
+        fixed, bare = 0, []
+        for p in pages:
+            t = (p.get("title") or "").strip()
+            if not t or counts[t.lower()] < 2:
+                continue
+            rel = (p.get("release_no") or "").strip()
+            if not rel:
+                # NOT RENAMED TO SOMETHING WORSE. A collision we cannot separate
+                # is reported and left readable, which is the same trade
+                # disambiguate_titles makes for an opaque slug.
+                bare.append(t)
+                continue
+            p["title"] = "%s (%s)" % (t, rel)
+            p["linked_from_title"] = p["title"]
+            fixed += 1
+        if fixed:
+            logger.info("FDIC letters: %d shared letter title(s) separated by "
+                        "their FIL number", fixed)
+        # SAID OUT LOUD, because a folder node holding two letters is exactly
+        # what this method exists to prevent and a silent partial fix would read
+        # as a complete one.
+        left = {t: n for t, n in collections.Counter(
+            (p.get("title") or "").strip().lower() for p in pages).items()
+            if n > 1}
+        if left:
+            self._warnings.append(
+                "%d letter title(s) are still shared after disambiguation and "
+                "will share a folder node: %s"
+                % (len(left), ", ".join(sorted(left)[:5])))
+            logger.warning("FDIC letters: %d title(s) still shared%s",
+                           len(left),
+                           " (%d had no FIL number)" % len(bare) if bare else "")
+
+    # ------------------------------------------------------------------ #
+    #  the seam                                                           #
+    # ------------------------------------------------------------------ #
+    def _run_crawl(self) -> dict:
+        # NOT super()._run_crawl(). That shells the browser engine out to a
+        # subprocess with a one-hour timeout, which is what lost this section
+        # entirely on 2026-10-07 -- see the class docstring. `_walk_listing`
+        # returns the same dict the engine would have written.
+        result = self._walk_listing()
+        self._drop_query_variants(result)
+        if self.repair_captures:
+            self._repair_captures(result)
+        # LAST: it rewrites titles, and _repair_captures tests titles.
+        self._disambiguate_pages(result)
+        return result
+
+    def fetch_documents(self, limit: Optional[int] = None):
+        docs = super().fetch_documents(limit=limit)
+        run = dict((self.last_result or {}).get("run") or {})
+        run["warnings"] = list(run.get("warnings") or []) + self._warnings
+        self.last_result = {
+            "run": run,
+            "by_source": {self.source_system: len(docs)},
+            "source": self.seed_url,
+        }
+        logger.info("FDICLettersCrawler[%s] -> %d document(s)",
+                    self.source_system, len(docs))
         return docs

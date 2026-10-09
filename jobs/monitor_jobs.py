@@ -385,6 +385,26 @@ CRAWL_AS_SIGNAL = {
     #: the change_signals.yml entry, including the two safety checks that a
     #: ONE-ROW source needs and the count gate does not provide.
     "Dodd-Frank Wall Street Reform and Consumer Protection Act": ("dfa", False),
+    #: DFPI joined 2026-10-08, and it is the SECOND US source where a cheap probe
+    #: is impossible rather than merely expensive — Dodd-Frank was the first, and
+    #: this is the same Cloudflare managed challenge on a much larger source.
+    #: version_token, two passes over four urls spanning both page types:
+    #:
+    #:     the index page                 ('', 'probe-failed')   both passes
+    #:     a law page                     ('', 'probe-failed')   both passes
+    #:     a stored PDF (wp-content)      ('', 'probe-failed')   both passes
+    #:     another stored PDF             ('', 'probe-failed')   both passes
+    #:     an OFF-HOST url (oal.ca.gov)   last-modified, stable
+    #:
+    #: the off-host row being the control: the probe code works, the host refuses
+    #: it. So `stored-inventory` would be 564 requests that all fail, and it is
+    #: ruled out on evidence rather than on preference.
+    #:
+    #: THIS IS THE MOST EXPENSIVE JOB ON THIS DICT, and uniquely it needs a
+    #: VISIBLE BROWSER WINDOW: headless is refused even with a profile that has
+    #: already cleared the challenge. 27 page loads, ~55 seconds. Full
+    #: measurements on the change_signals.yml entry.
+    "Department of Financial Protection and Innovation (DFPI)": ("dfpi", False),
 }
 
 
@@ -1766,6 +1786,85 @@ def _monitor_dfa_impl() -> dict:
     rep = _crawl_into_db("dfa", False)
     logger.info("Dodd-Frank Wall Street Reform and Consumer Protection Act: %s", rep)
     return {"Dodd-Frank Wall Street Reform and Consumer Protection Act": rep}
+
+
+def monitor_dfpi() -> dict:
+    """WEEKLY, AND OFF. California DFPI's rulemaking — 26 laws, 564 rows.
+
+    THE CRAWL IS THE SIGNAL BECAUSE NO CHEAP QUESTION EXISTS. Not weighed and
+    found expensive, as on FDIC and FINCEN — found IMPOSSIBLE, the way Dodd-Frank
+    was, and on the same Cloudflare managed challenge.
+
+    MEASURED 2026-10-08 through dynamic_crawler.fingerprint.version_token, the
+    function the sweep itself calls, two passes over four urls:
+
+        the index page                ('', 'probe-failed')   both passes
+        a law page                    ('', 'probe-failed')   both passes
+        a stored pdf (wp-content)     ('', 'probe-failed')   both passes
+        another stored pdf            ('', 'probe-failed')   both passes
+
+    and an OFF-HOST url as the control, to prove the probe code is not the thing
+    that is broken:
+
+        oal.ca.gov                    'Thu, 08 Oct 2026 08:55:26 GMT|'  stable
+
+    The same requests by hand are HTTP 403, Server: cloudflare, with no ETag, no
+    Last-Modified and no Content-Length — on the PDFs as well as the pages, so
+    there is no "files are served by the CDN" exception to fall back on. A
+    stored-inventory sweep here would be 564 requests that all fail.
+
+    `sama-feed` WAS LOOKED FOR FIRST, as ONBOARDING Step 8 requires. The index's
+    "Rulemaking Notices" heading is not a what-changed page: its only link is a
+    GovDelivery EMAIL SUBSCRIPTION form. There is no published list of recent
+    rulemaking actions to read.
+
+    `sitemap` NOT MEASURED, and it would not help if it existed: the sweep's
+    probe is a plain HTTP client and every url on this host refuses one. A
+    sitemap would have to be fetched through the same browser the crawl already
+    launches, at which point it is not the cheaper question.
+
+    WHAT THE CRAWL SEES, AND WHAT IT STILL CANNOT. Every one of the 565 records
+    in the change-state file is `url+title (identity only — cannot detect an
+    edit)`, ONBOARDING Step 2's weakest preference. The five stored page rows
+    hash visible text and can detect an edit; the other 559 cannot. So this job
+    reliably catches a document ADDED, REMOVED or RE-POINTED — which on a
+    rulemaking index is the main event, since each PRO proceeding appears as new
+    links under a new heading — and does NOT catch DFPI replacing a PDF behind an
+    unchanged url. Closing that gap means fetching each document through the
+    browser for a content hash, which is a separate decision.
+
+    THIS JOB NEEDS A VISIBLE BROWSER WINDOW, and it is the only job on this list
+    that does. Headless is refused by the host even with a profile that has
+    already cleared the challenge — tested directly, not assumed. A headless
+    scheduler box will report a regulator with no documents, and it will report
+    it as `zero` rather than `blocked`, which is the engine gap
+    config/sources/dfa.yml documents. DFPISectionCrawler._get answers that by
+    warning on an uncleared challenge instead of returning an empty page, so a
+    refused run says so rather than looking like an empty regulator.
+
+    DO NOT ADD A RETRY if a run is ever refused. ONBOARDING section 3: a
+    scheduled retry is not a way out of a block, it is what makes one.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/dfpi.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db` straight to MSSQL — enabling it first would make the
+    first scheduled run the ingest.
+
+    NOT COVERED: everything on dfpi.ca.gov that is not the rulemaking index.
+    Opinion letters, legal process information, enforcement actions and the CCFPL
+    pages are each their own source with their own source_system when the library
+    wants them, and each will need its own line on this dict.
+    """
+    return _run_exclusive("monitor_dfpi", _monitor_dfpi_impl)
+
+
+def _monitor_dfpi_impl() -> dict:
+    # One source, so no `only_sources`. The whole regulator is the index and the
+    # 26 laws it names, in one crawl, so `disappeared` compares a complete
+    # inventory for the pair.
+    rep = _crawl_into_db("dfpi", False)
+    logger.info("Department of Financial Protection and Innovation (DFPI): %s", rep)
+    return {"Department of Financial Protection and Innovation (DFPI)": rep}
 
 
 def monitor_ffiec() -> dict:

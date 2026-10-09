@@ -725,3 +725,41 @@ jobs:
       day_of_week: 'sun'
       hour: 0
       minute: 0
+
+  # DISABLED: output/workbooks/dfpi.xlsx has not been promoted, and this job's
+  # signal is a crawl that writes through `_crawl_into_db` straight to MSSQL.
+  # Same rule as the five US jobs above.
+  #
+  # SUNDAY 01:00 — the Saturday chain continuing, and LAST in it on purpose:
+  #
+  #     sat 21:00  monitor_fdic    plain GET, one page
+  #     sat 22:00  monitor_fincen  plain GET, one page + one declared stamp
+  #     sat 23:00  monitor_ffiec   real browser against a Cloudflare challenge
+  #     sun 00:00  monitor_dfa     real browser against a Cloudflare challenge
+  #     sun 01:00  monitor_dfpi    real browser, 27 page loads, ~55 seconds
+  #
+  # which keeps the cheapest-first order monitor_fincen's comment argues for.
+  # This is the most expensive US job by an order of magnitude — the other four
+  # are one page load each — so it goes at the end where a slow run delays
+  # nothing. `_run_exclusive` takes ONE GLOBAL lock with timeout=0, so a
+  # collision is a SKIP and the skipped job waits a week; 01:00 Sunday is clear
+  # (monitor_dfa at 00:00 finishes in seconds, and the next job of any kind is
+  # monitor_mc at 04:00).
+  #
+  # THIS JOB CANNOT RUN ON A HEADLESS BOX, and that is unique on this file.
+  # dfpi.ca.gov answers a Cloudflare managed challenge that a headless browser
+  # never clears — tested with a profile that had already cleared it headed, so
+  # it is not a cookie problem. The run needs a desktop session, or headed Chrome
+  # under Xvfb. BEFORE FLIPPING `enabled`, confirm the scheduler host can give it
+  # one; otherwise every run reports a regulator with no documents.
+  #
+  # IF A RUN IS REFUSED it reports and stops. DO NOT ADD A RETRY — ONBOARDING
+  # section 3: a scheduled retry is not a way out of a block, it is what makes
+  # one.
+  monitor_dfpi:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 1
+      minute: 0
