@@ -409,8 +409,8 @@ jobs:
       hour: 19
       minute: 0
 
-  # OSFI (CANADA) - 105 guidelines + 163 reporting instructions + 23 supervision
-  # pages, crawl as signal.
+  # OSFI (CANADA) - 105 guidelines + 67 linked documents + 163 reporting
+  # instructions + 23 supervision pages, crawl as signal (~10 min).
   monitor_osfi:
     enabled: false
     trigger: cron

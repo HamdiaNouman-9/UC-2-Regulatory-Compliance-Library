@@ -1176,7 +1176,10 @@ sources:
   # 2024-11-21). A 2024-11-18 bulk save moved 19 of 68 lastmods with no change,
   # hence confirm: true for when the sitemap takes over.
   #
-  # ~280 GETs at 1.5 s, ~7 min; the 41 book pages are ~0.57 MB each. Two crawls
+  # Since 2026-10-12 ~360 page GETs plus ~45 file HEADs at 1.5 s, ~10 min: the 67
+  # linked documents (book-root contents lists and Related documents tabs) were
+  # added, and every guideline file is HEAD-checked. The 41 book pages are
+  # ~0.57 MB each. Measured 2026-09-29, before that: two crawls
   # ~15 min apart: 268/268 hashes identical. Visible text differs by 0 bytes
   # between renders (only view-dom ids, a form token and echoed query strings
   # differ, all in markup).

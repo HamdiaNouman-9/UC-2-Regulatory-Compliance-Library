@@ -988,9 +988,10 @@ def monitor_osfi() -> dict:
 
 
 def _monitor_osfi_impl() -> dict:
-    # ~305 requests at 1.5 s: 11 listing pages, 268 item pages, and a 23-page
-    # walk of Supervision. Always every source whole — each is one `disappeared`
-    # bucket.
+    # ~410 requests at 1.5 s (2026-10-12): 11 listing pages, 268 item pages, the
+    # 67 linked documents the guidelines' contents lists and Related documents
+    # tabs lead to, ~45 file HEADs, and a 23-page walk of Supervision. Always
+    # every source whole — each is one `disappeared` bucket.
     res = _crawl_into_db("osfi", False, timeout=5400)
     logger.info("OSFI: %s", res)
     return res

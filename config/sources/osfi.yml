@@ -6,8 +6,21 @@
 #   group  book           chapters under their book root (CAR, LAR, LICAT)
 #          sections       "<Return> – Section IV – …" under the return page that
 #                         links them (OSFI's titles disagree, so not by title)
-#   files  linked         PDF renderings of the guideline, recorded in extra_meta
+#   files  linked         the guideline's own file(s), by the lead's file rule
+#                         (utils/file_links.py): one -> document_url, several ->
+#                         attachment_links (document_url empty, default identity),
+#                         none -> the page. `check_files` HEADs each one a run; a
+#                         dead file stays out and is listed in extra_meta.dead_files
+#                         (LIRF.pdf is 404 on OSFI's side, known 2026-09-29)
 #          attachments    the return templates, as attachment_links
+#   follow                (2026-10-12) also store, one hop, the pages a book root's
+#                         contents lists and every "Related documents" tab link to,
+#                         in "Linked documents" (letters, implementation notes,
+#                         backgrounders, consultation summaries, TLAC orders; the
+#                         draft LAR 2027 book with its chapters). Data and Forms and
+#                         Supervision pages are never followed: they are rows of the
+#                         other sources. Each keeps `found_on` (the first linking
+#                         page); every row lists its tab as extra_meta.related_documents.
 #
 # The brief's other two tabs build nothing:
 #   "Outsourcing of Business Activities" = Third-Party Risk Management (B-10),
@@ -35,6 +48,11 @@ sources:
       listing_url: "https://www.osfi-bsif.gc.ca/en/guidance/guidance-library?publication_type=49&items_per_page=100&page={page}"
       group: book
       files: linked
+      follow: true
+      check_files: true
+      # The publication date: "September 10, 2026" on CAR 2027, with separate
+      # "Effective date" and "Revised" fields. 104 of 105 carry it (2026-10-12).
+      published_label: "Date"
       # Floors, not counts: 105 listed, smallest 379 chars, measured 2026-09-29.
       min_documents: 90
       min_text_chars: 150
@@ -87,6 +105,7 @@ sources:
       root_url: "https://www.osfi-bsif.gc.ca/en/supervision/financial-institutions"
       group: breadcrumb
       files: linked
+      check_files: true
       # Floors, not counts: 23 pages, smallest 454 chars, measured 2026-09-30.
       min_documents: 20
       min_text_chars: 200
