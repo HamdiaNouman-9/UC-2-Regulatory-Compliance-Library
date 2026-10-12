@@ -16,16 +16,18 @@
 # `Full Document` block, the currency banner, the `lims:fid` and the
 # point-in-time index all attach to the Act and nothing attaches to a page.
 #
-# THE DOCUMENT IS THE XML, NOT THE LANDING PAGE. Each Act is offered as
-# FullText.html, `/eng/XML/<CODE>.xml` and `/PDF/<CODE>.pdf`. The XML is taken:
-# it is the same text, and its root element is a metadata record the publisher
-# maintains — `lims:fid` (a stable identifier that does not rotate the way NBR's
-# S3 upload hashes do), `lims:lastAmendedDate`, `in-force`, and the same three
-# again on every `<Section>`.
-#
-# The `/eng/acts/<CODE>/` landing page is kept on every row as
-# `extra_meta.landing_page` so a reviewer opening the row lands somewhere
-# readable rather than on 1.1 MB of XML.
+# THE FILE IS THE PDF; THE CONTENT IS FullText.html (revised 2026-10-12). Each
+# Act is offered as FullText.html, `/eng/XML/<CODE>.xml` and `/PDF/<CODE>.pdf`.
+#   document_url   the PDF, read back off the landing page (one file, the
+#                  lead's 2026-08-24 rule in utils/file_links.py)
+#   document_html  FullText.html's `div.container` minus `div.legisHeader`:
+#                  the Act, its Related Provisions and Amendments Not in Force
+#   content_text   that HTML's text, minus screen-reader labels and the
+#                  "Previous Version" boxes; the hash is this text
+# NOT the PDF's text: it is bilingual in two columns and prints "Current to
+# <date>" on every page. The XML is not stored anywhere in the workbook (the
+# project lead's decision); it is only the monitoring probe, built from
+# `reference_no` — see JusticeXmlSweep and config/change_signals.yml.
 
 regulator: "Department of Justice Canada (JUS)"
 owner: Fakih
@@ -33,9 +35,12 @@ owner: Fakih
 # ---------------------------------------------------------------------------
 # THE FINGERPRINT, AND THE DATE TRAP THAT DECIDES IT
 # ---------------------------------------------------------------------------
-# The hash is the Act's XML with THREE consolidation-currency fields removed,
-# NFKC-normalised. Everything else is kept INCLUDING attributes, so a provision
-# merely coming into force still moves the hash.
+# SINCE 2026-10-12 the hash is the Act's FullText.html text. The trap below is
+# why `div.legisHeader` — which carries the "Act current to" banner — is cut
+# out before anything is hashed; measured on C-21, B-3, F-11 and P-24.501, no
+# currency date sits anywhere else in the container. Until 2026-10-12 the hash
+# was the XML minus the three fields listed further down; those fields now only
+# matter to the monitoring probe's confirm step.
 #
 # NOT the landing page's visible text, which is the onboarding's first
 # preference and is WRONG HERE. Every Act page prints:
@@ -101,10 +106,10 @@ owner: Fakih
 #     - <!-- ELAPSE -->
 #     + <!-- CURATE -->
 #
-# A hash of it changes on EVERY SINGLE FETCH — the NBR csrf-token fault. It sits
-# inside an HTML comment so it never reaches visible text, but it is the reason
-# `document_html` is left None on these rows rather than set to the page.
-# The XML fetched twice was BYTE-IDENTICAL (md5 ffab962e7ffc953be33afee0aacf7b32).
+# A hash of it changes on EVERY SINGLE FETCH — the NBR csrf-token fault.
+# FullText.html carries the same comment (measured 2026-10-12, its only
+# difference across two fetches); it sits outside the stored container and
+# comments are stripped from document_html regardless.
 
 # ---------------------------------------------------------------------------
 # HOST MANNERS
@@ -153,7 +158,7 @@ sources:
       # folder — see "ONE ENTRY PER ACT" above.
       act_folder: "Bankruptcy and Insolvency Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/b-3/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/B-3.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/B-3.pdf"
       # A recorded observation of the page's own <h1>, not our chosen title. The
       # guard asks "has this page moved?", so giving it our own wording would
       # make it warn on every run about a difference that is permanent.
@@ -173,7 +178,7 @@ sources:
       act_code: "C-21"
       act_folder: "Canadian Payments Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/C-21/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/C-21.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/C-21.pdf"
       expected_title: "Canadian Payments Act (R.S.C., 1985, c. C-21)"
       # Measured at 58,606 characters on 2026-09-09. Floor set an order of
       # magnitude below, for the reason given on B-3.
@@ -188,7 +193,7 @@ sources:
       act_code: "A-17"
       act_folder: "Auditor General Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/a-17/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/A-17.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/A-17.pdf"
       expected_title: "Auditor General Act (R.S.C., 1985, c. A-17)"
       # Measured at 30,982 characters on 2026-09-13. Floor set ~6x below, for
       # the reason given on B-3.
@@ -203,7 +208,7 @@ sources:
       act_code: "F-3.3"
       act_folder: "Farm Income Protection Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/f-3.3/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/F-3.3.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/F-3.3.pdf"
       # THE CITATION IS NOT THE URL CODE. This Act is cited S.C. 1991, c. 22;
       # "F-3.3" is the revised-statutes index code Justice files it under. Both
       # are correct, and `expected_title` records the page's wording, not ours.
@@ -245,7 +250,7 @@ sources:
       act_code: "F-11"
       act_folder: "Financial Administration Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/f-11/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/F-11.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/F-11.pdf"
       expected_title: "Financial Administration Act (R.S.C., 1985, c. F-11)"
       # Measured at 308,003 characters on 2026-09-17. Floor set ~6x below, for
       # the reason given on B-3.
@@ -282,7 +287,7 @@ sources:
       act_code: "A-1"
       act_folder: "Access to Information Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/A-1/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/A-1.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/A-1.pdf"
       expected_title: "Access to Information Act (R.S.C., 1985, c. A-1)"
       # Measured at 196,932 characters on 2026-09-17.
       min_text_chars: 30000
@@ -296,7 +301,7 @@ sources:
       act_code: "P-21"
       act_folder: "Privacy Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/P-21/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/P-21.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/P-21.pdf"
       expected_title: "Privacy Act (R.S.C., 1985, c. P-21)"
       # Measured at 123,082 characters on 2026-09-17.
       min_text_chars: 20000
@@ -334,7 +339,7 @@ sources:
       act_code: "I-3.3"
       act_folder: "Income Tax Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/I-3.3.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/I-3.3.pdf"
       # THE CITATION IS NOT THE URL CODE, as on F-3.3. This Act is cited
       # R.S.C., 1985, c. 1 (5th Supp.); "I-3.3" is the index code Justice files
       # it under. Both are correct.
@@ -367,7 +372,7 @@ sources:
       act_code: "I-11.8"
       act_folder: "Insurance Companies Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/i-11.8/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/I-11.8.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/I-11.8.pdf"
       expected_title: "Insurance Companies Act (S.C. 1991, c. 47)"
       # Measured at 1,432,086 characters on 2026-09-17.
       min_text_chars: 200000
@@ -391,7 +396,7 @@ sources:
   # THE BRIEF ALSO GIVES THE laws.justice.gc.ca HOSTNAME. That host and
   # laws-lois.justice.gc.ca serve BYTE-IDENTICAL pages (both 31,376 bytes,
   # measured 2026-09-22). laws-lois is used here because `fetch_documents`
-  # compares the page's advertised XML href against `xml_url` as BASE + href,
+  # compares the page's advertised PDF href against `pdf_url` as BASE + href,
   # and BASE is laws-lois — configuring the other hostname would make the
   # crawler raise "page advertises X but this source is configured for Y" on
   # every run, which is the guard working correctly against a url we chose.
@@ -402,7 +407,7 @@ sources:
   #     P-24.501   2026-07-21      2026-03-31     2026-05-22 18:04:20
   #
   # The banner claims July over a file not rewritten since MAY and a
-  # consolidation cut in MARCH. Handled by `_strip_volatile`; recorded because
+  # consolidation cut in MARCH. Handled by dropping `div.legisHeader`; recorded because
   # a measurement that was predicted and then held is the evidence for the rule.
   #
   # AND THE PDF BATCH STAMP AN ELEVENTH TIME. P-24.501.pdf carries
@@ -430,7 +435,7 @@ sources:
       act_code: "P-24.501"
       act_folder: "Proceeds of Crime (Money Laundering) and Terrorist Financing Act"
       listing_url: "https://laws-lois.justice.gc.ca/eng/acts/P-24.501/"
-      xml_url: "https://laws-lois.justice.gc.ca/eng/XML/P-24.501.xml"
+      pdf_url: "https://laws-lois.justice.gc.ca/PDF/P-24.501.pdf"
       # THE CITATION IS NOT THE URL CODE, as on F-3.3 and I-3.3. This Act is
       # cited S.C. 2000, c. 17; "P-24.501" is the index code Justice files it
       # under. Both are correct.

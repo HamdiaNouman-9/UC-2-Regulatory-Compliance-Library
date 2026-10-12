@@ -1051,11 +1051,15 @@ sources:
   # the first sweep after this workbook is promoted is the one to read. Keep
   # `confirm: true` until then.
   #
-  # PROBE THE XML, NOT THE PDF — AND THE PROBE TARGET IS `document_url`.
-  # `inventory_sweep.py` HEADs whatever is in `document_url`, so that column is
-  # the signal, not just a link. It is the XML deliberately. Swapping it to the
-  # PDF is the obvious-looking improvement, because a reviewer opening raw XML
-  # is nobody's idea of readable, and it would quietly ruin this signal.
+  # PROBE THE XML, NOT THE PDF. Since 2026-10-12 `document_url` holds the PDF
+  # (the project lead's decision: no XML in the workbook), so the probe NO
+  # LONGER follows `document_url`. `crawler.justice_canada_crawler.JusticeXmlSweep`
+  # builds each Act's XML url from `reference_no` (the act code); its tokens and
+  # confirm hashes live only in output/change_state/. It runs in-process from
+  # `jobs.monitor_jobs.justice_xml_sweep`, because the sweep CLI can probe only
+  # `document_url`. The confirm hash is the XML minus lims:current-date,
+  # lims:pit-date and the consolidation <Stages>, so a re-cut that moves only
+  # those reads as a republish. Why not the PDF:
   #
   # Measured 2026-09-17, XML against PDF, nine Acts plus the I-21 and F-27
   # controls:
@@ -1082,14 +1086,12 @@ sources:
   # true` would stop false version rows — the hash basis is the XML either way —
   # so the data would survive and the signal would not.
   #
-  # The reviewer's readable link is `source_page_url` (the Act's landing page),
-  # which is a first-class column on every row. `extra_meta.pdf_url` holds the
-  # PDF but overflows into the sidecar on eight of nine rows, so it is recorded
-  # and not legible; see the findings doc.
+  # Re-measured 2026-10-12: the C-21 and I-3.3 PDFs both carry Last-Modified
+  # 2026-09-25 while I-3.3's XML is still 2026-08-20, and every PDF page prints
+  # "Current to <date>", so a PDF confirm hash would move on every re-render too.
   #
-  # `UC-2-Scratch/JUSTICE_CANADA/harness/content_accuracy_proof.py` ASSERTS that
-  # document_url is the XML, so a later swap fails a test instead of passing
-  # review.
+  # `UC-2-Scratch/JUSTICE_CANADA/harness/html_accuracy_proof.py` ASSERTS that the
+  # XML url appears nowhere in the workbook and that document_url is the PDF.
   #
   # NOTE ON THE ETag: B-3 and C-21 return the SAME ETag ("0ac4b96ad30dd1:0")
   # despite being 1.1 MB and 146 KB. IIS derives it from the file's write time

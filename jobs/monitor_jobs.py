@@ -163,18 +163,10 @@ CHEAP_PROBE_SOURCES = [
     ("Ministry of Human Resource and Social Development (MHRSD)",
      "Regulations and procedural guidelines"),
     ("Zakat, Tax and Customs Authority (ZATCA)", "Rules and Regulations"),
-    # JUSTICE CANADA IS NOT HERE YET, AND THAT IS THE POINT. Its signal IS
-    # `stored-inventory` (config/change_signals.yml has the measurements), so
-    # this list is where it belongs once it is trusted — but this job is DAILY
-    # and ENABLED, and a target it finds goes through `_crawl_into_db`, which
-    # writes STRAIGHT TO MSSQL. Adding it before a person has read the workbook
-    # would make the first scheduled run be the ingest.
-    #
-    # It runs as `monitor_justice_canada` below instead: the same sweep, on a
-    # slot that ships `enabled: false`. AFTER the workbook is approved and
-    # promoted, move it here as
-    #     ("Department of Justice Canada (JUS)", "Consolidated Acts"),
-    # and delete that job — do not leave both, or the source gets swept twice.
+    # JUSTICE CANADA NEVER BELONGS HERE (since 2026-10-12). This list runs the
+    # sweep CLI, which probes `document_url`; JUS stores the PDF there but is
+    # probed on its XML, which the workbook does not hold. It runs as
+    # `monitor_justice_canada` below, permanently.
     #
     # GOVINFO (GPO) IS NOT HERE YET EITHER, 2026-09-22, and for exactly the same
     # reason: its signal IS `stored-inventory`, but this job is DAILY and
@@ -876,37 +868,57 @@ def _monitor_lmra_impl() -> dict:
 
 
 def monitor_justice_canada() -> dict:
-    """WEEKLY, AND OFF. A cheap probe, not a crawl — measurements on the
-    change_signals.yml entry.
+    """WEEKLY, AND OFF. A cheap probe on each Act's XML, not a crawl —
+    measurements on the change_signals.yml entry.
 
     LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: a
     detected change crawls straight into MSSQL, and this source has never been
-    reviewed. Once it is, this job's job is done — see CHEAP_PROBE_SOURCES.
+    reviewed.
     """
     return _run_exclusive("monitor_justice_canada", _monitor_justice_canada_impl)
 
 
+def justice_xml_sweep(repo=None, state_root=None, dry_run: bool = False) -> dict:
+    """The JUS stored-inventory sweep, probing `/eng/XML/<reference_no>.xml`.
+
+    In-process because the sweep CLI can only probe `document_url`, which holds
+    the PDF. `repo` defaults to the database; a WorkbookInventory works too.
+    """
+    from crawler.justice_canada_crawler import JusticeXmlSweep
+    from dynamic_crawler.cli.sweep import _run
+    from dynamic_crawler.inventory_sweep import load_config, settings_for
+    regulator, source = "Department of Justice Canada (JUS)", "Consolidated Acts"
+    if repo is None:
+        from dynamic_crawler.formfill.promote import _build_repo
+        repo = _build_repo()
+        repo.get_folder_id("__connectivity_probe__", None)   # a bad login must raise
+    settings = settings_for(load_config(REPO_ROOT / "config" / "change_signals.yml"),
+                            regulator, source)
+    signal = JusticeXmlSweep(
+        repo, regulator, source,
+        identity=settings.get("identity") or ("document_url", "doc_path"),
+        confirm_required=bool(settings.get("confirm")),
+        workers=settings.get("workers"),
+        timeout=float(settings.get("timeout") or 20))
+    return _run(signal, f"{regulator}/{source}",
+                state_root or REPO_ROOT / "output" / "change_state", dry_run)
+
+
 def _monitor_justice_canada_impl() -> dict:
-    # NINE requests to detect, because there are nine documents and the probe is
-    # one HEAD per stored url against `/eng/XML/<CODE>.xml`. A crawl follows only
-    # for the Acts whose file actually moved, and costs 2 requests per Act (the
-    # landing page, then the XML) — under 100 KB for A-17 and F-3.3, ~1.3 MB for
-    # B-3, and 14 MB for the Income Tax Act added 2026-09-17.
-    #
-    # THAT LAST NUMBER IS WHY THE PROBE STEP EARNS ITS KEEP HERE. Crawling all
-    # nine unconditionally would move ~19 MB a week to learn that nothing
-    # changed; nine HEAD requests answer the same question for nothing.
-    state = REPO_ROOT / "output" / "monitor_targets"
-    state.mkdir(parents=True, exist_ok=True)
-    regulator = "Department of Justice Canada (JUS)"
-    source = "Consolidated Acts"
-    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
-    rep = _sweep(regulator, source, tf)
-    targets = [l.strip() for l in
-               (tf.read_text(encoding="utf-8").splitlines()
-                if tf.exists() else []) if l.strip()]
+    # TEN requests to detect: one HEAD per Act against `/eng/XML/<CODE>.xml`. A
+    # moved token is confirmed by fetching that XML and hashing it minus its
+    # consolidation dates, so a currency-only re-cut never reaches the crawl.
+    # The crawl costs 2 requests per Act (landing page, FullText.html), 12 MB of
+    # it the Income Tax Act — which is why the probe step earns its keep here.
+    t0 = time.time()
+    try:
+        rep = justice_xml_sweep()
+    except Exception as e:                       # noqa: BLE001 — logged, not raised
+        logger.error("Justice Canada sweep failed: %s", str(e)[:200])
+        rep = {}
+    targets = rep.get("targets") or []
     out = {"counts": rep.get("counts", {}), "targets": len(targets),
-           "seconds": rep.get("_seconds")}
+           "seconds": round(time.time() - t0, 1)}
     # `new` on a detect-only sweep means "first time swept", not a new document,
     # so it must not pull a crawl — same rule as monitor_cheap_probes.
     if targets:
