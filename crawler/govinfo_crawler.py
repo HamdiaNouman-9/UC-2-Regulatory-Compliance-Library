@@ -1,9 +1,11 @@
-"""GovInfoPublicLawCrawler — one U.S. public law from govinfo.gov (the GPO).
+"""GovInfoPublicLawCrawler — one U.S. public law, entered from the agency page
+that lists it and stored from govinfo.gov (the GPO).
 
-ONE ROW IS ONE PUBLIC LAW. GPO publishes each enrolled law as a package
-(`PLAW-107publ56`) offering a PDF, a plain-text `.htm` rendering and a MODS
-metadata record. The `.htm` is taken as the document; the MODS is read for the
-publisher's own metadata and for an identity check.
+ONE ROW IS ONE PUBLIC LAW. The crawl starts at `page_url` (FinCEN's USA PATRIOT
+Act page) and follows its link to the law. The row's file is GPO's PDF; its text
+and `document_html` are GPO's plain-text `.htm` rendering of the same law. The
+page's own preamble and section summaries are kept in extra_meta, not hashed.
+No XML is read.
 
 `.../xml/<PKG>.xml` RETURNS HTTP 200 WITH AN HTML ERROR PAGE, not XML. See
 UC-2-Scratch/GOVINFO/.
@@ -11,14 +13,18 @@ UC-2-Scratch/GOVINFO/.
 
 from __future__ import annotations
 
+import copy
 import html as _html
 import logging
 import re
 import time
 import unicodedata
+from datetime import datetime
 from typing import Dict, List, Optional
+from urllib.parse import urljoin
 
 import requests
+from bs4 import BeautifulSoup
 
 from models.models import RegulatoryDocument
 from crawler.fingerprint import stamp_content_hashes
@@ -35,15 +41,21 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 #: in a single `<pre>`; there is no other markup in the file.
 _PRE = re.compile(r"<pre>(.*?)</pre>", re.S | re.I)
 
-#: MODS carries several `<titleInfo>` blocks, and the ones after the first
-#: `<relatedItem>` belong to the BILLS this law came from (H.R. 3162, H.R. 5548
-#: for PL 107-56) rather than to the law. Everything is read from the cut.
-_RELATED = re.compile(r"<relatedItem\b", re.I)
-_TITLEINFO = re.compile(r"<titleInfo\b([^>]*)>(.*?)</titleInfo>", re.S | re.I)
-_TITLE = re.compile(r"<title>(.*?)</title>", re.S | re.I)
-_PUBLIC_LAW_ONLY = re.compile(r"^Public Law \d+-\d+$", re.I)
+#: What the law says about itself, read in place of the MODS record.
+_HEADER = re.compile(r"\[(\d+)(?:st|nd|rd|th) Congress Public Law (\d+)\]")
+_SHORT_TITLE = re.compile(r"This Act may be cited as the ``(.+?)''")
+_APPROVED = re.compile(r"Approved ([A-Z][a-z]+ \d{1,2}, \d{4})\.")
+_PACKAGE = re.compile(r"^PLAW-(\d+)publ(\d+)$")
 
-_TAG = re.compile(r"<[^>]+>")
+#: The agency page: its main content block, and the body field inside it that
+#: holds the preamble. The rest of the block is a per-section accordion.
+_PAGE_CONTENT = "#block-fincen-mainpagecontent"
+_PAGE_PREAMBLE = "div.block-field-blocknodesite-pagebody"
+_PAGE_SECTION_HEADING = ".usa-accordion__heading"
+
+#: A space goes at these boundaries only; get_text(" ") spaced every inline tag too.
+_BLOCK = ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th", "tr", "dt", "dd",
+          "div", "section", "table", "ul", "ol", "dl", "br", "hr", "blockquote", "pre")
 
 # openpyxl raises on these, inside save(), after the whole crawl has run.
 _ILLEGAL_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -80,51 +92,24 @@ def _decode(resp) -> str:
 
 def _norm(s: str) -> str:
     """NFKC-normalise, drop the zero-width marks NFKC keeps, collapse whitespace."""
-    return " ".join(
-        unicodedata.normalize("NFKC", s or "").replace("﻿", "").split())
+    s = unicodedata.normalize("NFKC", s or "")
+    return " ".join(re.sub(r"[﻿​‌‍⁠]", "", s).split())
 
 
-def _mods_root(mods: str) -> str:
-    """The MODS record down to its first `<relatedItem>`.
-
-    Past that point the titles and dates describe the bills this law was made
-    from, not the law, and reading one of those as the title would file the
-    USA PATRIOT Act under "United States House Bill 3162".
-    """
-    cut = _RELATED.search(mods)
-    return mods[:cut.start()] if cut else mods
-
-
-def _mods_value(mods_root: str, tag: str) -> str:
-    """The first occurrence of a simple MODS element, entities resolved."""
-    m = re.search(r"<(?:mods:)?%s\b[^>]*>(.*?)</(?:mods:)?%s>"
-                  % (re.escape(tag), re.escape(tag)), mods_root, re.S | re.I)
-    return _norm(_html.unescape(_TAG.sub(" ", m.group(1)))) if m else ""
-
-
-def _mods_titles(mods_root: str):
-    """`(official_title, [alternative titles])` from the law's own MODS record.
-
-    GPO files the official long title under a bare `<titleInfo>` and the popular
-    short title plus the "Public Law N-NN" form under `type="alternative"`.
-    """
-    official, alternatives = "", []
-    for attrs, block in _TITLEINFO.findall(mods_root):
-        t = _TITLE.search(block)
-        if not t:
-            continue
-        value = _norm(_html.unescape(_TAG.sub(" ", t.group(1))))
-        if not value:
-            continue
-        if "alternative" in attrs.lower():
-            alternatives.append(value)
-        elif not official:
-            official = value
-    return official, alternatives
+def _block_text(el) -> str:
+    """Visible text with breaks at block boundaries only; `el` itself is not modified."""
+    el = copy.copy(el)
+    for t in el.find_all(["script", "style", "noscript"]):
+        t.decompose()
+    for tag in el.find_all(_BLOCK):
+        tag.insert_before("\n")
+        tag.insert_after("\n")
+    return _norm(el.get_text(""))
 
 
 class GovInfoPublicLawCrawler:
-    """One U.S. public law, read from GPO's plain-text rendering of it.
+    """One U.S. public law: entered from `page_url`, its file GPO's PDF, its
+    content GPO's plain-text rendering.
 
     `package_id`, `doc_folder` and `source_system` come from the YAML so a
     change in how GPO titles a law cannot silently reshape `doc_path`.
@@ -136,10 +121,11 @@ class GovInfoPublicLawCrawler:
         source_system: str,
         package_id: str,
         doc_folder: str,
+        page_url: str,
+        expected_page_title: str,
+        law_link_text: str,
         htm_url: Optional[str] = None,
         pdf_url: Optional[str] = None,
-        mods_url: Optional[str] = None,
-        details_url: Optional[str] = None,
         category: Optional[str] = None,
         expected_title: Optional[str] = None,
         min_text_chars: int = 1000,
@@ -155,18 +141,20 @@ class GovInfoPublicLawCrawler:
         # gets its OWN folder: the folder is what scopes `disappeared`, so two
         # laws sharing one would propose each other for withdrawal.
         self.doc_folder = doc_folder
+        # The agency page the crawl starts from, its <h1>, and the text of the
+        # link on it that leads to the law.
+        self.page_url = page_url
+        self.expected_page_title = expected_page_title
+        self.law_link_text = law_link_text
         self.htm_url = htm_url or "%s/content/pkg/%s/html/%s.htm" % (
             BASE, package_id, package_id)
         self.pdf_url = pdf_url or "%s/content/pkg/%s/pdf/%s.pdf" % (
             BASE, package_id, package_id)
-        self.mods_url = mods_url or "%s/metadata/pkg/%s/mods.xml" % (
-            BASE, package_id)
-        self.details_url = details_url or "%s/app/details/%s" % (BASE, package_id)
         # The completeness gate's grouping key; not a doc_path crumb.
         self.listing_title = doc_folder
         self.category = category or source_system
-        # A recorded observation of GPO's own wording, not our chosen title —
-        # comparing against our own would warn forever about a correct difference.
+        # A recorded observation of the law's own short title, not our chosen
+        # title — comparing against our own would warn forever.
         self.expected_title = expected_title
         # A FLOOR, NOT THE COUNT. A short rendering is indistinguishable from
         # GPO serving an error page, so it fails the run rather than proposing
@@ -187,7 +175,9 @@ class GovInfoPublicLawCrawler:
 
     def _get(self, url: str) -> str:
         """GET with retries. A status that is not an ANSWER raises rather than
-        returning an empty body — an empty law would be read as a withdrawal."""
+        returning an empty body — an empty law would be read as a withdrawal.
+        A 403 is an answer: FinCEN sits behind Akamai, and a refusal there must
+        not be retried, here or on a schedule."""
         last: Optional[Exception] = None
         for attempt in range(RETRY_ATTEMPTS):
             if attempt or self.delay:
@@ -203,8 +193,73 @@ class GovInfoPublicLawCrawler:
                 last = e
         raise RuntimeError("could not fetch %s: %s" % (url, last))
 
+    def _law_link(self, content) -> str:
+        """The page's link to the law, followed to where it lands. It must land on
+        the configured PDF, or the page now points at a different document."""
+        links = [a["href"] for a in content.find_all("a", href=True)
+                 if _norm(a.get_text()) == self.law_link_text]
+        if not links:
+            raise RuntimeError(
+                "govinfo %s: %s no longer has a %r link in its content. Open the "
+                "page, find where it now links the law, and update `law_link_text` "
+                "(and `pdf_url` if the file moved) in config/sources/govinfo.yml."
+                % (self.package_id, self.page_url, self.law_link_text))
+        href = urljoin(self.page_url, links[0])
+        r = self._sess().head(href, allow_redirects=True, timeout=self.timeout)
+        landed = r.url
+        if landed != self.pdf_url or "pdf" not in r.headers.get("Content-Type", "").lower():
+            raise RuntimeError(
+                "govinfo %s: the %r link on %s (%s) now lands on %s (HTTP %d, %s), "
+                "not the configured %s. Nothing was stored. Open the page and the "
+                "link: if FinCEN now points at a different law or version, that is "
+                "a scope decision; if only the address moved, update `pdf_url` and "
+                "`package_id` in config/sources/govinfo.yml."
+                % (self.package_id, self.law_link_text, self.page_url, href, landed,
+                   r.status_code, r.headers.get("Content-Type", ""), self.pdf_url))
+        return href
+
     def fetch_documents(self, limit=None) -> List[RegulatoryDocument]:
         warnings: List[str] = []
+
+        # ---- the agency page the crawl starts from --------------------------
+        soup = BeautifulSoup(self._get(self.page_url), "html.parser")
+        h1 = soup.find("h1")
+        page_title = _norm(h1.get_text()) if h1 else ""
+        if page_title != self.expected_page_title:
+            raise RuntimeError(
+                "govinfo %s: %s has <h1> %r, expected %r. The page has moved or "
+                "changed; refusing to follow its links."
+                % (self.package_id, self.page_url, page_title, self.expected_page_title))
+        content = soup.select_one(_PAGE_CONTENT)
+        preamble = soup.select_one(_PAGE_PREAMBLE)
+        if content is None or preamble is None:
+            raise RuntimeError(
+                "govinfo %s: %s no longer has %s / %s. The page template has "
+                "changed; update the selectors in crawler/govinfo_crawler.py."
+                % (self.package_id, self.page_url, _PAGE_CONTENT, _PAGE_PREAMBLE))
+        # The accordion: one {heading: summary} pair per section of the Act the
+        # page summarises. Each heading's button names its body by aria-controls.
+        sections = {}
+        for h in content.select(_PAGE_SECTION_HEADING):
+            button = h.find("button")
+            body = content.find(id=button.get("aria-controls")) if button else None
+            if body is None:
+                raise RuntimeError(
+                    "govinfo %s: accordion heading %r on %s has no body. The page "
+                    "template has changed; update the accordion reading in "
+                    "crawler/govinfo_crawler.py." % (self.package_id, _block_text(h), self.page_url))
+            sections[_block_text(h)] = _ILLEGAL_XLSX.sub(" ", _block_text(body))
+        if not sections:
+            raise RuntimeError(
+                "govinfo %s: %s has no section accordion (%s). Open the page; if the "
+                "summaries moved, update the selector in crawler/govinfo_crawler.py."
+                % (self.package_id, self.page_url, _PAGE_SECTION_HEADING))
+        published_link = self._law_link(content)
+        page_links = []
+        for a in content.find_all("a", href=True):
+            href = urljoin(self.page_url, a["href"])
+            if href.startswith("http") and href not in page_links:
+                page_links.append(href)
 
         # ---- the law itself -------------------------------------------------
         page = self._get(self.htm_url)
@@ -229,76 +284,55 @@ class GovInfoPublicLawCrawler:
                 "or replaced rendering."
                 % (self.package_id, len(content_text), self.min_text_chars))
 
-        # ---- the publisher's metadata record --------------------------------
-        mods = self._get(self.mods_url)
-        if "<mods" not in mods[:2000].lower():
+        # IDENTITY CHECK, from the law's own header: "[107th Congress Public
+        # Law 56]" must be the configured package, or we fetched another law.
+        header, package = _HEADER.search(content_text), _PACKAGE.match(self.package_id)
+        if not header or not package or header.groups() != package.groups():
             raise RuntimeError(
-                "govinfo %s: %s is not a MODS record — same 200-status trap as "
-                "the .htm. Refusing to store a law with no metadata."
-                % (self.package_id, self.mods_url))
-        root = _mods_root(mods)
+                "govinfo %s: %s is headed %r. Refusing to store one law under "
+                "another's folder." % (self.package_id, self.htm_url,
+                                       header.group(0) if header else None))
+        law_number = "Public Law %s-%s" % header.groups()
 
-        # IDENTITY CHECK, not decoration. `accessId` is GPO's own name for the
-        # package; if it disagrees with the configured one we fetched a
-        # different law and would file it under this folder.
-        access_id = _mods_value(root, "accessId")
-        if access_id and access_id != self.package_id:
+        short = _SHORT_TITLE.search(content_text)
+        if not short:
             raise RuntimeError(
-                "govinfo %s: %s describes package %r. Refusing to store one law "
-                "under another's folder."
-                % (self.package_id, self.mods_url, access_id))
-
-        official_title, alternatives = _mods_titles(root)
-        # The popular short title ("...(USA PATRIOT ACT) Act of 2001") is what a
-        # reviewer recognises; "Public Law 107-56" is also filed as an
-        # alternative and is a reference, not a name.
-        short_title = next(
-            (a for a in alternatives if not _PUBLIC_LAW_ONLY.match(a)), "")
-        title = short_title or official_title
-        if not title:
-            raise RuntimeError(
-                "govinfo %s: no <titleInfo> title in %s. The metadata template "
-                "has changed; refusing to guess a title."
-                % (self.package_id, self.mods_url))
+                "govinfo %s: no \"This Act may be cited as\" clause in %s; "
+                "refusing to guess a title." % (self.package_id, self.htm_url))
+        title = _norm(short.group(1))
         if self.expected_title and self.expected_title != title:
             warnings.append("the recorded title %r is now %r"
                             % (self.expected_title, title))
             logger.warning(warnings[-1])
 
-        law_number = next(
-            (a for a in alternatives if _PUBLIC_LAW_ONLY.match(a)), "")
+        # The date Congress enacted it, as the law itself states it. The only
+        # date here that describes the LAW; it has not moved since 2001.
+        approved = _APPROVED.findall(content_text)
+        if len(approved) != 1:
+            raise RuntimeError(
+                "govinfo %s: expected one \"Approved <date>.\" line in %s, found "
+                "%d." % (self.package_id, self.htm_url, len(approved)))
+        date_approved = datetime.strptime(approved[0], "%B %d, %Y").date().isoformat()
 
         meta = {
             "crawl_source": self.listing_title,
             "package_id": self.package_id,
-            "access_id": access_id,
-            "official_title": official_title,
-            "alternative_titles": " | ".join(alternatives),
             "law_number": law_number,
-            "congress": _mods_value(root, "congress"),
-            "doc_class": _mods_value(root, "docClass"),
-            "branch": _mods_value(root, "branch"),
-            "publisher": _mods_value(root, "publisher"),
-            # The date Congress enacted it. This is the only date here that
-            # describes the LAW; it has not moved since 2001 and will not.
-            "date_issued": _mods_value(root, "dateIssued"),
-            # PROVENANCE ONLY — GPO'S BULK RE-INGEST STAMP, excluded from the
-            # hash. Measured 2026-09-22: every public law of 2001 carries a
-            # `recordChangeDate` inside one 90-minute window on 2026-01-04, and
-            # the HTTP `Last-Modified` and the sitemap `lastmod` say the same
-            # thing because they are one event. Hashing any of them would
-            # re-version the whole corpus on GPO's next re-ingest.
-            "record_change_date": _mods_value(root, "recordChangeDate"),
-            "record_creation_date": _mods_value(root, "recordCreationDate"),
+            # The agency page's own introduction to the law: information ABOUT
+            # the instrument, not the instrument, so outside document_html and
+            # the hash — the rule written down in hints/mhrsd.regs.yml.
+            "source_page_overview": _ILLEGAL_XLSX.sub(" ", _block_text(preamble)),
+            # The page's section-by-section summaries, label -> value as MHRSD's
+            # labelled sidebar is stored; also outside the hash.
+            "source_page_sections": sections,
+            # Every link in the page's content, as published. Deliberately not
+            # `attachment_links`: they are not this law's files.
+            "content_links": " | ".join(page_links),
+            # The page's own link to the law, before its redirects.
+            "source_page_law_link": published_link,
             "content_text": content_text,
             "text_chars": len(content_text),
             "htm_url": self.htm_url,
-            "pdf_url": self.pdf_url,
-            "mods_url": self.mods_url,
-            # Where a reviewer should click. `document_url` is the plain-text
-            # rendering, which is correct for the library and plain for a person.
-            "landing_page": self.details_url,
-            "source": self.details_url,
         }
 
         doc = RegulatoryDocument(
@@ -308,35 +342,26 @@ class GovInfoPublicLawCrawler:
             title=title,
             # Exactly one file, so `document_url` is set and attachment_links
             # stays empty — the single-file branch of the models.py contract.
-            document_url=self.htm_url,
+            document_url=self.pdf_url,
             doc_path=[self.regulator, self.source_system, self.doc_folder, title],
-            file_type="HTML",
-            source_page_url=self.details_url,
-            published_date=meta["date_issued"] or None,
-            reference_no=law_number or self.package_id,
-            # The file is one `<pre>` of plain text; there is no markup worth
-            # storing and storing it would only duplicate `content_text`.
-            document_html=None,
+            file_type="PDF",
+            source_page_url=self.page_url,
+            published_date=date_approved,
+            reference_no=law_number,
+            document_html=_ILLEGAL_XLSX.sub(" ", pre.group(0)),
             extra_meta=meta,
         )
-        docs = [doc]
-
-        # SINGLE EXIT. The hash is the law's own text and nothing else — no
-        # date from the MODS record reaches it. `stamp_content_hashes` never
-        # overwrites it and is left in place as the floor for any future branch
-        # that forgets.
-        for d in docs:
-            d.content_hash = content_key(content_text)
-            d.extra_meta["content_hash_basis"] = "gpo-plaintext-rendering"
-        docs = stamp_content_hashes(docs)
+        # The hash is the law's own text and nothing else; the agency page's
+        # preamble and links stay out of it.
+        doc.content_hash = content_key(content_text)
+        meta["content_hash_basis"] = "gpo-plaintext-rendering"
+        docs = stamp_content_hashes([doc])          # single exit
 
         self.last_result = {
             "run": {"blocked_pages": 0, "warnings": warnings},
             "by_source": {self.listing_title: len(docs)},
-            "source": self.details_url,
+            "source": self.page_url,
         }
-        logger.info("GovInfoPublicLawCrawler %s: %r, %d chars, issued %s, "
-                    "record changed %s", self.package_id, title,
-                    len(content_text), meta["date_issued"],
-                    meta["record_change_date"])
+        logger.info("GovInfoPublicLawCrawler %s: %r, %d chars, approved %s, %d page links",
+                    self.package_id, title, len(content_text), date_approved, len(page_links))
         return docs[:limit] if isinstance(limit, int) and limit > 0 else docs

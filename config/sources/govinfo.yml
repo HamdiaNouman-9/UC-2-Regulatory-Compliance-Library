@@ -28,41 +28,38 @@ owner: Fakih
 # country is prepended only when the folder tree is built, never in doc_path.
 
 # ---------------------------------------------------------------------------
-# THE DOCUMENT IS THE .htm, NOT THE PDF THE BRIEF NAMED — AND NOT THE .xml
+# ENTERED FROM FINCEN'S PAGE; THE FILE IS THE PDF; THE CONTENT IS THE .htm
+# (revised 2026-10-12, the user's brief: crawl a page, not a file directly)
 # ---------------------------------------------------------------------------
-# GPO offers each law as a PDF, a plain-text `.htm` and a MODS metadata record.
+#   page_url        https://www.fincen.gov/resources/statutes-and-regulations/usa-patriot-act
+#                   — the crawl starts here. Its "USA PATRIOT Act" link is GPO's
+#                   RETIRED frwebgate service; three 302s land on the PDF below.
+#                   The crawler follows them every run and raises if they land
+#                   anywhere else: the page is the authority for which law this is.
+#   document_url    the PDF (one file; the lead's 2026-08-24 rule in
+#                   utils/file_links.py)
+#   document_html   the `.htm` rendering's single `<pre>` — the whole law
+#   content_text    that `<pre>`'s text; the hash, unchanged from 2026-09-22
+#   extra_meta      source_page_overview — the page's preamble, and
+#                   source_page_sections — its 12 accordion summaries as
+#                   {heading: summary}; both information ABOUT
+#                   the law (hints/mhrsd.regs.yml's rule), not hashed;
+#                   content_links — the page content's links, not attachment_links
+#
+# NO XML IS READ (the project lead's decision). Title, law number and date come
+# from the law's own text — "This Act may be cited as ...", "[107th Congress
+# Public Law 56]", "Approved October 26, 2001." — and the header doubles as the
+# identity check MODS `<accessId>` used to be.
 #
 # THE `.xml` RENDERING DOES NOT EXIST FOR THIS COLLECTION, AND SAYS SO WITH
 # HTTP 200. `/content/pkg/<PKG>/xml/<PKG>.xml` returns govinfo's own HTML page
-# under status 200 — not a 404. Measured on SIX unrelated packages 2026-09-22
-# (107publ56, 107publ296, 111publ203, 116publ283, 91publ508, 115publ174): all
-# six returned that same page, which is why all six report an IDENTICAL
-# `Last-Modified` of 2026-08-25 13:59:05. A crawler that trusted ".xml in the
-# url" would store an error page as the law and look successful doing it.
-# `GovInfoPublicLawCrawler` refuses a body with no `<pre>` for this reason.
+# under status 200 — not a 404. Measured on SIX unrelated packages 2026-09-22.
+# `GovInfoPublicLawCrawler` refuses a `.htm` body with no `<pre>` for this reason.
 #
-# THE `.htm` IS PREFERRED OVER THE PDF, agreed 2026-09-22. Both carry the whole
-# law; the difference is print furniture. Extracted and compared word by word:
-#
-#     in the PDF and not the .htm      132x "PUBLIC LAW 107-56—OCT. 26, 2001"
-#                                      132x "VerDate 11-MAY-2000 ... Jkt 099139"
-#     in the .htm and not the PDF      nothing substantive
-#
-# That is the running header and the typesetter's job ticket, repeated once per
-# page, and it is neither law nor useful. The `.htm` also needs no PDF text
-# extraction, so there is no extraction layer to go wrong. The PDF is kept on
-# the row as `extra_meta.pdf_url`, the same way Justice Canada keeps its PDF.
-#
-# ONE ARTEFACT END TO END. `document_url` is the `.htm`, so the probe target,
-# the `confirm` target and the fingerprint basis are all the SAME file. The PDF
-# would give a marginally stronger probe token — govinfo returns a real
-# `Content-Range` for it, so the token carries the byte length as well as the
-# date, whereas the `.htm` is served chunked and its token is the date alone
-# (measured: `'Sun, 04 Jan 2026 06:02:27 GMT|494039'` against
-# `'Sun, 04 Jan 2026 06:02:27 GMT|'`). That was weighed and refused: splitting
-# the hash basis from the probe target is how two things that must agree come
-# to disagree, and the date alone is sufficient here because BOTH files carry
-# the same stamp anyway — see the signal section below.
+# WHY THE TEXT IS THE .htm AND NOT THE PDF. Both carry the whole law; the PDF adds
+#     132x "PUBLIC LAW 107-56—OCT. 26, 2001"   (running header)
+#     132x "VerDate 11-MAY-2000 ... Jkt 099139" (typesetter's job ticket)
+# and needs an extraction step. Measured 2026-09-22.
 
 # ---------------------------------------------------------------------------
 # THE FINGERPRINT, AND THE BATCH STAMP THAT DECIDES IT
@@ -87,8 +84,9 @@ owner: Fakih
 # Hashing any of these would re-version the entire corpus on GPO's next
 # re-ingest, which is the CMA `Last-Modified` fault again.
 #
-# THE ONE DATE THAT DESCRIBES THE LAW is `<dateIssued>` = 2001-10-26, the day
-# Congress enacted it. It is recorded as `published_date` and it will not move.
+# THE ONE DATE THAT DESCRIBES THE LAW is 2001-10-26, the day it was approved —
+# read since 2026-10-12 from the law's own "Approved October 26, 2001." line,
+# formerly MODS `<dateIssued>` (same value). It is `published_date` and will not move.
 #
 # WHICH IS THE REAL POINT ABOUT THIS DOCUMENT: A PUBLISHED SLIP LAW IS FROZEN.
 # GPO does not amend a law once it is enrolled; it prints what Congress passed.
@@ -109,6 +107,11 @@ owner: Fakih
 # ---------------------------------------------------------------------------
 # HOST MANNERS
 # ---------------------------------------------------------------------------
+# www.fincen.gov (added 2026-10-12): Drupal behind AKAMAI — the same CDN that
+# refused ola.org on its first request. robots.txt allows the page; two fetches
+# differed only inside Akamai's own tracking script. One GET a run. A 403 is
+# raised at once and must never be retried on a schedule.
+#
 # Cloudflare in front of the GPO origin, and it does not fight us: no challenge,
 # no rate limiting observed across ~30 unpaced requests, `cf-cache-status:
 # DYNAMIC`. www.govinfo.gov is NOT in skip_hosts. `delay: 1.0` is politeness —
@@ -117,8 +120,9 @@ owner: Fakih
 # robots.txt ALLOWS this. It disallows /core/, /profiles/, /admin/, /search/ and
 # the user account paths; /content/pkg/ and /metadata/pkg/ are not restricted.
 #
-# NO ETag ON ANY URL. The probe falls through to `Last-Modified|<length>` — see
-# dynamic_crawler/fingerprint.py:75.
+# NO ETag ON ANY URL, and FinCEN's page sends neither ETag nor Last-Modified.
+# Since 2026-10-12 the signal is therefore `crawl` (config/change_signals.yml):
+# the page is what can change, and nothing about it can be probed cheaply.
 
 # ---------------------------------------------------------------------------
 # THE api.govinfo.gov FEED — THE `sama-feed` THAT EXISTS BUT NEEDS A KEY
@@ -137,8 +141,8 @@ owner: Fakih
 #
 # A KEY IS AN OPERATOR DECISION, NOT A REPOSITORY ONE. Whoever holds the
 # credentials should register at https://www.govinfo.gov/api-signup, put the key
-# in `.env`, and only then is this worth building. With ONE document the probe
-# below costs one request and the feed would cost one request, so there is
+# in `.env`, and only then is this worth building. With ONE document the weekly
+# crawl costs about 0.5 MB and the feed would cost one request, so there is
 # nothing to gain today — it becomes the right answer the moment a second U.S.
 # law is added, and it is recorded here so that is a decision rather than a
 # rediscovery.
@@ -172,17 +176,16 @@ sources:
       # full title, matching how Justice Canada folders read
       # "Bankruptcy and Insolvency Act" under a longer stored title.
       doc_folder: "USA PATRIOT Act"
+      # The page the crawl starts from, its <h1>, and the text of its link to
+      # the law. Recorded 2026-10-12.
+      page_url: "https://www.fincen.gov/resources/statutes-and-regulations/usa-patriot-act"
+      expected_page_title: "USA PATRIOT Act"
+      law_link_text: "USA PATRIOT Act"
       htm_url: "https://www.govinfo.gov/content/pkg/PLAW-107publ56/html/PLAW-107publ56.htm"
       pdf_url: "https://www.govinfo.gov/content/pkg/PLAW-107publ56/pdf/PLAW-107publ56.pdf"
-      mods_url: "https://www.govinfo.gov/metadata/pkg/PLAW-107publ56/mods.xml"
-      details_url: "https://www.govinfo.gov/app/details/PLAW-107publ56"
-      # A recorded observation of GPO's own wording, not our chosen title. The
-      # guard asks "has this record changed?", so giving it our own phrasing
-      # would make it warn on every run about a difference that is permanent.
-      #
-      # It is the SHORT title from `<titleInfo type="alternative">`. The bare
-      # `<titleInfo>` holds the official long title ("An act to deter and punish
-      # terrorist acts..."), which is also recorded, in extra_meta.
+      # A recorded observation of the law's own wording, not our chosen title:
+      # the short title its "This Act may be cited as" clause gives. Identical
+      # to the MODS short title used until 2026-10-12, so doc_path did not move.
       expected_title: "Uniting and Strengthening America by Providing Appropriate Tools Required to Intercept and Obstruct Terrorism (USA PATRIOT ACT) Act of 2001"
       # A FLOOR, NOT THE COUNT. Measured at 378,533 characters on 2026-09-22;
       # naming that would turn any re-render into a crawl failure. Set well
@@ -205,7 +208,6 @@ sources:
 #     and it is a different collection with a different package shape and a
 #     genuinely different unit of publication. It is NOT one more entry here.
 #   /content/pkg/BILLS-107hr3162enr/ — the enrolled bill this law was made from.
-#     Its MODS is already linked from this package's `<relatedItem>` blocks,
-#     which is why `_mods_root` cuts there: those titles describe H.R. 3162, not
-#     the law, and reading one would file this Act as "United States House Bill
-#     3162".
+#     (Until 2026-10-12 the crawler read MODS, whose `<relatedItem>` blocks
+#     describe H.R. 3162; reading a title from there would have filed this Act
+#     as "United States House Bill 3162". No MODS is read now.)

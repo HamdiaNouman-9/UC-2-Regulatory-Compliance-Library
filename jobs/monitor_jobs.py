@@ -167,14 +167,6 @@ CHEAP_PROBE_SOURCES = [
     # sweep CLI, which probes `document_url`; JUS stores the PDF there but is
     # probed on its XML, which the workbook does not hold. It runs as
     # `monitor_justice_canada` below, permanently.
-    #
-    # GOVINFO (GPO) IS NOT HERE YET EITHER, 2026-09-22, and for exactly the same
-    # reason: its signal IS `stored-inventory`, but this job is DAILY and
-    # ENABLED and a target it finds writes STRAIGHT TO MSSQL. It runs as
-    # `monitor_govinfo` on a slot that ships `enabled: false`. After the
-    # workbook is approved and promoted, move it here as
-    #     ("United States Government Publishing Office (GPO)", "Public Laws"),
-    # and delete that job.
 ]
 
 #: Regulator -> (crawler name, is_form) for the sources whose crawl IS the
@@ -280,6 +272,9 @@ CRAWL_AS_SIGNAL = {
     #: ASFI joined 2026-10-02. No honest token; measurements on the
     #: change_signals.yml entry.
     "Alberta Superintendent of Financial Institutions (ASFI)": ("asfi", False),
+    #: GPO moved here 2026-10-12: it is entered from FinCEN's page, which sends
+    #: no ETag or Last-Modified; measurements on the change_signals.yml entry.
+    "United States Government Publishing Office (GPO)": ("govinfo", False),
 }
 
 
@@ -928,53 +923,18 @@ def _monitor_justice_canada_impl() -> dict:
 
 
 def monitor_govinfo() -> dict:
-    """WEEKLY, AND OFF. A cheap probe, not a crawl — measurements on the
+    """WEEKLY, AND OFF. The crawl is the signal — measurements on the
     change_signals.yml entry.
-
-    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook: a
-    detected change crawls straight into MSSQL, and this source has never been
-    reviewed. Once it is, this job's job is done — see CHEAP_PROBE_SOURCES.
     """
     return _run_exclusive("monitor_govinfo", _monitor_govinfo_impl)
 
 
 def _monitor_govinfo_impl() -> dict:
-    # ONE request to detect, because there is one document and the probe is a
-    # ranged GET against the stored `.htm`. A crawl follows only if the file
-    # moved and costs 2 requests (the `.htm`, then the MODS record), about
-    # 600 KB.
-    #
-    # THE PROBE BARELY EARNS ITS KEEP AT THIS SIZE — one probe against one
-    # 460 KB crawl is a thin saving, and `crawl` would be a defensible signal
-    # too. It is a probe anyway for two reasons. The document is FROZEN (a
-    # published slip law is never amended), so the normal case is "nothing
-    # moved" forever and the cheap question is the one worth asking. And the
-    # second U.S. law added turns this into N probes against N crawls, where the
-    # saving is real; building it that way now means adding a law is an entry in
-    # config/sources/govinfo.yml and nothing else.
-    #
-    # IF A SECOND LAW IS EVER ADDED, PREFER THE FEED INSTEAD. GPO publishes
-    # `api.govinfo.gov/collections/PLAW/<since>`, which answers the same question
-    # in one request AND discovers laws we do not hold — which a per-document
-    # probe structurally cannot. It needs an api.data.gov key, so it is an
-    # operator decision; the measurements are on the govinfo.yml entry.
-    state = REPO_ROOT / "output" / "monitor_targets"
-    state.mkdir(parents=True, exist_ok=True)
-    regulator = "United States Government Publishing Office (GPO)"
-    source = "Public Laws"
-    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
-    rep = _sweep(regulator, source, tf)
-    targets = [l.strip() for l in
-               (tf.read_text(encoding="utf-8").splitlines()
-                if tf.exists() else []) if l.strip()]
-    out = {"counts": rep.get("counts", {}), "targets": len(targets),
-           "seconds": rep.get("_seconds")}
-    # `new` on a detect-only sweep means "first time swept", not a new document,
-    # so it must not pull a crawl — same rule as monitor_cheap_probes.
-    if targets:
-        out["crawl"] = _crawl_into_db("govinfo", False)
-    logger.info("govinfo (GPO): %s", out)
-    return out
+    # FinCEN's page (Akamai: a refusal must not be retried on a schedule), three
+    # redirect hops to the PDF, then the 460 KB `.htm`.
+    res = _crawl_into_db("govinfo", False)
+    logger.info("govinfo (GPO): %s", res)
+    return res
 
 
 def monitor_fintrac() -> dict:

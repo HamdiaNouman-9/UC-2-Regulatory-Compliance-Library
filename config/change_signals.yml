@@ -1107,77 +1107,32 @@ sources:
     confirm: true
 
   # ---------------------------------------------------------------------------
-  # GOVINFO (GPO) (CANADA, by the business team's classification) — ONE
-  # DOCUMENT, AND THE ONLY SOURCE HERE THAT SHOULD NEVER
-  # REPORT A CHANGE AT ALL
+  # GOVINFO (GPO) (CANADA, by the business team's classification) — ONE LAW,
+  # ENTERED FROM FINCEN'S PAGE. `crawl` since 2026-10-12.
   # ---------------------------------------------------------------------------
-  # Added 2026-09-22. `confirm: true`, and the reasoning is the inverse of most
-  # entries: the probe token is not merely unreliable, EVERY DATE THIS PUBLISHER
-  # OFFERS IS THE SAME BULK RE-INGEST STAMP.
+  # The crawl starts at FinCEN's USA PATRIOT Act page and follows its link (GPO's
+  # retired frwebgate service, three 302s) to the PDF stored in `document_url`.
+  # The page is what can change — a new link target, a new law — and it sends no
+  # ETag or Last-Modified, so nothing about it can be probed: the crawl is the
+  # signal. About 0.5 MB a run: the page, three redirect hops, and the 460 KB
+  # `.htm` whose `<pre>` text is the hash.
   #
-  #     HTTP Last-Modified (.htm and .pdf)   Sun, 04 Jan 2026 06:02:27 GMT
-  #     MODS <recordChangeDate>              2026-01-04
-  #     sitemap <lastmod>                    2026-01-04T06:03:00.018Z
+  # The law itself is FROZEN — GPO never amends a published slip law — so a
+  # `modified` is a reason to look at the crawler before believing it. Every date
+  # GPO offers is one bulk re-ingest stamp (HTTP Last-Modified, MODS
+  # recordChangeDate and sitemap lastmod all 2026-01-04, measured 2026-09-22);
+  # none reaches the hash. The row is the law AS ENACTED IN 2001, not current
+  # U.S. law; no signal on it can surface the 2006 and 2015 amendments — see the
+  # "NOT LISTED" note in config/sources/govinfo.yml.
   #
-  # They agree because they are ONE EVENT. Measured 2026-09-22: the PLAW 2001
-  # sitemap holds 108 public laws and ALL 108 carry a lastmod inside one ~90
-  # minute window that morning. Nothing happened to 108 enacted laws that day.
-  # Six unrelated packages spanning 1970 to 2020 were checked the same way and
-  # every one sits in the same early-January window. This is CMA's
-  # `Last-Modified` fault in a third costume.
+  # `confirm: true` kept, as on every crawl entry here.
   #
-  # SO THE TOKEN IS A RE-INGEST DETECTOR, NOT A CHANGE DETECTOR. It fires for
-  # the whole corpus at once and never in between. `confirm: true` makes the
-  # sweep fetch the document and hash it before believing the token, which costs
-  # one 460 KB GET on the days GPO re-ingests and nothing on every other day.
-  #
-  # THE CONFIRM HASH IS THE VISIBLE TEXT, WHICH IS CORRECT HERE. `.htm` is
-  # served as `text/html`, so `inventory_sweep.confirm` takes the visible-text
-  # branch (inventory_sweep.py:203). The file is one `<pre>` block, so its
-  # visible text IS the law — the same basis the crawler hashes. One artefact,
-  # one basis, no split.
-  #
-  # A PUBLISHED SLIP LAW IS FROZEN, which is the real point. GPO prints what
-  # Congress enacted and does not amend it afterwards, so the correct long-run
-  # behaviour of this signal is to report nothing, forever. A `modified` here is
-  # a reason to look at the crawler before believing it. That also means:
-  #
-  #   THE ROW IS THE LAW AS ENACTED IN 2001, NOT CURRENT U.S. LAW. It was
-  #   amended by the USA PATRIOT Improvement and Reauthorization Act (2006) and
-  #   the USA FREEDOM Act (2015), and §215 SUNSET on 2020-03-15 unreauthorised.
-  #   MONITORING THIS PACKAGE WILL NEVER SURFACE ANY OF THAT, because the
-  #   changes did not happen to this document — they happened to other public
-  #   laws and to the U.S. Code. No change signal on this url can fix that; only
-  #   adding those packages can. See the "NOT LISTED" note in
-  #   config/sources/govinfo.yml.
-  #
-  # PROBE THE .htm, WHICH IS ALSO `document_url`. `inventory_sweep.py` probes
-  # whatever is in that column, so it is the signal and not just a link. The PDF
-  # would give a marginally stronger token — govinfo returns a real
-  # `Content-Range` for it and none for the chunked `.htm`, so the tokens read
-  # `'Sun, 04 Jan 2026 06:02:27 GMT|494039'` against
-  # `'Sun, 04 Jan 2026 06:02:27 GMT|'`. It is still the `.htm`, because both
-  # files carry the SAME stamp — the length is the only difference and it buys
-  # nothing against a stamp that is wrong in the same way for both — and because
-  # pointing the probe at a different artefact from the one the hash is built on
-  # is how two things that must agree come to disagree.
-  #
-  # NO ETag ON ANY GOVINFO URL, so `dynamic_crawler/fingerprint.py` falls
-  # through to `Last-Modified|<length>` (fingerprint.py:81). Both tokens above
-  # were stable across repeated probes.
-  #
-  # THE `sama-feed` EXISTS HERE AND IS NOT WIRED. `api.govinfo.gov/collections/
-  # PLAW/<since>` lists every package modified after a timestamp — one request,
-  # and it DISCOVERS documents we do not hold, which a probe structurally
-  # cannot. It needs an api.data.gov key (verified 2026-09-22: unkeyed returns
-  # `401 API_KEY_MISSING`; `api_key=DEMO_KEY` reaches a 400 about `offsetMark`,
-  # so only the credential is missing). A key is an operator decision and with
-  # ONE document the feed and the probe both cost one request, so there is
-  # nothing to gain today. It becomes the right answer the moment a second U.S.
-  # law is added.
+  # THE `sama-feed` EXISTS AND IS NOT WIRED: `api.govinfo.gov/collections/PLAW/
+  # <since>` needs an api.data.gov key (401 unkeyed, verified 2026-09-22). An
+  # operator decision, worth it the moment a second U.S. law is added.
   - regulator: "United States Government Publishing Office (GPO)"
     source_system: "Public Laws"
-    signal: stored-inventory
+    signal: crawl
     confirm: true
 
   # FINTRAC (CANADA) — two tabs, two signals, one job (monitor_fintrac).

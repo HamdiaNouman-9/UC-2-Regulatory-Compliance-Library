@@ -385,26 +385,13 @@ jobs:
       minute: 0
 
   # GOVINFO (GPO) (CANADA, by the business team's classification) - ONE U.S.
-  # public law, and a CHEAP PROBE: one ranged GET
-  # against the stored `.htm` to detect, and a 2-request crawl (~600 KB) only if
-  # it moved.
-  #
-  # WEEKLY IS ALREADY GENEROUS, because this document is FROZEN. GPO prints what
-  # Congress enacted and never amends a published slip law, so the correct
-  # long-run result of this job is "nothing moved", forever. The only thing it
-  # can actually catch is GPO re-ingesting its own corpus — which happened on
-  # 2026-01-04 for every public law of 2001 at once — and `confirm: true` on the
-  # change_signals.yml entry is what stops that from writing a version row.
-  #
-  # IT IS SCHEDULED ANYWAY rather than skipped, because "this never changes" is
-  # a claim about the publisher that should be CHECKED rather than assumed, and
-  # checking it costs one request a week.
+  # public law, entered from FinCEN's page; crawl as signal since 2026-10-12
+  # (the page sends no version token). About 0.5 MB a run. The law is FROZEN, so
+  # the normal result is "nothing moved"; what this can catch is FinCEN pointing
+  # its link somewhere else, which the crawl refuses loudly.
   #
   # DISABLED BECAUSE NOBODY HAS READ ITS WORKBOOK YET. A detected change crawls
-  # straight to MSSQL, so enabling it before the review would make the first
-  # scheduled run be the ingest. Turn it on after the workbook is approved and
-  # promoted — and at that point prefer moving the source into
-  # CHEAP_PROBE_SOURCES and deleting this slot, so it is swept once, not twice.
+  # straight to MSSQL.
   monitor_govinfo:
     enabled: false
     trigger: cron
