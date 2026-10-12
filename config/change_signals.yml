@@ -1140,9 +1140,12 @@ sources:
   #
   # REGULATIONS: the laws-lois XML carries an honest per-file ETag/Last-Modified,
   # stable across refetch. The page banner "Regulations are current to <date>"
-  # is identical on every regulation and is not probed. `document_url` is the
-  # XML, so it is the probe target. confirm: true until a file rewrite has been
-  # read against a stored baseline.
+  # is identical on every regulation and is not probed. Since 2026-10-12
+  # `document_url` is the PDF and no XML is stored (the JUS treatment): the probe
+  # is `JusticeXmlSweep`, which builds `/eng/XML/<reference_no>.xml` and runs
+  # in-process from `monitor_fintrac` via `jobs.monitor_jobs.justice_xml_sweep`.
+  # Its confirm hash is the XML minus the consolidation fields. confirm: true until
+  # a file rewrite has been read against a stored baseline.
   - regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
     source_system: "Regulations"
     signal: stored-inventory

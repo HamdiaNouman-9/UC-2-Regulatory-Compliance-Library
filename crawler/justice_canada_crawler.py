@@ -180,10 +180,29 @@ def _act_element(page: str, base: str):
 def _block_text(el) -> str:
     """Text with breaks at block boundaries only, minus `_NOT_TEXT`; `el` is not modified."""
     el = copy.copy(el)
+    # A footnote marker is a <sup> in a link whose hidden label reads "Footnote "
+    # (in the text) or "Return to footnote " (opening the footnote); hrefs vary
+    # (#fn_…, #footnoteb_e). With the label gone it would weld to its neighbour
+    # ("Actc", "aS.C. 2021"), so it keeps a space on that side (2026-10-12).
+    for a in el.find_all("a"):
+        label = a.find(class_="wb-invisible")
+        said = label.get_text().strip().lower() if label else ""
+        if said.startswith("return to footnote"):
+            a.insert_after(" ")
+        elif said.startswith("footnote"):
+            a.insert_before(" ")
     for sel in _NOT_TEXT:
         for t in el.select(sel):
             t.decompose()
+    # A list the page styles inline stays inline: SOR/2002-184 writes a historical
+    # note as "[<ul style="display:inline"><li>SOR/2019-240, ss. 26, 27</li></ul>]".
+    inline = set()
+    for t in el.select('[style*="display:inline"]'):
+        inline.add(id(t))
+        inline.update(id(d) for d in t.find_all(True))
     for tag in el.find_all(_BLOCK) + el.select(_BLOCK_SPANS):
+        if id(tag) in inline:
+            continue
         tag.insert_before("\n")
         tag.insert_after("\n")
     return el.get_text("")

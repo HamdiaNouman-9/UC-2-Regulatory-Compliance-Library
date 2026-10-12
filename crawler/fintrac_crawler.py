@@ -1,7 +1,9 @@
 """FintracCrawler — one controller for FINTRAC's tabs; each source entry names its `tab`.
 
-  regulations  one row per regulation FINTRAC lists; text from laws-lois XML,
-               consolidation-cut dates stripped before hashing.
+  regulations  one row per regulation FINTRAC lists. They live on laws-lois, the
+               same site and template as Justice Canada's Acts, so each is read by
+               JusticeCanadaActCrawler: the PDF is the file, FullText.html the
+               content, and the XML only the monitoring probe (JusticeXmlSweep).
   guidelines   one row per guidance page on the hub; the hidden glossary and the
                Date Modified block are stripped before hashing.
 
@@ -11,19 +13,19 @@ See UC-2-Scratch/FINTRAC/.
 from __future__ import annotations
 
 import copy
-import html as _html
 import logging
 import re
 import time
 import unicodedata
 from typing import List, Optional
-from urllib.parse import urljoin, urldefrag
+from urllib.parse import urljoin, urldefrag, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from models.models import RegulatoryDocument
 from crawler.fingerprint import stamp_content_hashes
+from crawler.justice_canada_crawler import JusticeCanadaActCrawler
 from generic_crawler.crawler import content_key
 
 logger = logging.getLogger(__name__)
@@ -33,23 +35,15 @@ FINTRAC = "https://fintrac-canafe.canada.ca"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-_H1 = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
-_XML_HREF = re.compile(r"href='(/eng/XML/[^']+\.xml)'", re.I)
-_PDF_HREF = re.compile(r"href='(/PDF/[^']+\.pdf)'", re.I)
-_ROOT = re.compile(r"<Regulation\b[^>]*>", re.I)
-_INSTRUMENT = re.compile(r"<InstrumentNumber>([^<]+)</InstrumentNumber>")
-_ATTR = lambda n: re.compile(r'\b%s="([^"]*)"' % re.escape(n))
-
-#: When the consolidation was cut, not what it says. Root attributes plus the
-#: <ConsolidationDate> element, which sits in visible text. Measured 2026-09-29.
-_VOLATILE_ATTRS = ("lims:current-date", "lims:pit-date")
-_CONSOLIDATION_DATE = re.compile(r"<ConsolidationDate\b.*?</ConsolidationDate>", re.S)
-
 #: Inside every guidance page's <main>: a 57,659-char glossary, identical on 80
 #: of 89 pages, and the hand-kept Date Modified. Neither is the guidance.
 _GUIDANCE_STRIP = ("div.hidden.definition", "div.pagedetails")
 
-_TAG = re.compile(r"<[^>]+>")
+#: A file FINTRAC itself serves. Files on other hosts (the Canada Gazette, Public
+#: Safety) are references, recorded in content_links, never this page's files.
+_FILE = re.compile(r"\.(pdf|xls[xmb]?|xml|xsd|csv|zip|docx?|pptx?)$", re.I)
+_FILES_IDENTITY = ["doc_path", "extra_meta.attachment_links", "title"]
+
 _ILLEGAL_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -59,24 +53,10 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-#: Elements measured inside <Text> across the six regulations; they sit mid-sentence,
-#: so they vanish rather than become a space ("Regulations ." otherwise). FootnoteRef
-#: keeps its space so "Act 1" stays searchable. An unknown tag still gets a space.
-_INLINE = (r"(?:DefinedTermEn|DefinedTermFr|XRefExternal|XRefInternal|"
-           r"DefinitionRef|Repealed|Language|Emphasis)")
-_INLINE_XML = re.compile(r"</?%s\b[^>]*>" % _INLINE)
-#: A letter touching the OUTSIDE of one keeps a space (Justice's I-3.3 XML has one).
-_INLINE_TOUCHING = re.compile(r"(?<=\w)<%s\b[^>]*>|</%s>(?=\w)" % (_INLINE, _INLINE))
-
 #: HTML gets a space at these boundaries only; get_text(" ") spaced every tag.
 _BLOCK = ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th", "tr", "dt", "dd",
           "div", "section", "summary", "details", "caption", "table", "ul", "ol", "dl",
           "br", "hr", "blockquote", "pre", "figure", "figcaption", "header", "footer")
-
-
-def _text(markup: str) -> str:
-    markup = _INLINE_XML.sub("", _INLINE_TOUCHING.sub(" ", markup))
-    return _norm(_html.unescape(_TAG.sub(" ", markup)))
 
 
 def _block_text(el) -> str:
@@ -86,20 +66,6 @@ def _block_text(el) -> str:
         tag.insert_before("\n")
         tag.insert_after("\n")
     return el.get_text("")
-
-
-def _inline_text(markup: str) -> str:
-    """For titles: the h1 wraps "SOR" in <abbr>, so tags must vanish, not become spaces."""
-    return _norm(_html.unescape(_TAG.sub("", markup)))
-
-
-def _strip_volatile(xml: str) -> str:
-    m = _ROOT.search(xml)
-    root = m.group(0)
-    for a in _VOLATILE_ATTRS:
-        root = re.sub(r'\s*\b%s="[^"]*"' % re.escape(a), "", root)
-    xml = xml[:m.start()] + root + xml[m.end():]
-    return _CONSOLIDATION_DATE.sub("", xml)
 
 
 class FintracCrawler:
@@ -142,60 +108,20 @@ class FintracCrawler:
     def _regulation(self) -> List[RegulatoryDocument]:
         p = self.params
         code = p["reg_code"]                                   # e.g. SOR-2002-184
-        page_url = "%s/eng/regulations/%s/" % (JUSTICE, code)
-        xml_url = "%s/eng/XML/%s.xml" % (JUSTICE, code)
-
-        page = self._get(page_url)
-        h1 = _H1.search(page)
-        title = _inline_text(h1.group(1)) if h1 else ""
-        if title != p["expected_title"]:
-            raise RuntimeError("FINTRAC %s: page title %r, expected %r"
-                               % (code, title, p["expected_title"]))
-        href = _XML_HREF.search(page)
-        if not href or JUSTICE + href.group(1) != xml_url:
-            raise RuntimeError("FINTRAC %s: page does not offer %s" % (code, xml_url))
-        pdf = _PDF_HREF.search(page)
-
-        xml = self._get(xml_url)
-        if not _ROOT.search(xml):
-            raise RuntimeError("FINTRAC %s: no <Regulation> root" % code)
-        inst = _INSTRUMENT.search(xml)
-        if not inst or inst.group(1).strip().replace("/", "-") != code:
-            raise RuntimeError("FINTRAC %s: XML is instrument %r"
-                               % (code, inst and inst.group(1)))
-
-        root = _ROOT.search(xml).group(0)
-        attr = lambda n: (_ATTR(n).search(root) or [None, ""])[1]
-        basis = _strip_volatile(xml)
-        content_text = _ILLEGAL_XLSX.sub(" ", _text(basis))
-        if len(content_text) < int(p["min_text_chars"]):
-            raise RuntimeError("FINTRAC %s: %d chars, below floor %s"
-                               % (code, len(content_text), p["min_text_chars"]))
-
-        meta = {
-            "reg_code": code,
-            "lims_fid": attr("lims:fid"),
-            "last_amended_date": attr("lims:lastAmendedDate"),
-            "inforce_start_date": attr("lims:inforce-start-date"),
-            "consolidation_current_to": attr("lims:current-date"),   # provenance only
-            "content_text": content_text,
-            "text_chars": len(content_text),
-            "xml_url": xml_url,
-            "pdf_url": JUSTICE + pdf.group(1) if pdf else "",
-            "landing_page": page_url,
-            "previous_versions_url": page_url + "PITIndex.html",
-            "content_hash_basis": "xml-minus-consolidation-dates",
-        }
-        doc = RegulatoryDocument(
+        crawler = JusticeCanadaActCrawler(
             regulator=self.regulator, source_system=self.source_system,
-            category=self.category, title=title, document_url=xml_url,
-            doc_path=[self.regulator, self.source_system, p["reg_folder"], title],
-            file_type="XML", source_page_url=page_url,
-            published_date=meta["last_amended_date"] or None,
-            reference_no=inst.group(1).strip(), document_html=None, extra_meta=meta,
-        )
-        doc.content_hash = content_key(_norm(basis))
-        return [doc]
+            act_code=code, act_folder=p["reg_folder"],
+            listing_url="%s/eng/regulations/%s/" % (JUSTICE, code),
+            pdf_url="%s/PDF/%s.pdf" % (JUSTICE, code),
+            category=self.category, expected_title=p["expected_title"],
+            min_text_chars=int(p["min_text_chars"]), delay=self.delay)
+        docs = crawler.fetch_documents()
+        if crawler.last_result["run"]["warnings"]:
+            # A changed title is a different document filed under this folder.
+            raise RuntimeError("FINTRAC %s: %s" % (code, crawler.last_result["run"]["warnings"]))
+        for d in docs:
+            d.extra_meta["reg_code"] = d.extra_meta.pop("act_code")
+        return docs
 
     # ------------------------------------------------------------------- guidelines
     def _guidelines(self) -> List[RegulatoryDocument]:
@@ -240,29 +166,50 @@ class FintracCrawler:
             # them so the gap is visible. Pipe-joined string, never a list.
             images = list(dict.fromkeys(
                 urljoin(url, i["src"]) for i in m.find_all("img") if i.get("src")))
+            # The lead's file rule counts only FINTRAC's own files (none today,
+            # measured 2026-10-12); every other http link is a reference.
+            files, content_links = [], []
+            for a in m.find_all("a", href=True):
+                u = urldefrag(urljoin(url, a["href"]))[0]
+                if not u.startswith("http") or u == url:
+                    continue
+                if u.startswith(FINTRAC) and _FILE.search(urlparse(u).path):
+                    if u not in files:
+                        files.append(u)
+                elif u not in content_links:
+                    content_links.append(u)
             h1 = m.find("h1")
             title = _norm(h1.get_text()) if h1 else ""
             content_text = _ILLEGAL_XLSX.sub(" ", _norm(_block_text(m)))
             if not title or len(content_text) < int(p["min_text_chars"]):
                 raise RuntimeError("FINTRAC %s: title %r, %d chars"
                                    % (url, title, len(content_text)))
+            meta = {
+                "hub_section": section,
+                "hub_url": hub_url,
+                # An UPDATE date, so never published_date (part of identity).
+                "date_modified": date_modified,
+                "image_urls": "|".join(images),
+                "image_count": len(images),
+                "content_links": " | ".join(content_links),
+                "content_text": content_text,
+                "text_chars": len(content_text),
+                "content_hash_basis": "main-text-minus-glossary-and-date",
+            }
+            document_url, file_type = url, "HTML"
+            if len(files) == 1:
+                document_url, file_type = files[0], files[0].rsplit(".", 1)[-1].upper()
+            elif files:
+                meta["attachment_links"] = " | ".join(files)
+                meta["identity_fields"] = _FILES_IDENTITY
+                document_url = ""
             doc = RegulatoryDocument(
                 regulator=self.regulator, source_system=self.source_system,
-                category=self.category, title=title, document_url=url,
+                category=self.category, title=title, document_url=document_url,
                 doc_path=[self.regulator, self.source_system, title],
-                file_type="HTML", source_page_url=url,
-                published_date=date_modified or None, reference_no=None,
-                document_html=str(m),
-                extra_meta={
-                    "hub_section": section,
-                    "hub_url": hub_url,
-                    "date_modified": date_modified,        # provenance only, lags edits
-                    "image_urls": "|".join(images),
-                    "image_count": len(images),
-                    "content_text": content_text,
-                    "text_chars": len(content_text),
-                    "content_hash_basis": "main-text-minus-glossary-and-date",
-                },
+                file_type=file_type, source_page_url=url,
+                published_date=None, reference_no=None,
+                document_html=str(m), extra_meta=meta,
             )
             doc.content_hash = content_key(content_text)
             docs.append(doc)

@@ -8,10 +8,13 @@
 # published. One row per regulation, filed under FINTRAC. FINTRAC's own list is
 # the scope; it omits SOR/2021-181 and SOR/2025-67, listed under the Act there.
 #
-# The hash is the XML minus its consolidation-cut dates (lims:current-date,
-# lims:pit-date, <ConsolidationDate>), which move monthly while the text stands
-# still. The page banner "Regulations are current to <date>" is the same on
-# every regulation and never enters the hash.
+# Since 2026-10-12 each is read by JusticeCanadaActCrawler, the JUS treatment
+# (same site, same template): document_url = the PDF, document_html and the hash
+# = FullText.html without its banner header, published_date empty (the last-
+# amended date is an update date, kept in extra_meta), no XML in the workbook.
+# The XML is only the monitoring probe (JusticeXmlSweep, from reference_no).
+# The page banner "Regulations are current to <date>" is the same on every
+# regulation and never enters the hash.
 
 regulator: "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
 owner: Fakih
@@ -106,6 +109,10 @@ sources:
   # not read as new + disappeared. The hub section is kept in extra_meta.
   # 62 of the 67 pages embed a hidden 57,659-char glossary, and every page has a
   # hand-kept Date Modified that lags edits; both are stripped before hashing.
+  # Date Modified is an update date, so published_date is empty (2026-10-12).
+  # No guidance page offers a PDF of itself (measured 2026-10-12): the page is the
+  # document. Links go in extra_meta.content_links; the two off-site files (a
+  # Canada Gazette PDF, Public Safety's listed-entities XML) are references there.
   # Images (flowcharts, infographics) are recorded in extra_meta.image_urls:
   # about half have no text description, so their content is not in the text.
   - name: "Guidelines"

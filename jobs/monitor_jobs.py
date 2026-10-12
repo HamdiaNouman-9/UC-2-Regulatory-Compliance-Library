@@ -873,8 +873,11 @@ def monitor_justice_canada() -> dict:
     return _run_exclusive("monitor_justice_canada", _monitor_justice_canada_impl)
 
 
-def justice_xml_sweep(repo=None, state_root=None, dry_run: bool = False) -> dict:
-    """The JUS stored-inventory sweep, probing `/eng/XML/<reference_no>.xml`.
+def justice_xml_sweep(repo=None, state_root=None, dry_run: bool = False,
+                      regulator: str = "Department of Justice Canada (JUS)",
+                      source: str = "Consolidated Acts") -> dict:
+    """A laws-lois stored-inventory sweep, probing `/eng/XML/<reference_no>.xml`:
+    Justice Canada's Acts, and FINTRAC's Regulations (same site, same template).
 
     In-process because the sweep CLI can only probe `document_url`, which holds
     the PDF. `repo` defaults to the database; a WorkbookInventory works too.
@@ -882,7 +885,6 @@ def justice_xml_sweep(repo=None, state_root=None, dry_run: bool = False) -> dict
     from crawler.justice_canada_crawler import JusticeXmlSweep
     from dynamic_crawler.cli.sweep import _run
     from dynamic_crawler.inventory_sweep import load_config, settings_for
-    regulator, source = "Department of Justice Canada (JUS)", "Consolidated Acts"
     if repo is None:
         from dynamic_crawler.formfill.promote import _build_repo
         repo = _build_repo()
@@ -962,16 +964,19 @@ def _monitor_fintrac_impl() -> dict:
     # absent from a run that claims them.
     out = {"guidelines": _crawl_into_db(
         "fintrac", False, only_sources=_fintrac_sources("guidelines"))}
-    state = REPO_ROOT / "output" / "monitor_targets"
-    state.mkdir(parents=True, exist_ok=True)
-    regulator = "Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)"
-    tf = state / ("".join(c if c.isalnum() else "_" for c in regulator)[:60] + ".txt")
-    rep = _sweep(regulator, "Regulations", tf)
-    targets = [l.strip() for l in
-               (tf.read_text(encoding="utf-8").splitlines()
-                if tf.exists() else []) if l.strip()]
+    # Regulations are probed on their XML, which the workbook does not hold
+    # (document_url is the PDF since 2026-10-12): the Justice Canada sweep.
+    t0 = time.time()
+    try:
+        rep = justice_xml_sweep(
+            regulator="Financial Transactions and Reports Analysis Centre of Canada (FINTRAC)",
+            source="Regulations")
+    except Exception as e:                       # noqa: BLE001 — logged, not raised
+        logger.error("FINTRAC Regulations sweep failed: %s", str(e)[:200])
+        rep = {}
+    targets = rep.get("targets") or []
     out["regulations"] = {"counts": rep.get("counts", {}), "targets": len(targets),
-                          "seconds": rep.get("_seconds")}
+                          "seconds": round(time.time() - t0, 1)}
     # `new` on a detect-only sweep means "first time swept" — no crawl for it.
     if targets:
         out["regulations"]["crawl"] = _crawl_into_db(
