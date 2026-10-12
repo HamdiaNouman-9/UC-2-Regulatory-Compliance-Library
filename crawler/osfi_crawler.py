@@ -354,7 +354,8 @@ class OSFICrawler:
                 if u not in own:
                     own.append(u)
                 continue
-            if u.startswith("http") and u != r.url and u not in content_links:
+            # The Related documents tab is its own key; these are the article's OTHER links.
+            if id(a) not in rel_anchors and u.startswith("http") and u != r.url and u not in content_links:
                 content_links.append(u)
             if not on_host:
                 continue
@@ -387,7 +388,6 @@ class OSFICrawler:
         path.extend(g if isinstance(g, list) else ([g] if g else []))
         path.append(p["title"])
         meta = {
-            "listing_title": p["listing_title"],
             "node_url": p["node_url"],
             "fields": p["fields"],
             "content_text": p["text"],

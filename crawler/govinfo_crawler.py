@@ -254,7 +254,7 @@ class GovInfoPublicLawCrawler:
                 "govinfo %s: %s has no section accordion (%s). Open the page; if the "
                 "summaries moved, update the selector in crawler/govinfo_crawler.py."
                 % (self.package_id, self.page_url, _PAGE_SECTION_HEADING))
-        published_link = self._law_link(content)
+        self._law_link(content)                         # the guard: raises unless it lands on pdf_url
         page_links = []
         for a in content.find_all("a", href=True):
             href = urljoin(self.page_url, a["href"])
@@ -317,7 +317,6 @@ class GovInfoPublicLawCrawler:
         meta = {
             "crawl_source": self.listing_title,
             "package_id": self.package_id,
-            "law_number": law_number,
             # The agency page's own introduction to the law: information ABOUT
             # the instrument, not the instrument, so outside document_html and
             # the hash — the rule written down in hints/mhrsd.regs.yml.
@@ -328,8 +327,6 @@ class GovInfoPublicLawCrawler:
             # Every link in the page's content, as published. Deliberately not
             # `attachment_links`: they are not this law's files.
             "content_links": " | ".join(page_links),
-            # The page's own link to the law, before its redirects.
-            "source_page_law_link": published_link,
             "content_text": content_text,
             "text_chars": len(content_text),
             "htm_url": self.htm_url,

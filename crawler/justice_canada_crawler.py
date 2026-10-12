@@ -341,13 +341,11 @@ class JusticeCanadaActCrawler:
 
         meta = {
             "crawl_source": self.listing_title,
-            "act_code": self.act_code,
             # Recorded, never published_date: it moves with every amendment and
             # published_date is part of a document's identity.
             "last_amended_date": amd.group(1) if amd else "",
             # PROVENANCE ONLY — site-wide, render-time, excluded from the hash.
             "consolidation_current_to": cur.group(1) if cur else "",
-            "banner": banner_text,
             "content_text": content_text,
             "text_chars": len(content_text),
             # Every link in the Act's text. Deliberately not `attachment_links`:
@@ -355,7 +353,6 @@ class JusticeCanadaActCrawler:
             "content_links": " | ".join(links),
             "fulltext_html_url": fulltext_url,
             "previous_versions_url": "%s/eng/acts/%s/PITIndex.html" % (BASE, self.act_code),
-            "source": self.listing_url,
         }
 
         doc = RegulatoryDocument(

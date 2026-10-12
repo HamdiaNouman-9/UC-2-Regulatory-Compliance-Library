@@ -119,8 +119,6 @@ class FintracCrawler:
         if crawler.last_result["run"]["warnings"]:
             # A changed title is a different document filed under this folder.
             raise RuntimeError("FINTRAC %s: %s" % (code, crawler.last_result["run"]["warnings"]))
-        for d in docs:
-            d.extra_meta["reg_code"] = d.extra_meta.pop("act_code")
         return docs
 
     # ------------------------------------------------------------------- guidelines
@@ -189,7 +187,7 @@ class FintracCrawler:
                 "hub_url": hub_url,
                 # An UPDATE date, so never published_date (part of identity).
                 "date_modified": date_modified,
-                "image_urls": "|".join(images),
+                "image_urls": " | ".join(images),
                 "image_count": len(images),
                 "content_links": " | ".join(content_links),
                 "content_text": content_text,
