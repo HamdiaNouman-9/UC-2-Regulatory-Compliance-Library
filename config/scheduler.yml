@@ -441,7 +441,7 @@ jobs:
       hour: 21
       minute: 0
 
-  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (CANADA) - one page, crawl as signal.
+  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (CANADA) - page + 15 King's Printer documents, crawl as signal.
   monitor_asfi:
     enabled: false
     trigger: cron

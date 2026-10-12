@@ -1,7 +1,18 @@
 # Alberta Superintendent of Financial Institutions — the brief's "Financial
-# Institutions - Regulatory Framework", single page. Measured 2026-10-02, see
-# UC-2-Scratch/ALBERTA_FIRF/. One row: the page's text block. Its links to Acts
-# on open.alberta.ca are kept in extra_meta.related_links, not crawled.
+# Institutions - Regulatory Framework" page, and the Acts it lists under "Related
+# Alberta legislation". Measured 2026-10-02 and 2026-10-12, see
+# UC-2-Scratch/ALBERTA_FIRF/.
+#
+# THE PAGE IS THE MASTER LIST. Each run reads the open.alberta.ca links under that
+# heading and raises, before crawling any Act, if they differ from `acts` below
+# (slug = the open.alberta.ca address ending, folder = the page's sub-heading).
+# The page row's links are its extra_meta.attachment_links.
+#
+# Each Act and Regulation is one King's Printer document, crawled by AKPCrawler:
+# open.alberta.ca holds only metadata, and its resource link leads to King's
+# Printer, whose file name equals the slug. "(includes Regulations)" is the
+# Regulations King's Printer lists with the Act. robots.txt there disallows
+# crawlers; crawled by the user's decision (2026-10-12), single-threaded, 3 s apart.
 
 regulator: "Alberta Superintendent of Financial Institutions (ASFI)"
 owner: Fakih
@@ -19,3 +30,90 @@ sources:
       # A floor, not the count: 6,022 chars measured 2026-10-02.
       min_text_chars: 2000
       delay: 3.0
+      # expected_title is each document's own <title>; min_text_chars is a floor,
+      # about a third of the raw text measured 2026-10-12.
+      acts:
+        - slug: c32
+          folder: "Credit unions"
+          page: "c32.cfm"
+          pdf_file: "c32.pdf"
+          expected_title: "CREDIT UNION ACT"
+          min_text_chars: 120000
+          regulations:
+            - page: "1989_249.cfm"
+              pdf_file: "1989_249.pdf"
+              expected_title: "AR 249/89 CREDIT UNION (PRINCIPAL) REGULATION"
+              min_text_chars: 60000
+            - page: "1989_250.cfm"
+              pdf_file: "1989_250.pdf"
+              expected_title: "AR 250/89 CREDIT UNION (MINISTERIAL) REGULATION"
+              min_text_chars: 6000
+        - slug: l20
+          folder: "Loan and trust corporations"
+          page: "l20.cfm"
+          pdf_file: "l20.pdf"
+          expected_title: "LOAN AND TRUST CORPORATIONS ACT"
+          min_text_chars: 150000
+          regulations:
+            - page: "1992_171.cfm"
+              pdf_file: "1992_171.pdf"
+              expected_title: "AR 171/92 LOAN AND TRUST CORPORATIONS REGULATION"
+              min_text_chars: 29000
+            - page: "1992_172.cfm"
+              pdf_file: "1992_172.pdf"
+              expected_title: "AR 172/92 LOAN AND TRUST CORPORATIONS (MINISTERIAL) REGULATION"
+              min_text_chars: 3000
+        - slug: b09
+          folder: "Other legislation"
+          page: "b09.cfm"
+          pdf_file: "b09.pdf"
+          expected_title: "BUSINESS CORPORATIONS ACT"
+          min_text_chars: 140000
+        - slug: c26p3
+          folder: "Other legislation"
+          page: "c26p3.cfm"
+          pdf_file: "c26p3.pdf"
+          expected_title: "CONSUMER PROTECTION ACT"
+          min_text_chars: 100000
+        - slug: f13
+          folder: "Other legislation"
+          page: "f13.cfm"
+          pdf_file: "f13.pdf"
+          expected_title: "FINANCIAL CONSUMERS ACT"
+          min_text_chars: 12000
+        - slug: a01p4
+          folder: "Other legislation"
+          page: "a01p4.cfm"
+          pdf_file: "a01p4.pdf"
+          expected_title: "ACCESS TO INFORMATION ACT"
+          min_text_chars: 50000
+        - slug: p28p5
+          folder: "Other legislation"
+          page: "p28p5.cfm"
+          pdf_file: "p28p5.pdf"
+          expected_title: "PROTECTION OF PRIVACY ACT"
+          min_text_chars: 34000
+        - slug: l04
+          folder: "Other legislation"
+          page: "l04.cfm"
+          pdf_file: "l04.pdf"
+          expected_title: "LAND TITLES ACT"
+          min_text_chars: 89000
+        - slug: p07
+          folder: "Other legislation"
+          page: "p07.cfm"
+          pdf_file: "p07.pdf"
+          expected_title: "PERSONAL PROPERTY SECURITY ACT"
+          min_text_chars: 77000
+        - slug: r05
+          folder: "Other legislation"
+          page: "r05.cfm"
+          pdf_file: "r05.pdf"
+          expected_title: "REAL ESTATE ACT"
+          min_text_chars: 55000
+        - slug: t08p1
+          folder: "Other legislation"
+          page: "t08p1.cfm"
+          pdf_file: "t08p1.pdf"
+          expected_title: "TRUSTEE ACT"
+          min_text_chars: 41000

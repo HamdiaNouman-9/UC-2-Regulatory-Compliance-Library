@@ -56,15 +56,16 @@ def _block_text(el) -> str:
 
 class AKPCrawler:
     """One document. `page` is King's Printer's own file name (A45p2.cfm), which
-    holds across consolidations; the ISBN in its listing urls does not."""
+    holds across consolidations; the ISBN in its listing urls does not.
+    `folders` replaces the single `folder` crumb when a caller nests deeper (ASFI)."""
 
     def __init__(self, regulator: str, source_system: str, folder: str, page: str,
                  leg_type: str, pdf_file: str, expected_title: str,
                  min_text_chars: int, category: Optional[str] = None,
-                 delay: float = 3.0, **_):
+                 delay: float = 3.0, folders: Optional[List[str]] = None, **_):
         self.regulator = regulator
         self.source_system = source_system
-        self.folder = folder
+        self.folders = list(folders) if folders else [folder]
         self.leg_type = leg_type                    # "Acts" | "Regs"
         self.expected_title = expected_title
         self.min_text_chars = int(min_text_chars)
@@ -117,9 +118,10 @@ class AKPCrawler:
         doc = RegulatoryDocument(
             regulator=self.regulator, source_system=self.source_system,
             category=self.category, title=title, document_url=self.html_url,
-            doc_path=[self.regulator, self.source_system, self.folder, title],
+            doc_path=[self.regulator, self.source_system, *self.folders, title],
             file_type="HTML", source_page_url=self.html_url,
-            published_date=None, reference_no=None, document_html=None,
+            published_date=None, reference_no=None,
+            document_html=_ILLEGAL_XLSX.sub(" ", str(doc_el)),
             extra_meta=meta,
         )
         doc.content_hash = content_key(text)

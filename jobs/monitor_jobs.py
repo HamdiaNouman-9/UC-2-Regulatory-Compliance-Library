@@ -1047,7 +1047,9 @@ def monitor_asfi() -> dict:
 
 
 def _monitor_asfi_impl() -> dict:
-    # 1 request: the regulatory framework page.
+    # 16 requests, 3 s apart: the regulatory framework page, then 11 Acts and 4
+    # Regulations on King's Printer (robots.txt disallows; never retry a refusal
+    # on a schedule).
     res = _crawl_into_db("asfi", False)
     logger.info("ASFI: %s", res)
     return res

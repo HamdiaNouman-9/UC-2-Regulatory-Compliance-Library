@@ -1264,10 +1264,14 @@ sources:
     signal: crawl
     confirm: true
 
-  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (ASFI) — `crawl`, 1 GET.
+  # ALBERTA SUPERINTENDENT OF FINANCIAL INSTITUTIONS (ASFI) — `crawl`, 16 GETs:
+  # the alberta.ca page, then 11 Acts and 4 Regulations from King's Printer.
   # No ETag; Last-Modified is Cloudflare's cache fill, not an edit date.
   # Measured 2026-10-02: two fetches hash identically despite Cloudflare's
-  # per-request email cipher; a simulated year rollover does not move it.
+  # per-request email cipher; a simulated year rollover does not move it. The
+  # King's Printer side has no token either (see AKP above). If the page's Act
+  # list stops matching config/sources/asfi.yml the crawl raises before
+  # fetching any Act.
   - regulator: "Alberta Superintendent of Financial Institutions (ASFI)"
     source_system: "Alberta.ca"
     signal: crawl
