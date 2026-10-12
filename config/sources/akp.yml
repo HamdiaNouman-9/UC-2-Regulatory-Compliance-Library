@@ -14,6 +14,11 @@
 # appears to change per consolidation; `1266.cfm?page=<file>&leg_type=<type>`
 # without it returns byte-identical pages (measured).
 #
+# THE FILE IS THE PDF (2026-10-12, the lead's one-file rule): document_url is
+# serve_pdf.cfm, HEADed once a run (a real file answers 200 application/pdf, a
+# missing one 404 text/html); document_html and source_page_url are the HTML
+# rendering. A dead PDF leaves the page and is listed in extra_meta.dead_files.
+#
 # THE HASH: `div.htmlDocument` text only. Outside it sit the navigation, the
 # "Current as of <date>" banner (honest and per-document: Act June 11 2025, Reg
 # January 29 2025, the unrelated FAA May 14 2026, each matching Open Alberta) and
@@ -40,6 +45,7 @@ sources:
       # A floor, not the count: 48,670 chars measured 2026-10-02.
       min_text_chars: 15000
       delay: 3.0
+      check_files: true
 
   - name: "ATB Financial Regulation"
     mode: custom
@@ -55,3 +61,4 @@ sources:
       # A floor, not the count: 53,876 chars measured 2026-10-02.
       min_text_chars: 15000
       delay: 3.0
+      check_files: true

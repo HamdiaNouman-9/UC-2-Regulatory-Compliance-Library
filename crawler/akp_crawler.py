@@ -14,6 +14,7 @@ import re
 import time
 import unicodedata
 from typing import List, Optional
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -57,12 +58,15 @@ def _block_text(el) -> str:
 class AKPCrawler:
     """One document. `page` is King's Printer's own file name (A45p2.cfm), which
     holds across consolidations; the ISBN in its listing urls does not.
-    `folders` replaces the single `folder` crumb when a caller nests deeper (ASFI)."""
+    `folders` replaces the single `folder` crumb when a caller nests deeper (ASFI).
+    The PDF is the row's file (the lead's one-file rule); the HTML rendering is its
+    content and its source page. `check_files` HEADs the PDF once a run."""
 
     def __init__(self, regulator: str, source_system: str, folder: str, page: str,
                  leg_type: str, pdf_file: str, expected_title: str,
                  min_text_chars: int, category: Optional[str] = None,
-                 delay: float = 3.0, folders: Optional[List[str]] = None, **_):
+                 delay: float = 3.0, folders: Optional[List[str]] = None,
+                 check_files: bool = False, **_):
         self.regulator = regulator
         self.source_system = source_system
         self.folders = list(folders) if folders else [folder]
@@ -71,6 +75,7 @@ class AKPCrawler:
         self.min_text_chars = int(min_text_chars)
         self.category = category or source_system
         self.delay = float(delay)
+        self.check_files = bool(check_files)
         self.html_url = "%s1266.cfm?page=%s&leg_type=%s&display=html" % (BASE, page, leg_type)
         self.pdf_url = "%sserve_pdf.cfm?file=%s&type=%s" % (BASE, pdf_file, leg_type)
         self._s = requests.Session()
@@ -90,6 +95,18 @@ class AKPCrawler:
                 time.sleep(3.0 * (attempt + 1))
         raise RuntimeError("could not fetch %s: %s" % (url, last))
 
+    def _pdf_alive(self) -> bool:
+        """King's Printer answers a real file 200 application/pdf and a missing one
+        404 text/html (measured 2026-10-12). The pdf type also rules out the
+        "View PDF" viewer, an HTML page served as 200."""
+        try:
+            r = self._s.head(self.pdf_url, allow_redirects=True, timeout=90)
+        except requests.RequestException:
+            return True          # unanswered is not dead; a network blip must not demote the file
+        finally:
+            time.sleep(self.delay)
+        return r.status_code == 200 and "pdf" in r.headers.get("Content-Type", "").lower()
+
     def fetch_documents(self, limit=None) -> List[RegulatoryDocument]:
         soup = BeautifulSoup(self._get(self.html_url), "html.parser")
         doc_el = soup.select_one("div.htmlDocument")
@@ -107,19 +124,30 @@ class AKPCrawler:
         if len(text) < self.min_text_chars:
             raise RuntimeError("AKP %s: %d chars, below floor %d"
                                % (self.html_url, len(text), self.min_text_chars))
+        links = []
+        for a in doc_el.find_all("a", href=True):
+            u = urljoin(self.html_url, a["href"]).split("#")[0]
+            if u.startswith("http") and u != self.html_url and u not in links:
+                links.append(u)
         meta = {
             "current_as_of": banner.group(1) if banner else "",       # per document; provenance only
             "consolidated_up_to": consolidated.group(1) if consolidated else "",
             "content_text": text,
             "text_chars": len(text),
-            "pdf_url": self.pdf_url,
+            "content_links": " | ".join(links),
             "content_hash_basis": "htmlDocument-text-minus-consolidation-line",
         }
+        # One file, so it is document_url; a PDF King's Printer no longer serves is
+        # never named the document — the page stays and the file is listed.
+        document_url, file_type = self.pdf_url, "PDF"
+        if self.check_files and not self._pdf_alive():
+            document_url, file_type = self.html_url, "HTML"
+            meta["dead_files"] = self.pdf_url
         doc = RegulatoryDocument(
             regulator=self.regulator, source_system=self.source_system,
-            category=self.category, title=title, document_url=self.html_url,
+            category=self.category, title=title, document_url=document_url,
             doc_path=[self.regulator, self.source_system, *self.folders, title],
-            file_type="HTML", source_page_url=self.html_url,
+            file_type=file_type, source_page_url=self.html_url,
             published_date=None, reference_no=None,
             document_html=_ILLEGAL_XLSX.sub(" ", str(doc_el)),
             extra_meta=meta,

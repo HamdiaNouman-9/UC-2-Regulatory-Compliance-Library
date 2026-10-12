@@ -116,7 +116,8 @@ class ASFICrawler:
 
     def __init__(self, regulator: str, source_system: str, folder: str, path: str,
                  expected_title: str, min_text_chars: int, acts: List[dict],
-                 category: Optional[str] = None, delay: float = 3.0, **_):
+                 category: Optional[str] = None, delay: float = 3.0,
+                 check_files: bool = False, **_):
         self.regulator = regulator
         self.source_system = source_system
         self.folder = folder
@@ -125,6 +126,7 @@ class ASFICrawler:
         self.acts = list(acts)
         self.category = category or source_system
         self.delay = float(delay)
+        self.check_files = bool(check_files)      # passed to AKPCrawler: HEAD each PDF
         self.url = urljoin(BASE, path)
         self._s = requests.Session()
         self._s.headers["User-Agent"] = USER_AGENT
@@ -220,7 +222,8 @@ class ASFICrawler:
             regulator=self.regulator, source_system=self.source_system, folder=folder,
             folders=[LEGISLATION_HEADING, folder], page=act["page"], leg_type=leg_type,
             pdf_file=act["pdf_file"], expected_title=act["expected_title"],
-            min_text_chars=act["min_text_chars"], category=self.category, delay=self.delay)
+            min_text_chars=act["min_text_chars"], category=self.category, delay=self.delay,
+            check_files=self.check_files)
         return crawler.fetch_documents()[0]
 
     def fetch_documents(self, limit=None) -> List[RegulatoryDocument]:

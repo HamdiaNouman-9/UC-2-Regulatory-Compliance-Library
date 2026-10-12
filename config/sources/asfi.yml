@@ -30,6 +30,10 @@ sources:
       # A floor, not the count: 6,022 chars measured 2026-10-02.
       min_text_chars: 2000
       delay: 3.0
+      # Each King's Printer PDF is document_url (the lead's one-file rule) and is
+      # HEADed once a run; a dead one leaves the HTML page and is listed in
+      # extra_meta.dead_files (2026-10-12, 15 HEADs a run).
+      check_files: true
       # expected_title is each document's own <title>; min_text_chars is a floor,
       # about a third of the raw text measured 2026-10-12.
       acts:
