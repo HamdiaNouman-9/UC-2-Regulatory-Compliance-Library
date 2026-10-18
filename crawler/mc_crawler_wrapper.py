@@ -30,11 +30,12 @@ WHAT MAKES THE THREE ROWS DISTINCT
 
 Nothing in the record itself. All three parts of a law share the same title, the
 same `?lawId=` url and the same breadcrumb — the part is recorded ONLY in the
-html filename. So identity comes from `doc_path`, whose last crumb is the part:
+html filename. So identity comes from `doc_path`, whose last crumb is the
+part's title (MC_TITLE; until 2026-10-18 the bare part name):
 
-    Ministry of Commerce > Regulations and Laws > Commercial Register Law > Law
-                                                                         > Implementing Regulation
-                                                                         > Attachments
+    Ministry of Commerce > Regulations and Laws > Commercial Register Law > Commercial Register Law
+                                                                         > Commercial Register Law - Regulation
+                                                                         > Commercial Register Law - Attachments
 
 `(document_url, doc_path)` is therefore unique per part without widening the
 identity tuple — which is what docs/review_fakih_merge_2026-08-11.md (B9) says
@@ -78,17 +79,24 @@ PREFIX_ROOT = "/en/Regulations/"
 
 PART_ORDER = ("law", "regulation", "attachment")
 
-# THE FOLDER NAMES, and they carry the part on their own.
+# THE TITLE OF EACH PART -- and, since doc_path ends on the title, the name of
+# its node in the folder tree too.
 #
-# The law's name is the folder ABOVE these three, so repeating it inside them —
-# "Accredited Valuers Law > Attachments", titled "Accredited Valuers Law —
-# Attachments" — says it twice and reads worse than the site does. Named by the
-# lead 2026-08-14: the law is the folder, and `Laws` / `Regulation` /
-# `Attachments` are the folders inside it.
-PART_LABEL = {
-    "law": "Laws",
-    "regulation": "Regulation",
-    "attachment": "Attachments",
+# 2026-08-14 to 2026-10-18 these were the bare part, "Laws" / "Regulation" /
+# "Attachments" (the lead's call then: the law is the folder above, so do not
+# repeat it). Changed 2026-10-18: a bare "Laws" is meaningless anywhere the tree
+# is not on screen -- regulation detail, requirements, lists, search -- and 27
+# rows all titled "Laws" cannot be told apart there. The tree now reads
+# "Commercial Books Law > Commercial Books Law - Regulation", which repeats the
+# law, and that was accepted as the price.
+#
+# Kept identical to output/mc_title_fix/mc_title_fix.sql, which migrated the
+# stored rows (title, doc_path[3], and their compliancecategory leaves) in the
+# same step -- change one, change both. See docs/mc_title_fix.md.
+MC_TITLE = {
+    "law": "{law}",
+    "regulation": "{law} - Regulation",
+    "attachment": "{law} - Attachments",
 }
 
 # mc\commercial-register-law\law.html  (the script writes native separators)
@@ -206,20 +214,20 @@ class MCLawsCrawler:
         text = rec.get("text") or ""
         page_url = (rec.get("url") or "").strip()
         law = (rec.get("title") or law_slug.replace("-", " ")).strip()
-        label = PART_LABEL[part]
 
-        # THE TITLE IS THE PART, and the law's name is the folder above it. So
-        # doc_path ends ON the title, which is how every other source here reads
-        # (GOSI: "... | Laws and Regulations | Social Insurance Law | <title>"):
+        # The law's name is the folder; doc_path ends ON the title, which is how
+        # every other source here reads (GOSI: "... | Laws and Regulations |
+        # Social Insurance Law | <title>"):
         #
-        #   Ministry of Commerce | Regulations and Laws | Commercial Books Law | Laws
-        #                                                                     | Regulation
-        #                                                                     | Attachments
+        #   Ministry of Commerce | Regulations and Laws | Commercial Books Law | Commercial Books Law
+        #                                                                     | Commercial Books Law - Regulation
+        #                                                                     | Commercial Books Law - Attachments
         #
-        # Named by the lead 2026-08-14. Earlier revisions titled these "Commercial
-        # Books Law" and "Commercial Books Law — Regulation"; both repeated the
-        # law's name, which the folder above already carries.
-        title = label
+        # Title and doc_path[3] are IDENTITY (title feeds _hashless_unchanged and
+        # the multi-file attachments' identity_fields; doc_path is in every
+        # identity tuple), so they must match the stored rows exactly -- see
+        # MC_TITLE above for when and why they changed.
+        title = MC_TITLE[part].format(law=law)
 
         files = self._files(html)
         extra = {
@@ -287,7 +295,7 @@ class MCLawsCrawler:
             file_type=file_type,
             # The part is the LAST crumb, which is what makes the three rows
             # distinct under the default (document_url, doc_path) identity.
-            doc_path=[self.regulator, self.source_system, law, label],
+            doc_path=[self.regulator, self.source_system, law, title],
             document_html=html or None,
             content_hash=content_hash,
             extra_meta=extra,

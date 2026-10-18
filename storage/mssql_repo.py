@@ -2478,13 +2478,19 @@ class MSSQLRepository(DocumentRepository):
         nature = _fit_column(nature, 50, f"{what} nature")
         disposition = _fit_column(disposition, 10, f"{what} disposition")
         disposition_reason = _fit_column(disposition_reason, 1000, f"{what} disposition_reason")
+        # created_on is SET HERE, not left to a column default. Measured
+        # 2026-10-18: prod's Requirement/Activity were re-created on 2026-09-23
+        # (span-table deployment) with created_on NOT NULL and NO default, so
+        # every insert failed with "Cannot insert the value NULL into column
+        # 'created_on'" -- same failure, same fix as regulations.created_at in
+        # _insert_regulation.
         req_query = """
             INSERT INTO Requirement
                 (regulation_id, ref_key, title, description, source_reference,
                  source_refs, requirement_type_id, actor, nature, condition_text,
-                 cross_references, disposition, disposition_reason)
+                 cross_references, disposition, disposition_reason, created_on)
             OUTPUT INSERTED.requirement_id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIME())
         """
         span_query = """
             INSERT INTO RequirementSpan (requirement_id, introduced_in_version_id)
@@ -2620,9 +2626,9 @@ class MSSQLRepository(DocumentRepository):
         act_query = """
             INSERT INTO Activity
                 (requirement_id, ref_key, title, description, suggested_department, frequency,
-                 frequency_type, priority, evidence_expected, suggested_activity_type)
+                 frequency_type, priority, evidence_expected, suggested_activity_type, created_on)
             OUTPUT INSERTED.activity_id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIME())
         """
         span_query = """
             INSERT INTO ActivitySpan (activity_id, introduced_in_version_id)
