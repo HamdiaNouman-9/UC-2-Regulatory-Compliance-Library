@@ -78,15 +78,11 @@ footer text instead, which is the thing we came for and is absent from the
 challenge page.
 
 `generic_crawler.blockcheck.text_is_blocked` is called first and kept -- one
-definition of "is this a bot wall", shared with both engines. It does not carry
-F5's wording today:
+definition of "is this a bot wall", shared with both engines. Since 2026-10-08
+`BLOCK_RE` carries F5's "Request Rejected" too (TODO 2 in
+docs/blocked_sites_plan_2026-10-06.md), so this page is caught there. `_F5`
+below is kept for F5's other wording (the TSPD challenge).
 
-    text_is_blocked("Request Rejected", "The requested URL was rejected...")
-    -> ""
-
-so `_F5` below adds it FOR THIS SOURCE ONLY. Adding it to `BLOCK_RE` would be
-the better fix and belongs in a change of its own: that regex is on every
-regulator's path, and a false positive there fails runs that are fine.
 
 ---------------------------------------------------------------------------
 3. THE LISTING, AS THE SITE ACTUALLY WRITES IT
@@ -183,6 +179,7 @@ from crawler.generic_crawler_wrapper import _clean_trail
 from generic_crawler.blockcheck import text_is_blocked
 from generic_crawler.crawler import USER_AGENT, clean_doc_title, content_key
 from models.models import RegulatoryDocument
+from utils.pacer import wait_turn,mark_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -484,6 +481,7 @@ class CBIListingSource:
         html, last_err = "", None
         for attempt in range(1, self.max_attempts + 1):
             try:
+                wait_turn(url)
                 if attempt == 1:
                     page.goto(url, wait_until="domcontentloaded",
                               timeout=self.timeout * 1000)
@@ -551,13 +549,17 @@ class CBIListingSource:
         """
         shared = text_is_blocked(title, text or html)
         if shared:
+            mark_blocked(url,shared)
             raise CBIBlocked(f"{url}: bot-protection wall ({shared}).")
         m = _F5.search(f"{title}\n{text}\n{html[:4000]}")
         if m:
+            mark_blocked(url, f"F5: {m.group(0)[:40]}")
             raise CBIBlocked(
                 f"{url}: F5 refusal ({m.group(0)[:40]!r}) served as HTTP 200. "
                 f"This is NOT an empty section -- see crawler/cbi_crawler.py §2.")
         if len(html or "") < 2000:
+            # Not certainly a ban -- `unknown` gets the shorter waits.
+            mark_blocked(url, f"{len(html or '')} bytes of body", kind="unknown")
             raise CBIBlocked(
                 f"{url}: {len(html or '')} bytes of body. The listing template "
                 f"alone is tens of KB -- this is a refusal, not a page.")

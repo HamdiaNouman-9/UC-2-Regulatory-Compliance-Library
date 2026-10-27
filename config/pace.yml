@@ -1,0 +1,21 @@
+default : normal
+levels:
+  normal: 1
+  careful: 3
+  very_careful: 5
+
+hosts:
+  #Already blocked us once
+  nca.gov.sa: very_careful
+  saudiexchange.sa: very_careful
+  simah.com: very_careful
+  #Bot protection or throttles bursts
+  cma.gov.sa: careful
+  bahrainbourse.com: careful
+  nbr.gov.bh: careful
+  lloc.gov.bh: careful
+  cbe.org.eg: careful
+
+throttle_only:
+ - nbr.gov.bh
+ - lloc.gov.bh  

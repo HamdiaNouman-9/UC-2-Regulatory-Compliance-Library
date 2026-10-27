@@ -22,7 +22,13 @@ import re
 BLOCK_RE = re.compile(
     r"(you have been blocked|attention required|cf-error-details|just a moment"
     r"|checking your browser|access denied|error 10\d\d|ddos protection"
+    r"|request rejected"   
     r"|请稍候|captcha-bypass|verify you are (a )?human)", re.I)
+
+THROTTLE_RE = re.compile(
+    r"(too many requests|you are being rate limited|rate limit exceeded"
+    r"|error 1015)",re.I
+)    
 
 # What we read off the page. The title matters as much as the body: Cloudflare's
 # is "Attention Required! | Cloudflare" while the body can be nearly empty.
@@ -51,5 +57,9 @@ def text_is_blocked(title: str, body: str) -> str:
     m = BLOCK_RE.search(f"{title or ''}\n{body or ''}")
     return m.group(0)[:60] if m else ""
 
+def text_is_throttled(title: str,body: str)-> str:
+    m=THROTTLE_RE.search(f"{title or ''}\n{body or ''}")
+    return m.group(0)[:60] if m else ""
 
-__all__ = ["BLOCK_RE", "blocked_reason", "text_is_blocked"]
+
+__all__ = ["BLOCK_RE","THROTTLE_RE", "blocked_reason", "text_is_blocked","text_is_throttled"]

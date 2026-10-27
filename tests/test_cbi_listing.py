@@ -108,7 +108,7 @@ def _source(pages=None, **kw):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("body,says", [
-    (REQUEST_REJECTED, "F5 refusal"),
+    (REQUEST_REJECTED, "bot-protection wall"),
     (TSPD_CHALLENGE, "F5 refusal"),
     (CLOUDFLARE_BLOCK, "bot-protection wall"),
 ])
