@@ -1,0 +1,153 @@
+# ===========================================================================
+# Office of the Comptroller of the Currency
+# ===========================================================================
+# THREE SOURCES, one per topic area, because that is what the library's tree
+# wants and because each then gets its own baseline, its own completeness gate
+# and its own change signal. One source covering all three would absorb a whole
+# topic going missing into a number that still looked plausible.
+#
+#     OCC
+#       Supervision and Examination            source_system   12 rows
+#         Bank Secrecy Act (BSA)               ONE row: the page itself
+#         Capital                              ONE row
+#         ...
+#       Laws and Regulations                                    4 rows
+#         OCC Regulations
+#         ...
+#       Consumers and Communities                               7 rows
+#         Consumer Protection
+#         ...
+#
+# THE SUBTOPIC PAGE IS THE DOCUMENT. 12 + 4 + 7 = 23 rows for the whole
+# regulator, one per subtopic the mega-menu names, each with its text stored.
+#
+# ITS LINKS ARE RECORDED, NOT PROMOTED. The Bank Secrecy Act page lists eleven
+# things; all eleven survive inside the stored body as live absolute links, and
+# none becomes a row. That is the difference between recording a link and
+# promoting it to a document, and it is what the manual library shows: one
+# readable page under Bank Secrecy Act, not eleven stubs around it.
+#
+# ---------------------------------------------------------------------------
+# TWO EARLIER READINGS WERE WRONG, AND BOTH COST AN EXPORT TO SEE
+# ---------------------------------------------------------------------------
+#     subtopic as a folder of bare links   349 rows,  23 with text  (7%)
+#     the same, every link fetched         349 rows, 283 with text (81%)
+#     THE SUBTOPIC PAGE IS THE ROW          23 rows,  23 with text (100%)
+#
+# The first produced eleven empty stubs around one readable page under Bank
+# Secrecy Act; the second made those stubs readable, which is better and still
+# twelve documents where the manual library shows one. The rule is the one the
+# request stated at the outset -- "the main topic and its subtopic
+# htmls/pdfs/docs right under it, this is the last level".
+#
+# ---------------------------------------------------------------------------
+# WHERE THE SUBTOPICS COME FROM -- NOT THE PAGE THE SEED POINTS AT
+# ---------------------------------------------------------------------------
+# Each topic index page carries a "<Topic> Topics" block that looks like the
+# list, and is a TRUNCATED one ending in "Explore all ... View All". Measured
+# 2026-10-12 on Consumers & Communities:
+#
+#     the index page lists  6   (no Financial Literacy; "External Relations and
+#                                Strategic Partnerships" under a longer name)
+#     the mega-menu lists   7
+#
+# /topics/topics-sitemap.html holds the tree the mega-menu is drawn from, and
+# its level-1 entries match the menu exactly -- 12 / 4 / 7. The menu is what was
+# asked for, so that sitemap is the source of record and `topic` below selects
+# the block to read. The seed_url is still each topic's index page, because that
+# is where a reader should land, but it is not read for structure.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS THERE -- CENSUS, 2026-10-12
+# ---------------------------------------------------------------------------
+#     Supervision and Examination   12 rows    439 - 5,674 characters each
+#     Laws and Regulations           4 rows    693 - 2,125
+#     Consumers and Communities      7 rows    776 - 53,133
+#                                   --------
+#                                    23 rows, every one carrying stored text
+#
+# EVERY SUBTOPIC IS NON-EMPTY AND NONE IS THIN. Three measured empty or near
+# empty on earlier passes and all three were bugs rather than bare pages --
+# Financial Technology (0, really 5,674), Consumer Protection (0, really 776)
+# and Project REACh (194, really 3,093). Each is recorded at the line of
+# crawler/occ_crawler.py that fixed it.
+#
+# COMMUNITY REINVESTMENT ACT (CRA) APPEARS TWICE, once under Supervision and
+# Examination and once under Consumers and Communities, because occ.gov lists it
+# under both. The two rows differ in doc_path, so they are two library entries
+# pointing at one page -- which is what the site says.
+#
+# ---------------------------------------------------------------------------
+# ACCESS
+# ---------------------------------------------------------------------------
+# www.occ.gov answers plain `requests` with 200 on the first try. No browser, no
+# challenge, no profile -- unlike dfpi.ca.gov. 26 requests for the whole
+# regulator (the topics sitemap once per source, plus 23 subtopic pages) and
+# about 30 seconds, so a headless cron box can run this.
+# ===========================================================================
+# MUST MATCH config/countries.yml EXACTLY. `regulator` is doc_path[0] and
+# therefore identity -- the entry there (line 150) reads "Office of the
+# Comptroller of the Currency (OCC)" and a divergence here would not error, it
+# would quietly drop every folder to the tree root.
+regulator: "Office of the Comptroller of the Currency (OCC)"
+owner: Abeer
+
+sources:
+  - name: "Supervision and Examination"
+    mode: custom
+    crawler_class: "crawler.occ_crawler.OCCTopicCrawler"
+    init_kwargs:
+      seed_url: "https://www.occ.gov/topics/supervision-and-examination/index-supervision-and-examination.html"
+      regulator: "Office of the Comptroller of the Currency (OCC)"
+      source_system: "Supervision and Examination"
+      # THE SITEMAP HEADING, VERBATIM -- ampersand, not "and". This selects the
+      # block of the topics sitemap to read, and a near-miss does not fall back
+      # silently: `_subtopics` raises rather than returning a source with no
+      # rows.
+      topic: "Supervision & Examination"
+      category: "Supervision and Examination"
+      # NO strategy / scope / max_depth / max_pages. This source does not call
+      # the browser engine -- it fetches 13 pages with `requests` -- so those
+      # four would configure a crawl that does not happen.
+      #
+      # EVERYTHING BELOW IS READ AT MAPPING TIME.
+      include_pages: always
+      doc_path_title: true
+      # NO doc_path_category. `category` is recorded on the row, but the tree is
+      # regulator > source system > subtopic > title and the category here says
+      # the same thing the source system already does -- switching it on would
+      # add a folder that repeats its own parent.
+      doc_path_category: false
+      # THE SUBTOPIC IS THE FOLDER the row sits in. The crawler writes it to its
+      # own key and `_apply_trail` turns that into doc_path. With this false the
+      # subtopic is computed and then discarded, and all 12 rows land flat under
+      # the source system.
+      doc_path_sections: true
+
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.occ_crawler.OCCTopicCrawler"
+    init_kwargs:
+      seed_url: "https://www.occ.gov/topics/laws-and-regulations/index-laws-and-regulations.html"
+      regulator: "Office of the Comptroller of the Currency (OCC)"
+      source_system: "Laws and Regulations"
+      topic: "Laws & Regulations"
+      category: "Laws and Regulations"
+      include_pages: always
+      doc_path_title: true
+      doc_path_category: false
+      doc_path_sections: true
+
+  - name: "Consumers and Communities"
+    mode: custom
+    crawler_class: "crawler.occ_crawler.OCCTopicCrawler"
+    init_kwargs:
+      seed_url: "https://www.occ.gov/topics/consumers-and-communities/index-consumers-and-communities.html"
+      regulator: "Office of the Comptroller of the Currency (OCC)"
+      source_system: "Consumers and Communities"
+      topic: "Consumers & Communities"
+      category: "Consumers and Communities"
+      include_pages: always
+      doc_path_title: true
+      doc_path_category: false
+      doc_path_sections: true

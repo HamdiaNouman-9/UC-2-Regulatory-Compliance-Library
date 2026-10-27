@@ -1,0 +1,293 @@
+# ===========================================================================
+# Department of Health and Human Services (HHS)
+# ===========================================================================
+# ONE SOURCE: the "Explore Laws and Regulations" block on
+# www.hhs.gov/regulations/index.html, and each of its links is ONE row.
+#
+#     Department of Health and Human Services (HHS)            regulator
+#       Laws and Regulations                                   source_system
+#         Explore Laws and Regulations                         folder: the <h2>
+#           HHS Guidance Portal                                one row: the page
+#           HHS Regulations Review                             one row
+#           Whistleblower complaints on the chemical and ...   one row
+#           Policy on unlawful, unconstitutional, or ...       one row
+#           Complaints and Appeals                             one row
+#           Regulatory actions                                 one row
+#           HIPAA Privacy Rule                                 one row
+#           Human subjects research protections                one row
+#           Health IT Legislation                              one row
+#           Public Readiness and Emergency Preparedness ...    one row
+#
+# SOURCE SYSTEM AND SECTION_PATH CORRECTED 2026-10-13, on the user's review of
+# the first workbook. source_system is the landing page's <h1>, "Laws and
+# Regulations"; the block's <h2> is the one folder beneath it (the library's
+# rule that landing-page headings become subfolders). section_path is where a
+# row is LISTED on hhs.gov, identical in shape on all ten:
+#
+#     Home > Laws and Regulations > Explore Laws and Regulations > <link text>
+#
+# The first export stored each landed page's own breadcrumb there instead --
+# EMPTY on the Guidance Portal and Regulatory actions, and another site's trail
+# on the rest ("HHS > HIPAA Home", ASPR's six levels). That trail is kept as
+# extra_meta.page_breadcrumb. `category` was also falling back to the last
+# crumb ("HIPAA Home", "PREP Act"); it is now set explicitly, as on occ.yml.
+#
+# REWRITTEN 2026-10-13 on the user's instruction, with a screenshot of that
+# block as the specification. The previous version of this file was "Health
+# Care Regulations > HIPAA": ONE Federal Register rule (2024-08503, 89 FR
+# 32976) split into 84 rows at its own headings. The user chose to DROP it
+# rather than keep it as a second source -- the HIPAA Privacy Rule link in the
+# block is now a single row like the other nine. crawler/federalregister_crawler.py
+# is no longer referenced by any config.
+#
+# THE LINKED PAGE IS THE ROW (docs/onboarding_playbook.md section 0). Its own
+# links stay inside the stored body as live absolute urls and are not promoted.
+# The user chose this over expanding the hubs on 2026-10-13. Two of the ten are
+# LISTINGS, and expanding them would be a different job:
+#
+#     HHS Guidance Portal   a table of HHS guidance documents, filterable
+#     Regulatory actions    federalregister.gov's HHS agency page, a feed of
+#                           every document HHS publishes there
+#
+# BOTH WILL REPORT `modified` WHENEVER HHS PUBLISHES. Their stored text includes
+# the latest items, so their content_hash moves with them. That is the change
+# a reader of this branch would want to hear about, but it means these two rows
+# version far more often than the other eight. Recorded so the first run of
+# monitoring is not mistaken for a broken fingerprint.
+#
+# ---------------------------------------------------------------------------
+# WHERE THE TEN LINKS GO -- MEASURED 2026-10-13
+# ---------------------------------------------------------------------------
+#     www.hhs.gov           6   Akamai: 403 "Access Denied" to plain requests
+#                               (Server-Timing: ak_p, errors.edgesuite.net,
+#                               measured 2026-10-12). Headed Chrome passed.
+#     federalregister.gov   1   open
+#     www.healthit.gov      1   200 to plain requests; REDIRECTS to
+#                               healthit.gov/legislation/
+#     aspr.hhs.gov          1   200 to plain requests; REDIRECTS to
+#                               www.aspr.gov/about/law-policy-strategy/
+#                               amendments-public-health-service-act/prep-act
+#
+# The landing page and six of the ten need the browser, so all ten go through
+# it -- one client, one fetch policy. Redirects are followed and the LANDED url
+# is what is stored.
+#
+# The list itself is read from the live block on every run, not hardcoded here,
+# so a link HHS adds becomes a row and one it removes becomes a `disappeared`
+# candidate. `expected_links` only warns.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS STORED -- AUDITED 2026-10-13 AGAINST THE LIVE PAGES
+# ---------------------------------------------------------------------------
+#     HHS Guidance Portal              3,259 chars    Regulatory actions  8,220
+#     HHS Regulations Review           2,049          HIPAA Privacy Rule  2,111
+#     Whistleblower complaints ...     1,536          Human subjects ...  1,147
+#     Policy on unlawful, ...          1,617          Health IT Legis.    7,150
+#     Complaints and Appeals           1,187          PREP Act            5,939
+#
+# Every live heading was diffed against the stored body. What does NOT reach
+# the body, all of it chrome, and each recorded where it is removed in
+# crawler/hhs_crawler.py:
+#   - the side menus on hhs.gov, healthit.gov and aspr.gov pages
+#   - the Guidance Portal's filter form and its pagination ("1139", "Next")
+#   - federalregister.gov's "Legal Status" disclaimer, its "Agency" title bar,
+#     the "New folder / My Clipboard" widget on every listed document, and a
+#     hidden search-suggestions modal
+#   - THE WHISTLEBLOWER TIP FORM. 179 of that page's 309 distinct words are its
+#     field labels (First Name, Cell phone, State - Alabama Alaska ...) and the
+#     instructions for filling it in. The page's substance -- the April 2025
+#     guidance, the three ways to report, "Content last reviewed" -- is stored.
+#     A form's labels changing is not a regulatory change, so they stay out of
+#     the hash.
+#
+# TITLES ARE THE BLOCK'S LINK TEXT, which is what the screenshot shows; each
+# page's own <h1> is kept in extra_meta.page_h1. They differ on most rows --
+# "HHS Regulations Review" is "Retrospective Review of Existing Rules", "HIPAA
+# Privacy Rule" is "Health Information Privacy", "Policy on unlawful ..." now
+# REDIRECTS to "HHS 2025 Deregulatory Agenda".
+#
+# ---------------------------------------------------------------------------
+# NEEDS A DESKTOP SESSION
+# ---------------------------------------------------------------------------
+# headless=False, the same as dfpi.yml. A scheduled run needs a logged-in
+# desktop (or headed Chrome under Xvfb). The browser profile is kept at
+# ~/.cache/hhs_profile so the Akamai cookie survives between runs.
+# ===========================================================================
+# MUST MATCH config/countries.yml EXACTLY. `regulator` is doc_path[0] and
+# therefore identity -- a divergence would not error, it would quietly drop
+# every folder to the tree root.
+regulator: "Department of Health and Human Services (HHS)"
+owner: Abeer
+
+sources:
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.hhs_crawler.HHSExploreCrawler"
+    init_kwargs:
+      seed_url: "https://www.hhs.gov/regulations/index.html"
+      regulator: "Department of Health and Human Services (HHS)"
+      source_system: "Laws and Regulations"
+      # Set explicitly. Left unset, `_category_for` takes the LAST CRUMB of each
+      # row's trail, and the first export read "HIPAA Home", "PREP Act",
+      # "Legislation" -- one category per row, none of them meaning anything.
+      category: "Laws and Regulations"
+      # THE BLOCK'S <h2>, VERBATIM. A near-miss raises rather than returning a
+      # source with no rows.
+      block_heading: "Explore Laws and Regulations"
+      # Ten when this was built. A different count is logged as a warning, not
+      # refused: HHS changing the block is something to record, not an error.
+      expected_links: 10
+      # SECTIONS THAT BECOME A SUBFOLDER, one at a time on the user's
+      # instruction for each (2026-10-13). A section not named here stays a
+      # single page row directly under the block heading.
+      #
+      #   1. HHS Guidance Portal -- every listing page (1,139 on 2026-10-13,
+      #      10 items each, ~11,390 items), then each item's detail page; the
+      #      item's title becomes a subfolder holding its hhs.gov PDF. Items
+      #      whose document is off hhs.gov, or rescinded with none, get NO
+      #      row and are counted in the run's warnings. ~3 hours through
+      #      in-page fetch (0.95s an item measured); resumable.
+      #
+      #   2. HHS Regulations Review -- the page is read as a tree (page_tree):
+      #      its <h1> "Retrospective Review of Existing Rules" is a folder
+      #      holding the page itself, the three Executive Orders (stored from
+      #      federalregister.gov, the user's one external exception), and
+      #      "Regulatory Review Progress (2012 - 2016)", whose ten date groups
+      #      are BOLD PARAGRAPHS on the page, not headings, and become
+      #      subfolders. Their items are the last level: 4 hhs.gov pages
+      #      stored as HTML, 16 PDFs. 24 rows, measured 2026-10-13. EO 12866's
+      #      link is federalregister.gov's LIST of 1993 executive orders, not
+      #      the order, and is stored as HHS links it (user's choice).
+      #
+      #   3. Whistleblower complaints ... -- kept as one row (user, 2026-10-13).
+      #
+      #   4. Policy on unlawful, unconstitutional, or burdensome regulations --
+      #      page_links: the same rules as page_tree but FLAT, no folders from
+      #      the page's headings (user's choice). The link lands on "HHS 2025
+      #      Deregulatory Agenda"; its folder holds that page, the Press Release
+      #      (May 13, 2025) as HTML, and the Memo on Avoiding Duplicative
+      #      Regulation (2020) as a PDF -- the only two hhs.gov links in a list.
+      #      The RFI (federalregister.gov) and regulations.gov links sit inside
+      #      running text, and the three "Related content" cards go to cms.gov,
+      #      fda.gov and cdc.gov, so none of those is a row.
+      #
+      #   5. Complaints and Appeals -- kept as one row (user, 2026-10-13).
+      expand:
+        # ON again (user, 2026-10-15, evening): a normal export walks all ten
+        # sections, the portal's ~11,390 items included (~3 h crawl plus the
+        # refused-PDF phase). Comment out to export the other nine alone.
+        "HHS Guidance Portal": guidance_portal
+        "HHS Regulations Review": page_tree
+        "Policy on unlawful, unconstitutional, or burdensome regulations": page_links
+        #
+        #   7. HIPAA Privacy Rule (user, 2026-10-15) -- the link lands on
+        #      hhs.gov/hipaa, "Health Information Privacy". Its page is NOT
+        #      stored. Folders are its card headings: "I would like info on"
+        #      holds each listed item (pages as HTML, the Parental Access
+        #      letter as a PDF), and each "learn more" card (HIPAA for
+        #      Individuals, HIPAA for Professionals, ...) holds the page its
+        #      button opens, one level only. EXCLUDED wherever they appear, now
+        #      or when HHS adds one: FAQs, Other Languages, About Us, Filing a
+        #      Complaint -- matched on the item's title, its folder and its url.
+        #      2026-10-15, later: "I would like info on" makes NO folder; its
+        #      items sit directly in the section. Four items are walked one
+        #      structure further (`deep`), each page's hhs.gov PDFs recorded:
+        #        - Security Rule NPRM, HIPAA for Individuals, Conscience and
+        #          Religious Freedom: their SIDE MENU branch, nested as the
+        #          menu is (Security > Summary of the Security Rule, ...).
+        #        - Civil Rights: its "learn more" cards, one page each.
+        #      HIPAA for Professionals and the other cards stay one page.
+        "HIPAA Privacy Rule":
+          handler: page_tree
+          include_page: false
+          card_buttons: true
+          no_folder: ["I would like info on"]
+          deep:
+            "HIPAA Security Rule NPRM": sidenav
+            "HIPAA for Individuals": sidenav
+            "Conscience and Religious Freedom": sidenav
+            "Civil Rights": cards
+          exclude:
+            - '\bfaqs?\b'
+            - 'frequently[- ]asked'
+            - 'other[- ]languages'
+            - 'espa(n|ñ)ol|spanish'
+            # hhs.gov's Spanish site, e.g. /es/hipaa/... (2026-10-15).
+            - '^/es/'
+            - 'about[- ]us'
+            - 'filing[- ]a\b.*complaint'
+        #
+        #   9. Health IT Legislation -- page_tree grouped by law: each "Key
+        #      Legislation" <h3> with a row under it is a folder (HITECH Act,
+        #      HIPAA, FDA Safety Innovation Act); the page itself sits beside
+        #      them. Every reference on this page is inside a sentence, hence
+        #      prose_links. Internal = healthit.gov and hhs.gov (the three
+        #      HIPAA rule links are old hhs.gov urls that redirect; the landed
+        #      page is stored). federalregister.gov's Section 618 of FDASIA is
+        #      kept under the user's Federal Register exception. congress.gov,
+        #      cms.gov and gpo.gov are ignored. Measured 2026-10-13: 7 rows
+        #      plus the page -- 2 PDFs, 4 internal pages, 1 FR document.
+        #
+        #   8. Human subjects research protections (45 CFR 46) -- the page's
+        #      eight blue buttons each become a FOLDER holding the page the
+        #      button opens, titled by that page's own heading; the 45 CFR 46
+        #      page itself is NOT stored (user, 2026-10-13). Five go to
+        #      hhs.gov (Subparts B-E, the 1998 Expedited Categories); three go
+        #      to ecfr.gov (2018 Requirements, Exemptions, Pre-2018 Common
+        #      Rule) and are included as an exception like the Federal
+        #      Register -- eCFR is the official regulation text, and "2018
+        #      Requirements" IS the Common Rule. ecfr.gov answered the headed
+        #      browser with no challenge, measured on all three.
+        "Human subjects research protections":
+          handler: page_tree
+          buttons: true
+          include_page: false
+          hosts: ["www.ecfr.gov", "ecfr.gov"]
+        #
+        #
+        #  10. Public Readiness and Emergency Preparedness (PREP) Act -- the
+        #      page is read as a tree: its two <h2> are folders, the ACCORDION
+        #      panels under them ("Declaration and Amendments", "Anthrax" ...)
+        #      are subfolders, and each item in a panel is traversed ONE level
+        #      -- stored as HTML, or recorded as a PDF (user, 2026-10-13). Items
+        #      are titled by their whole paragraph, so each keeps its date.
+        #      Internal: aspr.gov (ASPR is part of HHS; aspr.hhs.gov redirects
+        #      there) and hhs.gov. Federal Register: federalregister.gov pages,
+        #      and FR issue PDFs on govinfo.gov / public-inspection. NOT
+        #      recorded: 5 web.archive.org copies of old Advisory Opinions
+        #      (outside host, and archive.org rate-limits this address).
+        #      Measured on the cached page, 2026-10-13: 48 links.
+        "Public Readiness and Emergency Preparedness (PREP) Act":
+          handler: page_tree
+          prose_links: true
+          para_titles: true
+          hosts: ["www.aspr.gov", "aspr.gov", "aspr.hhs.gov"]
+          file_hosts_extra: ["www.govinfo.gov", "govinfo.gov",
+                             "public-inspection.federalregister.gov"]
+        #
+        "Health IT Legislation":
+          handler: page_tree
+          group_level: 3
+          # EVERY act is a folder holding its own block of the page as a row
+          # (user, 2026-10-15): 21st Century Cures Act, MACRA and the
+          # Affordable Care Act link only off-site or nowhere, so they had no
+          # folder. The whole page is still stored beside them.
+          group_rows: true
+          prose_links: true
+          hosts: ["healthit.gov", "www.healthit.gov"]
+      # Visible window. NOT a convenience default -- Akamai refuses plain
+      # clients, and the DFPI measurement is that headless does not pass.
+      headless: false
+      # NO strategy / scope / max_depth / max_pages. This source does not call
+      # the browser engine, so those would configure a crawl that never runs.
+      #
+      # EVERYTHING BELOW IS READ AT MAPPING TIME.
+      include_pages: always
+      doc_path_title: true
+      # NO category folder: it would repeat the source system. The tree is
+      # regulator > source system > block heading > title.
+      doc_path_category: false
+      # THE BLOCK HEADING IS THE FOLDER. The crawler passes it as the trail in
+      # `_apply_trail`; with this false it is discarded and all ten rows land
+      # flat under the source system.
+      doc_path_sections: true

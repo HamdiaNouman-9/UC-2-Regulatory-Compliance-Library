@@ -763,3 +763,138 @@ jobs:
       day_of_week: 'sun'
       hour: 1
       minute: 0
+
+  # ------------------------------------------------------------------------
+  # OCC — sun 02:00, AFTER the expensive one, and DISABLED
+  # ------------------------------------------------------------------------
+  # LAST IN THE US BLOCK BUT NOT BECAUSE IT IS SLOW. It is the opposite: 26
+  # requests, ~30 seconds, plain `requests` with HTTP 200 on the first try — no
+  # browser, no Cloudflare challenge, no persistent profile, and nothing that
+  # needs a visible window. It sits after monitor_dfpi only so the one job that
+  # DOES need a desktop session gets the quiet hour before it.
+  #
+  # `_run_exclusive` takes ONE GLOBAL lock with timeout=0, so a job that starts
+  # while another is still running does not queue — it returns `skipped`. An
+  # hour after a ~55-second job is ample.
+  #
+  # DISABLED, and that is the whole point of shipping it this way.
+  # output/workbooks/occ.xlsx has not been promoted. A detected change goes
+  # through `_crawl_into_db` straight to MSSQL, so enabling this before a person
+  # has read the workbook would make the first scheduled run the ingest — the
+  # workbook path exists precisely so that does not happen.
+  #
+  # ONE JOB COVERS ALL THREE SOURCES. Supervision and Examination, Laws and
+  # Regulations and Consumers and Communities are crawled together so
+  # `disappeared` compares a complete inventory for each pair. There are three
+  # entries in config/change_signals.yml because `settings_for` keys on the
+  # (regulator, source_system) PAIR, but only one scheduled job.
+  monitor_occ:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 2
+      minute: 0
+
+  # ------------------------------------------------------------------------
+  # HHS — sat 12:00, ON ITS OWN, and DISABLED
+  # ------------------------------------------------------------------------
+  # About an hour (estimated, not yet measured as a monitor run): the whole
+  # Guidance Portal listing (1,140 pages), detail pages only for new items plus
+  # the oldest quarter of the kept ones (HHS_DETAIL_REFRESH_DAYS=28, set by the
+  # job), and the nine other sections in full. The FIRST run on a machine with
+  # no ~/.cache/hhs_progress/guidance_details.json reads every detail page,
+  # about 4 h. Through a HEADED persistent Chrome — the same requirement as
+  # monitor_dfpi: www.hhs.gov answers plain clients with Akamai's 403, so THIS
+  # JOB CANNOT RUN ON A HEADLESS BOX. Confirm the scheduler host can give it a
+  # desktop session before flipping `enabled`.
+  #
+  # SATURDAY 12:00 BECAUSE NO SLOT ON SUNDAY HAS ROOM. `_run_exclusive` takes
+  # ONE GLOBAL lock with timeout=0, so a job that starts while this one holds
+  # it is SKIPPED for a week; sunday runs hourly from 00:00 to 23:30. Saturday's
+  # first monitor job is monitor_fdic at 21:00, which leaves nine hours — room
+  # for the 4-hour first run too. (The daily jobs end with
+  # sama_pipeline at 10:46.)
+  #
+  # DISABLED. output/workbooks/hhs.xlsx has not been promoted, and a detected
+  # change goes through `_crawl_into_db` straight to MSSQL — enabling this first
+  # would make the first scheduled run the ingest.
+  #
+  # IF A RUN IS REFUSED it reports and stops. DO NOT ADD A SCHEDULED RETRY — a
+  # retry loop against Akamai is what makes a block.
+  monitor_hhs:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sat'
+      hour: 12
+      minute: 0
+
+  # ------------------------------------------------------------------------
+  # NCUA — sun 02:30, AFTER OCC, and DISABLED
+  # ------------------------------------------------------------------------
+  # ONE page load — the UDAAP chapter, one row — through the generic engine,
+  # then crawler/ncua_crawler.py's cleanup. No challenge on ncua.gov, so unlike
+  # monitor_dfpi / monitor_hhs it does not need a desktop session.
+  #
+  # 02:30 BECAUSE IT IS THE NEXT CLEAR HALF HOUR. `_run_exclusive` takes ONE
+  # GLOBAL lock with timeout=0, so a collision is a SKIP and the job waits a
+  # week. monitor_occ at 02:00 finishes in ~30 seconds, and 03:00 is taken every
+  # day by monitor_cheap_probes.
+  #
+  # DISABLED. output/workbooks/ncua.xlsx has not been promoted, and a detected
+  # change goes through `_crawl_into_db` straight to MSSQL — enabling this first
+  # would make the first scheduled run the ingest.
+  monitor_ncua:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 2
+      minute: 30
+
+  # ------------------------------------------------------------------------
+  # CFPB — sat 18:00, AFTER HHS, and DISABLED
+  # ------------------------------------------------------------------------
+  # One run covers every source in config/sources/cfpb.yml (1026, 1030, TRID):
+  # about 176 page loads plus TRID's 5 pages and 43 PDFs, 2 s apart, estimated
+  # 25-40 min, NOT YET MEASURED -- the TRID PDFs dominate when
+  # files.consumerfinance.gov is slow (2026-10-26: ~50 KB/s, the 18 MB 2013
+  # final rule alone took 402 s).
+  # Through a HEADLESS persistent Chrome (~/.cache/cfpb_profile):
+  # www.consumerfinance.gov answers plain clients with Akamai's 403 but read
+  # headless Chrome on 2026-10-22, so unlike monitor_dfpi / monitor_hhs this
+  # job needs no desktop session. If runs start reporting refused pages, set
+  # `headless: false` in config/sources/cfpb.yml — and then it does.
+  #
+  # 18:00 BECAUSE `_run_exclusive` takes ONE GLOBAL lock with timeout=0, so a
+  # collision is a SKIP and the job waits a week. monitor_hhs starts at 12:00
+  # and its first run may take ~4 h; monitor_fdic starts at 21:00.
+  #
+  # DISABLED. output/workbooks/cfpb.xlsx has not been promoted, and a detected
+  # change goes through `_crawl_into_db` straight to MSSQL — enabling this first
+  # would make the first scheduled run the ingest.
+  #
+  # IF A RUN IS REFUSED it reports and stops. DO NOT ADD A SCHEDULED RETRY — a
+  # retry loop against Akamai is what makes a block.
+  monitor_cfpb:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sat'
+      hour: 18
+      minute: 0
+
+  # ------------------------------------------------------------------------
+  # FRRS — sun 02:45, AFTER NCUA, and DISABLED
+  # ------------------------------------------------------------------------
+  # Four plain GETs, seconds; no desktop session needed. 02:45 sits between
+  # monitor_ncua (02:30) and monitor_cheap_probes (03:00).
+  # DISABLED until output/workbooks/frrs.xlsx is promoted.
+  monitor_frrs:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 2
+      minute: 45

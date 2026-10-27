@@ -1,0 +1,68 @@
+# Federal Reserve Regulatory Services (FRRS) -- United States
+#
+# One source per regulation, one row each. Shape (user, 2026-10-27, from the
+# manual library):
+#
+#   FRRS > Regulation H  > Background and Summary of Regulation H
+#   FRRS > Regulation BB > Background and Summary of Regulation BB
+#   FRRS > Regulation X  > Regulation X: Borrowers of Securities Credit
+#   FRRS > Regulation DD > Regulation DD: Truth in Savings
+#
+# H and BB are FRRS pages; X and DD are the Board's Compliance Guides to Small
+# Entities (/supervisionreg/), the wording the manual library holds. All urls
+# are the user's. Plain GET, no challenge. See crawler/frrs_crawler.py.
+# No reference_no for X (the guide cites no part) or DD (it numbers its
+# sections 230.1-230.9 but never names the part).
+
+regulator: "Federal Reserve Regulatory Services (FRRS)"
+owner: Abeer
+
+sources:
+
+  - name: "Regulation H"
+    mode: custom
+    crawler_class: "crawler.frrs_crawler.FRRSPageCrawler"
+    init_kwargs:
+      seed_url: "https://www.federalreserve.gov/frrs/regulations/background-and-summary-of-regulation-h.htm"
+      regulator: "Federal Reserve Regulatory Services (FRRS)"
+      source_system: "Regulation H"
+      reference_no: "12 CFR 208"
+      doc_path_title: true
+      doc_path_sections: false
+
+  - name: "Regulation BB"
+    mode: custom
+    crawler_class: "crawler.frrs_crawler.FRRSPageCrawler"
+    init_kwargs:
+      seed_url: "https://www.federalreserve.gov/frrs/regulations/background-and-summary-of-regulation-bb.htm"
+      regulator: "Federal Reserve Regulatory Services (FRRS)"
+      source_system: "Regulation BB"
+      reference_no: "12 CFR 228"
+      doc_path_title: true
+      doc_path_sections: false
+
+  - name: "Regulation X"
+    mode: custom
+    crawler_class: "crawler.frrs_crawler.FRRSPageCrawler"
+    init_kwargs:
+      seed_url: "https://www.federalreserve.gov/supervisionreg/regxcg.htm"
+      regulator: "Federal Reserve Regulatory Services (FRRS)"
+      source_system: "Regulation X"
+      category: "Compliance Guides"
+      body_selector: "div#article"
+      title_selector: "div#article h4"
+      doc_path_title: true
+      doc_path_sections: false
+
+  - name: "Regulation DD"
+    mode: custom
+    crawler_class: "crawler.frrs_crawler.FRRSPageCrawler"
+    init_kwargs:
+      seed_url: "https://www.federalreserve.gov/supervisionreg/regddcg.htm"
+      regulator: "Federal Reserve Regulatory Services (FRRS)"
+      source_system: "Regulation DD"
+      category: "Compliance Guides"
+      body_selector: "div#article"
+      title_selector: "div#article h4"
+      doc_path_title: true
+      doc_path_sections: false

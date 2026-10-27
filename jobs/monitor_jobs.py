@@ -405,6 +405,65 @@ CRAWL_AS_SIGNAL = {
     #: already cleared the challenge. 27 page loads, ~55 seconds. Full
     #: measurements on the change_signals.yml entry.
     "Department of Financial Protection and Innovation (DFPI)": ("dfpi", False),
+
+    #: OCC -- THREE SOURCES IN ONE CRAWL, and the cheapest crawl on this dict.
+    #:
+    #: `crawl` because every cheaper question was measured on 2026-10-12 and
+    #: each one fails; the full workings are on the config/change_signals.yml
+    #: entry. The short version, and the half that is easy to get wrong:
+    #:
+    #:   stored-inventory  HEAD on the subtopic pages returns NEITHER ETag nor
+    #:                     Last-Modified. The static PDFs carry both, so a probe
+    #:                     would watch the FILES and be blind to the PAGES that
+    #:                     list them -- and the event that matters here is a
+    #:                     subtopic page gaining or losing a link.
+    #:
+    #:   sitemap           EXISTS, PARSES, CLEARS `assess` -- and is stale
+    #:                     anyway. www.occ.gov/sitemap.xml is a flat <urlset>,
+    #:                     15,283 urls, every one with a <lastmod>, 91.4%
+    #:                     overlap with our rows. But Financial Technology is
+    #:                     listed lastmod 2024-04-17 while its HTML links news
+    #:                     releases from 2025 AND 2026. A stale token reports
+    #:                     "unchanged" while the regulator publishes, and
+    #:                     `confirm: true` cannot reach it -- confirm only
+    #:                     re-checks rows the signal has ALREADY flagged.
+    #:
+    #: 26 HTTP requests, ~30 seconds: 3 sitemap fetches and the 23 subtopic
+    #: pages, one row each. All 23 are PAGE rows, so all 23 hash visible text
+    #: and none sits on `url|title` -- which is a property of the SHAPE (no file
+    #: rows at all) rather than a better fingerprint than its neighbours use.
+    #: Plain `requests`, 200 on the first try: no browser, no challenge, no
+    #: profile, so unlike the DFPI line this one is safe on a headless box. The
+    #: cheapest job on this dict by a wide margin.
+    "Office of the Comptroller of the Currency (OCC)": ("occ", False),
+
+    #: HHS joined 2026-10-13 -- the "Explore Laws and Regulations" block, ten
+    #: sections, ~6,040 rows (5,840 Guidance Portal items). `crawl` because
+    #: www.hhs.gov answers a plain client with Akamai's 403. The monitor reads
+    #: the whole guidance listing but reuses kept detail pages
+    #: (HHS_DETAIL_REFRESH_DAYS), about an hour; like DFPI it needs a VISIBLE
+    #: BROWSER. Full measurements on the change_signals.yml entry.
+    "Department of Health and Human Services (HHS)": ("hhs", False),
+
+    #: NCUA joined 2026-10-19 -- the UDAAP chapter, ONE page row. `crawl`
+    #: because the page's Last-Modified/ETag are Drupal's cache build time
+    #: (06:04 today against the page's own "Last modified on 06/18/26"), so a
+    #: probe would report it modified nearly every week. One page load; plain
+    #: requests reach the host, so no visible browser is needed. Full
+    #: measurements on the change_signals.yml entry.
+    "National Credit Union Administration (NCUA)": ("ncua", False),
+
+    #: CFPB joined 2026-10-22 -- Interactive Bureau Regulations, one source per
+    #: regulation (1026 Regulation Z, 1030 Regulation DD), ~176 page rows.
+    #: `crawl` because www.consumerfinance.gov answers a plain client with
+    #: Akamai's 403. Headless Chrome is NOT refused (measured 2026-10-22), so
+    #: unlike DFPI and HHS it needs no desktop. Full measurements on the
+    #: change_signals.yml entries.
+    "Consumer Financial Protection Bureau (CFPB)": ("cfpb", False),
+
+    #: FRRS joined 2026-10-27 -- Regulations H, BB, X and DD, one page row
+    #: each, four plain GETs. See the change_signals.yml entries.
+    "Federal Reserve Regulatory Services (FRRS)": ("frrs", False),
 }
 
 
@@ -1865,6 +1924,254 @@ def _monitor_dfpi_impl() -> dict:
     rep = _crawl_into_db("dfpi", False)
     logger.info("Department of Financial Protection and Innovation (DFPI): %s", rep)
     return {"Department of Financial Protection and Innovation (DFPI)": rep}
+
+
+def monitor_occ() -> dict:
+    """WEEKLY, AND OFF. The OCC's three topic areas -- 23 subtopics, 349 rows.
+
+    THE CRAWL IS THE SIGNAL, and unlike DFPI that is a choice rather than the
+    only thing left. Two cheaper questions exist here. Both were measured on
+    2026-10-12 and both fail -- one of them quietly, which is the dangerous way.
+
+    `stored-inventory` HAS NO TOKEN ON THE PAGES. HEAD against the subtopic
+    pages returns 200 with neither ETag nor Last-Modified -- checked on
+    /topics/supervision-and-examination/capital/index-capital.html and
+    /topics/laws-and-regulations/litigation/index-litigation.html. The static
+    PDFs under /news-issuances/ DO answer with both, honestly and stably across
+    two passes, so a probe would cover the FILES and be blind to the PAGES that
+    list them. On this regulator the page is the thing worth watching: a
+    subtopic gaining or losing a link is the whole event.
+
+    `sitemap` IS THE INTERESTING ONE, because it passes every test except the
+    one that matters. https://www.occ.gov/sitemap.xml is a flat <urlset> -- not
+    a <sitemapindex>, so `parse_sitemap` reads it rather than raising -- holding
+    15,283 urls, EVERY one carrying a <lastmod>, dated across 2014-2026 rather
+    than all stamped today. It clears `assess`: 319 of our 349 rows are in it,
+    91.4%, comfortably over the 80% `min_overlap`, and all 23 subtopic pages are
+    present.
+
+    IT IS STALE ANYWAY. The Financial Technology subtopic is listed with lastmod
+    2024-04-17. Its static HTML, fetched the same day, links news releases from
+    2021, 2022, 2023, 2024, 2025 and 2026 -- including
+    /news-issuances/news-releases/2026/nr-occ-2026-78.html and GENIUS Act
+    material that did not exist in 2024. The page gained documents and its
+    lastmod did not move.
+
+    THAT IS THE FAILURE DIRECTION THAT CANNOT BE PATCHED. CMA's Last-Modified
+    lies LOUDLY -- it is the current time, 1,134 false changes -- and
+    `confirm: true` answers it by re-hashing the visible text. A token that lies
+    QUIETLY reports "unchanged" while the regulator publishes, and no `confirm`
+    setting reaches it, because confirm only re-checks rows the signal has
+    already flagged. A signal that misses is worse than one that cries wolf.
+
+    `sama-feed` WAS LOOKED FOR FIRST, as ONBOARDING Step 8 requires. OCC does
+    publish a newsroom and bulletins-by-year, but that is its press output, not
+    a "what changed under Laws & Regulations" page. Pointed at the newsroom it
+    would report news, and most of what this regulator stores is not news.
+
+    THE CRAWL IS 26 REQUESTS AND ABOUT 30 SECONDS -- the topics sitemap once
+    per source, plus the 23 subtopic pages, one row each. Plain `requests` with
+    HTTP 200 on the first try: no browser, no Cloudflare challenge, no
+    persistent profile. It is the cheapest job on this list and, unlike
+    monitor_dfpi, safe on a headless box.
+
+    THIS DOCSTRING HAS CARRIED TWO OTHER FIGURES. Both were honest when written
+    and the history is kept because it explains the SHAPE, not just the cost:
+
+        subtopic as a folder of bare links   26 req   349 rows,  23 with text
+        the same, every link fetched        ~262 req  349 rows, 283 with text
+        THE SUBTOPIC PAGE IS THE ROW         26 req    23 rows,  23 with text
+
+    The middle line was an attempt to fix the first, where 326 of 349 rows were
+    a url and a title with nothing behind them against FDIC's 984 of 991 with
+    text. The answer was not to fetch the links but to stop promoting them: the
+    subtopic page IS the document, and its links live inside its stored body.
+
+    WHAT IT SEES. All 23 rows hash VISIBLE TEXT, so an EDIT to any subtopic
+    page is caught outright rather than only its appearance and disappearance.
+    That is ONBOARDING Step 2's FIRST preference.
+
+    IT IS NOT UNUSUAL, AND AN EARLIER VERSION OF THIS DOCSTRING SAID IT WAS.
+    Measured across all 36 workbooks in output/workbooks on 2026-10-12, a body
+    stored for every row is ordinary here: qfcl 8004/8034, qfcl_qfca_rules
+    781/783, mc 51/51, mhrsd.regs 63/63, cbb_reg_res 71/71, with fdic at 99%
+    and sama at 98%.
+
+    WHAT IS ACTUALLY DIFFERENT is that OCC has no FILE rows at all. The low
+    figures elsewhere -- DFPI 5%, QCB 3%, MOH and CBJ and ZATCA 0% -- are
+    regulators whose rows are mostly PDFs, and nothing in this repo fetches a
+    file for its text. So the absence of a `url|title` tail here follows from
+    the agreed shape, not from a better fingerprint.
+
+    NOR DOES THE `hash_basis` FIELD MEAN WHAT IT LOOKS LIKE. It reads "(none
+    declared)" on 961 of fdic's rows and on all 6,107 of sama's, because most
+    crawlers never set it; the engine hashes page text regardless. Only fdic,
+    dfpi and occ declare a basis string at all.
+
+    WHAT IT CANNOT. A document one of these pages LINKS to -- a PDF replaced
+    behind an unchanged url -- is invisible, because those files are not rows.
+    That follows from the agreed shape rather than from a weakness in the
+    signal: the subtopic page is the last level, and what it links is recorded
+    inside its body.
+
+    THE FURNITURE STRIPPING IS THEREFORE PART OF THE SIGNAL, not tidiness.
+    "Share This Page" is on effectively every page on the site, "Popular Links"
+    on 54 and "Top Tasks" on 49 of the pages measured, and "Related News and
+    Issuances" is a rolling three-item feed on 19 of the 23. Left in the stored
+    text, OCC reshuffling its own quick links -- or publishing any news at all
+    -- would report most of this regulator as modified.
+
+    THREE SOURCES, ONE CRAWL, and no `only_sources`: the three topic areas go
+    together so `disappeared` compares a complete inventory for each pair.
+    config/change_signals.yml carries THREE entries, one per source_system,
+    because `settings_for` keys on the PAIR -- FDIC ran with three of its four
+    source systems unlisted, falling back silently to `stored-inventory`, for
+    exactly this reason.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/occ.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db` straight to MSSQL -- enabling it first would make
+    the first scheduled run the ingest.
+
+    NOT COVERED: the two topic areas occ.gov publishes that the library did not
+    take, Economics and Charters & Licensing, and everything outside /topics/.
+    Each is its own source with its own source_system when the library wants it,
+    and each will need its own line on this dict.
+    """
+    return _run_exclusive("monitor_occ", _monitor_occ_impl)
+
+
+def _monitor_occ_impl() -> dict:
+    # No `only_sources`: the regulator is its three topic areas, crawled
+    # together, so `disappeared` sees a complete inventory for every pair.
+    rep = _crawl_into_db("occ", False)
+    logger.info("Office of the Comptroller of the Currency (OCC): %s", rep)
+    return {"Office of the Comptroller of the Currency (OCC)": rep}
+
+
+def monitor_hhs() -> dict:
+    """WEEKLY (SAT 12:00), AND OFF. HHS's "Explore Laws and Regulations" block:
+    ten sections, ~6,040 rows, ~5,840 of them Guidance Portal items.
+
+    THE CRAWL IS THE SIGNAL, because no cheaper question reaches the source:
+    www.hhs.gov answers a plain client with Akamai's 403, which rules out a
+    probe. Full measurements on the config/change_signals.yml entry.
+
+    THE FULL CRAWL IS TOO LONG FOR A WEEKLY JOB: ~3.5 h in the guidance detail
+    pages alone (export of 2026-10-19). So this job sets
+    HHS_DETAIL_REFRESH_DAYS (default 28): the whole guidance LISTING is still
+    read every run (1,140 pages -- it is what sees an item added, withdrawn, or
+    its status / issue date changed), but a detail page is read only for a new
+    item, plus the oldest quarter of the kept ones each week. A detail page
+    only says which hhs.gov file an item links; see
+    `HHSExploreCrawler.detail_refresh_days`. The nine other sections are
+    crawled in full. Expect about an hour; the FIRST run on a machine with no
+    `~/.cache/hhs_progress/guidance_details.json` reads every detail page
+    (~4 h) -- an export on the same machine seeds it.
+
+    HHS DOES WITHDRAW GUIDANCE: between 2026-10-16 and 10-19 it unpublished
+    about 221 CMS items and published about 221 others. A run that sees that
+    reports them as disappeared and new -- correctly.
+
+    A SHORT RUN SAYS SO. Unread detail pages, Akamai-refused section pages and
+    the FR/eCFR block each add a "coverage gap" warning, which makes the run
+    untrusted: nothing it missed is proposed for withdrawal.
+
+    Through a HEADED persistent Chrome -- the same requirement as monitor_dfpi,
+    so this job cannot run on a headless box, and not while an export holds
+    the same profile.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/hhs.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db` straight to MSSQL.
+
+    IF A RUN IS REFUSED it reports and stops. Do not add a scheduled retry --
+    that is what makes a block (ONBOARDING section 3). The crawler's own single
+    paced retry of refused guidance pages is inside the run.
+    """
+    return _run_exclusive("monitor_hhs", _monitor_hhs_impl)
+
+
+def _monitor_hhs_impl() -> dict:
+    days = os.getenv("HHS_DETAIL_REFRESH_DAYS", "28")
+    os.environ["HHS_DETAIL_REFRESH_DAYS"] = days     # read by HHSExploreCrawler
+    rep = _crawl_into_db("hhs", False, timeout=21600)
+    rep["detail_refresh_days"] = days
+    logger.info("Department of Health and Human Services (HHS): %s", rep)
+    return {"Department of Health and Human Services (HHS)": rep}
+
+
+def monitor_ncua() -> dict:
+    """WEEKLY, AND OFF. NCUA's UDAAP chapter -- ONE page, one row.
+
+    THE CRAWL IS THE SIGNAL, and the cheapest question available: the source is
+    one page load (`max_pages: 1`, `max_depth: 0`), so nothing a probe loop could
+    ask costs less.
+
+    `stored-inventory` WAS MEASURED AND LIES LOUDLY. 2026-10-19 06:26 UTC, two
+    plain GETs 9 seconds apart: Last-Modified 06:04:43 GMT that morning and an
+    ETag of the same instant, while the page's own line reads "Last modified on
+    06/18/26". Those headers are Drupal's page-cache build time (max-age=3600),
+    so a sweep would report the page modified nearly every week -- the FDIC
+    ETag pattern.
+
+    WHAT IT SEES. The row hashes its VISIBLE TEXT after crawler/ncua_crawler.py
+    removes the furniture, and that text keeps the page's "Last modified" line,
+    so any edit that advances NCUA's stamp moves the hash. Two exports
+    (2026-10-19 11:04 and 11:19) gave the same hash and byte-identical html.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/ncua.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db`, which writes STRAIGHT TO MSSQL.
+    """
+    return _run_exclusive("monitor_ncua", _monitor_ncua_impl)
+
+
+def _monitor_ncua_impl() -> dict:
+    rep = _crawl_into_db("ncua", False)
+    logger.info("National Credit Union Administration (NCUA): %s", rep)
+    return {"National Credit Union Administration (NCUA)": rep}
+
+
+def monitor_cfpb() -> dict:
+    """WEEKLY (SAT 18:00), AND OFF. Every source in config/sources/cfpb.yml:
+    CFPB's Interactive Bureau Regulations -- one source per regulation (1026,
+    1030), one row per page of each regulation's table of contents -- and the
+    TRID resource page, its linked pages and PDFs.
+
+    THE CRAWL IS THE SIGNAL: www.consumerfinance.gov answers a plain client with
+    Akamai's 403, which rules out a probe. The crawl re-reads each table of
+    contents, so pages CFPB adds or drops arrive as new / disappeared rows with
+    no config change. Pages refused mid-run are a "coverage gap", so a short run
+    proposes nothing for withdrawal. HEADLESS Chrome reads the site (measured
+    2026-10-22), so unlike monitor_dfpi and monitor_hhs it needs no desktop.
+    Full measurements on the config/change_signals.yml entries.
+
+    LEAVE THE SCHEDULER SLOT DISABLED until a person has read the workbook.
+    output/workbooks/cfpb.xlsx has not been promoted, and a detected change goes
+    through `_crawl_into_db`, which writes STRAIGHT TO MSSQL.
+    """
+    return _run_exclusive("monitor_cfpb", _monitor_cfpb_impl)
+
+
+def _monitor_cfpb_impl() -> dict:
+    rep = _crawl_into_db("cfpb", False)
+    logger.info("Consumer Financial Protection Bureau (CFPB): %s", rep)
+    return {"Consumer Financial Protection Bureau (CFPB)": rep}
+
+
+def monitor_frrs() -> dict:
+    """WEEKLY, AND OFF. FRRS Regulations H, BB, X and DD, one page row each; the crawl
+    is the signal. Leave the slot disabled until frrs.xlsx is promoted: a
+    detected change goes through `_crawl_into_db` STRAIGHT TO MSSQL.
+    """
+    return _run_exclusive("monitor_frrs", _monitor_frrs_impl)
+
+
+def _monitor_frrs_impl() -> dict:
+    rep = _crawl_into_db("frrs", False)
+    logger.info("Federal Reserve Regulatory Services (FRRS): %s", rep)
+    return {"Federal Reserve Regulatory Services (FRRS)": rep}
 
 
 def monitor_ffiec() -> dict:
