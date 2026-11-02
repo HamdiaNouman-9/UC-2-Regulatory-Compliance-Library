@@ -297,6 +297,7 @@ def load_scheduler_config():
 # import here cannot stop the existing SBP/SECP jobs from being scheduled.
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
                                monitor_cbe, monitor_cbi, monitor_cbj,
+                               monitor_cbk_ke,
                                monitor_cheap_probes,
                                monitor_cma, monitor_edb, monitor_lloc,
                                monitor_lmra, monitor_mc, monitor_mlcu,
@@ -346,6 +347,8 @@ DIRECT_JOB_MAPPING = {
     # MSSQL. See config/change_signals.yml for why the crawl is its signal.
     "monitor_cbi": monitor_cbi,
     "monitor_cbj": monitor_cbj,
+    # Kenya, onboarded 2026-10-30. Ships DISABLED in config/scheduler.yml.
+    "monitor_cbk_ke": monitor_cbk_ke,
     # ---- Bahrain, onboarded on feature/crawler-dev-fakih, merged 2026-08-28 ---- #
     # Same rule as the three above: all three ship DISABLED in
     # config/scheduler.yml until a person has read their workbook.
@@ -414,6 +417,7 @@ API_JOB_MAPPING = {
     "monitor_lloc": lambda: trigger_monitor_via_api("monitor_lloc"),
     "monitor_cbi": lambda: trigger_monitor_via_api("monitor_cbi"),
     "monitor_cbj": lambda: trigger_monitor_via_api("monitor_cbj"),
+    "monitor_cbk_ke": lambda: trigger_monitor_via_api("monitor_cbk_ke"),
     "monitor_edb": lambda: trigger_monitor_via_api("monitor_edb"),
     "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),
     "monitor_lmra": lambda: trigger_monitor_via_api("monitor_lmra"),
