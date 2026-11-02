@@ -1351,6 +1351,18 @@ _MONITOR_JOBS = {
     "monitor_cbi",
     # CBK Kenya, 2026-10-30 (feature/kenya-regulators).
     "monitor_cbk_ke",
+    # United States (feature/usa-regulators).
+    "monitor_cfpb",
+    "monitor_dfa",
+    "monitor_dfpi",
+    "monitor_fdic",
+    "monitor_fema",
+    "monitor_ffiec",
+    "monitor_fincen",
+    "monitor_frrs",
+    "monitor_hhs",
+    "monitor_ncua",
+    "monitor_occ",
 }
 
 _monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -1600,6 +1612,17 @@ REGULATOR_REGISTRY: Dict[str, Dict[str, Any]] = {
     "CBI":  {"job": "monitor_cbi",  "display": "Central Bank of Iran (CBI)", "status": "active"},
     # Key CBK_KE, not CBK: the Central Bank of Kuwait (CBK) is onboarded as cbk_kw.
     "CBK_KE": {"job": "monitor_cbk_ke", "display": "Central Bank of Kenya (CBK)", "status": "active"},
+    "CFPB": {"job": "monitor_cfpb", "display": "Consumer Financial Protection Bureau (CFPB)", "status": "active"},
+    "DFA": {"job": "monitor_dfa", "display": "Dodd-Frank Wall Street Reform and Consumer Protection Act", "status": "active"},
+    "DFPI": {"job": "monitor_dfpi", "display": "Department of Financial Protection and Innovation (DFPI)", "status": "active"},
+    "FDIC": {"job": "monitor_fdic", "display": "Federal Deposit Insurance Corporation (FDIC)", "status": "active"},
+    "FEMA": {"job": "monitor_fema", "display": "Federal Emergency Management Agency (FEMA)", "status": "active"},
+    "FFIEC": {"job": "monitor_ffiec", "display": "Federal Financial Institutions Examination Council (FFIEC)", "status": "active"},
+    "FINCEN": {"job": "monitor_fincen", "display": "Financial Crimes Enforcement Network (FINCEN)", "status": "active"},
+    "FRRS": {"job": "monitor_frrs", "display": "Federal Reserve Regulatory Services (FRRS)", "status": "active"},
+    "HHS": {"job": "monitor_hhs", "display": "Department of Health and Human Services (HHS)", "status": "active"},
+    "NCUA": {"job": "monitor_ncua", "display": "National Credit Union Administration (NCUA)", "status": "active"},
+    "OCC": {"job": "monitor_occ", "display": "Office of the Comptroller of the Currency (OCC)", "status": "active"},
     "EDB":  {"job": "monitor_edb",  "display": "Bahrain Economic Development Board (EDB)", "status": "active"},
     "MLSD": {"job": "monitor_mlsd", "display": "Ministry of Labour and Social Development (MLSD)", "status": "active"},
     "LMRA": {"job": "monitor_lmra", "display": "Labour Market Regulatory Authority (LMRA)", "status": "active"},

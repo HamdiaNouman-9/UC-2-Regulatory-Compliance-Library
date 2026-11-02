@@ -298,6 +298,9 @@ def load_scheduler_config():
 from jobs.monitor_jobs import (monitor_bahrain_bourse, monitor_cbb,  # noqa: E402
                                monitor_cbe, monitor_cbi, monitor_cbj,
                                monitor_cbk_ke,
+                               monitor_cfpb, monitor_dfa, monitor_dfpi, monitor_fdic,
+                               monitor_fema, monitor_ffiec, monitor_fincen, monitor_frrs,
+                               monitor_hhs, monitor_ncua, monitor_occ,
                                monitor_cheap_probes,
                                monitor_cma, monitor_edb, monitor_lloc,
                                monitor_lmra, monitor_mc, monitor_mlcu,
@@ -349,6 +352,19 @@ DIRECT_JOB_MAPPING = {
     "monitor_cbj": monitor_cbj,
     # Kenya, onboarded 2026-10-30. Ships DISABLED in config/scheduler.yml.
     "monitor_cbk_ke": monitor_cbk_ke,
+    # United States, onboarded 2026-09/10 (feature/usa-regulators). All
+    # ship DISABLED in config/scheduler.yml until their workbooks are promoted.
+    "monitor_cfpb": monitor_cfpb,
+    "monitor_dfa": monitor_dfa,
+    "monitor_dfpi": monitor_dfpi,
+    "monitor_fdic": monitor_fdic,
+    "monitor_fema": monitor_fema,
+    "monitor_ffiec": monitor_ffiec,
+    "monitor_fincen": monitor_fincen,
+    "monitor_frrs": monitor_frrs,
+    "monitor_hhs": monitor_hhs,
+    "monitor_ncua": monitor_ncua,
+    "monitor_occ": monitor_occ,
     # ---- Bahrain, onboarded on feature/crawler-dev-fakih, merged 2026-08-28 ---- #
     # Same rule as the three above: all three ship DISABLED in
     # config/scheduler.yml until a person has read their workbook.
@@ -418,6 +434,17 @@ API_JOB_MAPPING = {
     "monitor_cbi": lambda: trigger_monitor_via_api("monitor_cbi"),
     "monitor_cbj": lambda: trigger_monitor_via_api("monitor_cbj"),
     "monitor_cbk_ke": lambda: trigger_monitor_via_api("monitor_cbk_ke"),
+    "monitor_cfpb": lambda: trigger_monitor_via_api("monitor_cfpb"),
+    "monitor_dfa": lambda: trigger_monitor_via_api("monitor_dfa"),
+    "monitor_dfpi": lambda: trigger_monitor_via_api("monitor_dfpi"),
+    "monitor_fdic": lambda: trigger_monitor_via_api("monitor_fdic"),
+    "monitor_fema": lambda: trigger_monitor_via_api("monitor_fema"),
+    "monitor_ffiec": lambda: trigger_monitor_via_api("monitor_ffiec"),
+    "monitor_fincen": lambda: trigger_monitor_via_api("monitor_fincen"),
+    "monitor_frrs": lambda: trigger_monitor_via_api("monitor_frrs"),
+    "monitor_hhs": lambda: trigger_monitor_via_api("monitor_hhs"),
+    "monitor_ncua": lambda: trigger_monitor_via_api("monitor_ncua"),
+    "monitor_occ": lambda: trigger_monitor_via_api("monitor_occ"),
     "monitor_edb": lambda: trigger_monitor_via_api("monitor_edb"),
     "monitor_mlsd": lambda: trigger_monitor_via_api("monitor_mlsd"),
     "monitor_lmra": lambda: trigger_monitor_via_api("monitor_lmra"),
