@@ -129,3 +129,9 @@ countries:
     # Step 3's naming rule, "Full Name (ACRONYM)", and this whole string is
     # what doc_path[0] holds.
     - "Qatar Central Bank (QCB)"
+
+  "Kenya":
+    # Onboarded 2026-10-30 (branch feature/kenya-regulators). Spelled
+    # identically in config/sources/cbk_ke.yml and crawler/cbk_ke_crawler.py.
+    # Not to be confused with the Central Bank of Kuwait (CBK), stem cbk_kw.
+    - "Central Bank of Kenya (CBK)"

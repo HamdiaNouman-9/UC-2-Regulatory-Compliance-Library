@@ -1570,5 +1570,20 @@ sources:
     signal: crawl
     confirm: false
 
+  # CBK (KENYA), added 2026-10-30. `crawl`: two listing GETs, two linked pages
+  # and one HEAD per file (~230 requests, ~4 min at the pacer's 1s). Each file's
+  # hash includes its Last-Modified and Content-Length, so a PDF replaced
+  # behind an unchanged link is caught; stored-inventory would only see the
+  # links. Slot disabled; source_system must match config/sources/cbk_ke.yml.
+  - regulator: "Central Bank of Kenya (CBK)"
+    source_system: "Legislation and Guidelines"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Central Bank of Kenya (CBK)"
+    source_system: "Circulars"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.

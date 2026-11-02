@@ -1,0 +1,49 @@
+# Central Bank of Kenya (CBK) -- Kenya
+#
+# Stem is cbk_ke, not cbk: the Central Bank of Kuwait is also "CBK" and is
+# being onboarded on another branch as cbk_kw. The regulator strings differ, so
+# only file and job names could collide.
+#
+# Shape (user, 2026-10-30):
+#
+#   CBK > Policy Procedures > Legislation and Guidelines
+#     |- Legislation and Guidelines              the page itself, html
+#     |- <one folder per bold heading>/          its files; two headings link
+#     |                                          to an HTML page, kept as html
+#     |                                          with that page's files beside
+#     |                                          it (Draft CBK: one subfolder
+#     |                                          per "Draft ..." document)
+#     |- Circulars/<year>/                       every circular, by Year column
+#
+# The intro module ("Regulations and Guidelines Pursuant to the Banking Act
+# (Cap 488)") has no files and is not a folder; its text is in the page row.
+# Plain GET, no challenge; both listings are complete in one response (the
+# circulars pager is client-side). See crawler/cbk_ke_crawler.py.
+#
+# .xlsx and .docx are stored. An archive (.zip, .rar) is one row, stored as-is,
+# everywhere in this regulator (user, 2026-10-30): the PDFs inside have no url.
+# .xlsm is stored the same way (user, 2026-10-30), one row typed XLSM, no text
+# extracted: one file today, "FX Code Self-Assessment Template" under Kenya
+# Foreign Exchange Code. Allowed in crawler/cbk_ke_crawler.py only; the shared
+# document regex and extractors are unchanged.
+
+regulator: "Central Bank of Kenya (CBK)"
+owner: Abeer
+
+sources:
+
+  - name: "Legislation and Guidelines"
+    mode: custom
+    crawler_class: "crawler.cbk_ke_crawler.CBKKenyaCrawler"
+    init_kwargs:
+      listing: "legislation"
+      regulator: "Central Bank of Kenya (CBK)"
+      source_system: "Legislation and Guidelines"
+
+  - name: "Circulars"
+    mode: custom
+    crawler_class: "crawler.cbk_ke_crawler.CBKKenyaCrawler"
+    init_kwargs:
+      listing: "circulars"
+      regulator: "Central Bank of Kenya (CBK)"
+      source_system: "Circulars"
