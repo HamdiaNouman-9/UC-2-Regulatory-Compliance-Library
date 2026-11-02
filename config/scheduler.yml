@@ -344,6 +344,17 @@ jobs:
       hour: 21
       minute: 0
 
+  # CBK (KENYA) — ~230 plain requests, ~4 minutes; no desktop session needed.
+  # 20:00 is free between monitor_pdpa (19:30) and monitor_cbi (21:00).
+  # DISABLED until output/workbooks/cbk_ke.xlsx is promoted.
+  monitor_cbk_ke:
+    enabled: false
+    trigger: cron
+    schedule:
+      day_of_week: 'sun'
+      hour: 20
+      minute: 0
+
   # EDB (BAHRAIN) — 72 requests: 8 category pages plus 64 law pages. Every
   # cheaper signal was measured and ruled out; see the change_signals.yml entry.
   #

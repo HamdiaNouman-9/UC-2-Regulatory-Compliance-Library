@@ -307,6 +307,9 @@ CRAWL_AS_SIGNAL = {
     #
     # THIS JOB NEEDS A REAL BROWSER ON A DESKTOP SESSION -- see monitor_cbi.
     "Central Bank of Iran (CBI)": ("cbi", False),
+    # CBK Kenya joined 2026-10-30 -- two listings plus one HEAD per file, plain
+    # requests. See the change_signals.yml entries.
+    "Central Bank of Kenya (CBK)": ("cbk_ke", False),
     #: EDB joined 2026-08-19. Every cheaper signal was measured and ruled out —
     #: no ETag, no Last-Modified, no sitemap or robots.txt (both 404), no 304 on
     #: a conditional GET, and a HEAD that returns no Content-Length at all. Full
@@ -1141,6 +1144,19 @@ def _monitor_cbi_impl() -> dict:
     rep = _crawl_into_db("cbi", False)
     logger.info("Central Bank of Iran (CBI): %s", rep)
     return {"Central Bank of Iran (CBI)": rep}
+
+
+def monitor_cbk_ke() -> dict:
+    """WEEKLY, AND OFF. Central Bank of Kenya, Legislation and Guidelines and
+    Circulars; the crawl is the signal. Leave the slot disabled until
+    output/workbooks/cbk_ke.xlsx is promoted."""
+    return _run_exclusive("monitor_cbk_ke", _monitor_cbk_ke_impl)
+
+
+def _monitor_cbk_ke_impl() -> dict:
+    rep = _crawl_into_db("cbk_ke", False)
+    logger.info("Central Bank of Kenya (CBK): %s", rep)
+    return {"Central Bank of Kenya (CBK)": rep}
 
 
 def monitor_edb() -> dict:

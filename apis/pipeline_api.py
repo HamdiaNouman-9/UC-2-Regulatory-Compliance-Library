@@ -1349,6 +1349,8 @@ _MONITOR_JOBS = {
     "monitor_nca",
     # CBI, 2026-09-23 (feature/iran-regulators).
     "monitor_cbi",
+    # CBK Kenya, 2026-10-30 (feature/kenya-regulators).
+    "monitor_cbk_ke",
 }
 
 _monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -1596,6 +1598,8 @@ REGULATOR_REGISTRY: Dict[str, Dict[str, Any]] = {
     "LLOC": {"job": "monitor_lloc", "display": "Legislation and Legal Opinion Commission (LLOC)", "status": "active"},
     "CBJ":  {"job": "monitor_cbj",  "display": "Central Bank of Jordan (CBJ)", "status": "active"},
     "CBI":  {"job": "monitor_cbi",  "display": "Central Bank of Iran (CBI)", "status": "active"},
+    # Key CBK_KE, not CBK: the Central Bank of Kuwait (CBK) is onboarded as cbk_kw.
+    "CBK_KE": {"job": "monitor_cbk_ke", "display": "Central Bank of Kenya (CBK)", "status": "active"},
     "EDB":  {"job": "monitor_edb",  "display": "Bahrain Economic Development Board (EDB)", "status": "active"},
     "MLSD": {"job": "monitor_mlsd", "display": "Ministry of Labour and Social Development (MLSD)", "status": "active"},
     "LMRA": {"job": "monitor_lmra", "display": "Labour Market Regulatory Authority (LMRA)", "status": "active"},
