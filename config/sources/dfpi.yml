@@ -1,0 +1,140 @@
+# ===========================================================================
+# California Department of Financial Protection and Innovation
+# ===========================================================================
+# ONE SOURCE, and it is the rulemaking index at
+# https://dfpi.ca.gov/rules-enforcement/laws-and-regulations/
+#
+# THE SHAPE, which is why this is `mode: custom` rather than a generic crawl:
+#
+#     DFPI
+#       Laws and Regulations                     source_system
+#         Regulations and Rulemaking             category
+#           Banking Law                          a subject on the index
+#             Final Regulations                  an <h2> on the law page
+#               PRO 01/20 - Public Bank Regs     an <h3> under it
+#                 Notice of Approval ... (PDF)   the document
+#
+# TWO LEVELS OF HEADING, and the tree is RAGGED. FDICSectionCrawler files under
+# ONE heading taken from one landing page; here the subject law is a level and
+# the law page's own <h2>/<h3> are one or two more. Banking Law's "Historical
+# Regulations" holds three links directly AND an <h3> sub-group, so a document
+# lands at depth 5 or depth 6 depending on where DFPI put it. No arrangement of
+# profile keys expresses that, which is what crawler/dfpi_crawler.py is for.
+#
+# ---------------------------------------------------------------------------
+# THE HOST REFUSES EVERY ORDINARY CLIENT -- MEASURED 2026-10-08, ONE TRY EACH
+# ---------------------------------------------------------------------------
+#     requests, full browser headers      HTTP 403, server: cloudflare
+#     bare Playwright, headless           "Just a moment..." after 45s
+#     generic_crawler engine, headless    status zero, 0 pages, 1 error
+#     generic_crawler engine, HEADED      status zero, 0 pages
+#     real Chrome channel, headed         HTTP 403, "Just a moment..."
+#     real Edge channel, headed           HTTP 403, "Just a moment..."
+#     the user's own curl                 the same interstitial
+#
+# So it is not this machine's network and not a geo decision -- it is a
+# Cloudflare MANAGED CHALLENGE that refuses automation. What clears it, in 4.5
+# seconds, is a persistent browser profile with the automation giveaways
+# removed; see DFPISectionCrawler._browser, where every argument is named with
+# the reason it is there.
+#
+# HEADLESS IS NOT AN OPTION, AND THAT IS THE ONE OPERATIONAL CATCH. Tested with
+# a profile that had ALREADY cleared the challenge headed: Cloudflare
+# re-challenges on the headless flag and the stored cf_clearance does not rescue
+# it. A DFPI run therefore needs a visible browser -- a desktop session, or
+# headed Chrome under Xvfb on a server. Budget for that BEFORE giving this a
+# scheduler slot; a headless cron box will report a regulator with no documents.
+#
+# AND IT WILL REPORT IT AS `zero`, NOT `blocked`. The refused engine run above
+# returned `status: zero, pages: 0, blocked_pages: 0` -- a WAF wall read as "this
+# site has nothing", which is exactly the engine gap config/sources/dfa.yml
+# documents. `_get` in the crawler answers that by WARNING on an uncleared
+# challenge instead of returning an empty page, so a refused run says so.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS THERE -- FULL CENSUS, ALL 26 LAWS, 2026-10-08, 58 SECONDS
+# ---------------------------------------------------------------------------
+#     26 subject laws     134 heading folders     611 document rows
+#
+# The largest: California Financing Law and Commercial Financing Disclosures
+# (30 folders, 123 rows), California Consumer Financial Protection Law (22/68),
+# Money Transmission Act (9/60), Corporate Securities Law of 1968 (10/57),
+# Student Loan Servicing (11/48), Debt Collection Licensing Act (8/49).
+#
+# FIVE LAWS ARE EMPTY and keep their folder on the user's instruction:
+# Business and Industrial Development Corporations Law, California Financial
+# Information Privacy Act, Depository Corporation Sale/Merger/Conversion Law,
+# Industrial Loan Law, Savings Association Law. Each has headings ("Final
+# Regulations", "Proposed Regulations") with zero links under them.
+#
+# THE FOLDER IS HELD OPEN BY THE LAW'S OWN PAGE, not by an invented placeholder.
+# A fabricated "nothing published" row would watch nothing; the real page has a
+# url, stored text and a content hash that moves the day DFPI publishes there.
+# So an empty law is a folder with one row in it, and that row is the page the
+# folder is named after.
+#
+# ---------------------------------------------------------------------------
+# FURNITURE
+# ---------------------------------------------------------------------------
+# Every law page carries four headings inside the content region that are site
+# chrome, not rulemaking: "Key Consumer Links", "News & Info Links", "Stay
+# Connected" and "Rulemaking Notices" (whose only link is a subscribe form).
+# Left in, the library would gain four bogus folders under all 26 laws -- 104
+# of them. They are dropped by name in FURNITURE_HEADINGS in the crawler rather
+# than by selector, because they are headings and the links beneath them are
+# ordinary <a> tags no selector separates from real ones.
+#
+# ---------------------------------------------------------------------------
+# NOT YET DONE
+# ---------------------------------------------------------------------------
+# NO CHANGE SIGNAL. There is no entry in config/change_signals.yml and no job in
+# jobs/monitor_jobs.py, deliberately: the signal cannot be chosen until a
+# supervised export exists, and a scheduled crawl here is not free the way
+# fincen.gov's is -- it needs the window described above. `crawl` is the likely
+# answer, since the documents are PDFs whose urls are stable and whose titles
+# the pages state.
+#
+# NO SUPERVISED EXPORT YET. The census above was read live through the crawler's
+# own access route, so the counts are real; but nothing has been through the
+# pipeline, `tools.workbook check`, or a second run proving `unchanged`.
+# ===========================================================================
+# MUST MATCH config/countries.yml EXACTLY. `regulator` is doc_path[0] and
+# therefore identity -- the entry there reads "Department of Financial
+# Protection and Innovation (DFPI)" and a divergence here would not error, it
+# would quietly drop every folder to the tree root.
+regulator: "Department of Financial Protection and Innovation (DFPI)"
+owner: Abeer
+
+sources:
+  - name: "Laws and Regulations"
+    mode: custom
+    crawler_class: "crawler.dfpi_crawler.DFPISectionCrawler"
+    init_kwargs:
+      seed_url: "https://dfpi.ca.gov/rules-enforcement/laws-and-regulations/"
+      regulator: "Department of Financial Protection and Innovation (DFPI)"
+      source_system: "Laws and Regulations"
+      # THE THIRD LEVEL, between the source system and the subject law. The
+      # index calls this section "Regulations and Rulemaking" and the manual
+      # library shows it as its own folder, so it is `category` with
+      # doc_path_category on rather than a crumb the crawler invents.
+      category: "Regulations and Rulemaking"
+      # NO strategy / scope / max_depth / max_pages. This source does not call
+      # the browser engine -- it drives its own browser, because the engine's is
+      # headless and headless is refused. Those four would configure a crawl
+      # that does not happen.
+      #
+      # EVERYTHING BELOW IS READ AT MAPPING TIME.
+      include_pages: always
+      doc_path_title: true
+      # `category` becomes a folder. Off by default across the repo, so it is
+      # named here rather than assumed.
+      doc_path_category: true
+      # THE SUBJECT LAW AND ITS HEADINGS ARE THE FOLDERS. The crawler writes
+      # section_path as "<Law> > <h2>[ > <h3>]" and this is what turns that into
+      # the tree. With it false the whole heading structure is computed and then
+      # discarded, which looks exactly like the feature not working.
+      doc_path_sections: true
+      # A VISIBLE WINDOW IS REQUIRED, not preferred -- see the note above. It is
+      # stated here so that a reader changing it knows what breaks.
+      headless: false
+      channel: "chrome"

@@ -1,0 +1,235 @@
+# FINCEN — Financial Crimes Enforcement Network (United States Treasury)
+#
+# One source: the Legal Authorities page, which is FINCEN's own statement of
+# what it is empowered to do and under which statutes.
+#
+# ===========================================================================
+# THE HOST IS COOPERATIVE, AND THAT IS WORTH SAYING OUT LOUD
+# ===========================================================================
+# MEASURED 2026-09-29, one plain GET, no browser:
+#
+#     HTTP 200   38,924 bytes   text/html   server: nginx
+#
+# No challenge, no JS requirement, no cookie wall. Unlike www.ffiec.gov
+# (Cloudflare managed challenge) and congress.gov (the same), and unlike
+# fraser.stlouisfed.org, which timed out and then dropped the connection. This
+# source costs one request and can be monitored without a browser.
+#
+# ---------------------------------------------------------------------------
+# THE FIRST RUN STORED A BLANK WHITE PAGE — READ THIS BEFORE CHANGING THE PROFILE
+# ---------------------------------------------------------------------------
+# An exploratory `crawler.py --url ...` run on 2026-09-29 returned
+#     status ok, blocked_pages 0, errors 0, title and breadcrumb correct,
+#     2 documents found
+#     text 0, html 0, and a 213-byte file holding <body></body>
+# It read the title, the breadcrumb and both PDFs and still stored nothing. That
+# is the shape a WAF failure takes, and it was not one.
+#
+# THE CAUSE WAS DOCUMENT ORDER. JS_MAIN_CONTENT falls back to
+# `document.querySelector('main, [role="main"], article, #content, .content,
+# #main')`, and querySelector returns the FIRST MATCH IN DOCUMENT ORDER, not
+# selector order. This page has ten matches and the first is a 21-character
+# wrapper, which did not survive the content strip:
+#     [0] div.content                     21 chars   <- picked
+#     [2] main#content.usa-section      4,005
+#     [3] div.content                   3,262
+#
+# FIXED by a "www.fincen.gov" entry in generic_crawler/crawler.py::SITE_PROFILES
+# with `content_selector: "div.region-content"` — 3,289 characters, the <h1>,
+# all seven <h3> sections, all 10 links and both PDFs, and WITHOUT the 716
+# characters of section sidebar that `main#content` would also bring. Do not
+# "simplify" that to main#content.
+#
+# The same entry sets `page_pdf_link: False`, because the two PDFs below are
+# references rather than this page's own file. Third host to need that after
+# fema.gov and ffiec.gov; the wrapper bug it works around is still open.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS ON THE PAGE — ten links, and only two are documents
+# ---------------------------------------------------------------------------
+# Seven <h3> sections: 31 U.S.C. 310 / Authorities Delegated ... Treasury Order
+# 180-01 / The Bank Secrecy Act / USA PATRIOT Act / The AML Act and the CTA /
+# Codified BSA Regulations - Chapter X / The Federal Register.
+#
+#   2 PDFs, both under "The AML Act and the CTA":
+#       govinfo.gov  PLAW-116publ283  FY2021 National Defense Authorization Act
+#       fincen.gov   20210615 AMLA FinCEN One Pager_FINAL.pdf
+#   5 links to OTHER fincen.gov pages — bank-secrecy-act, usa-patriot-act,
+#     anti-money-laundering-act-2020, chapter-x, federal-register-notices
+#   3 off-site references — gpo.gov (USCODE html), treasury.gov (.aspx),
+#     gpo.gov Federal Register browse (.action)
+#
+# NONE OF THE FIVE SIBLING PAGES IS INSIDE `scope: prefix`. They live at
+# /resources/statutes-regulations/... and /anti-money-laundering-act-2020, not
+# under /resources/fincens-legal-authorities, so this source cannot wander into
+# them. EACH IS ITS OWN SOURCE when the library wants it, with its own
+# source_system — that is what scopes `disappeared`, and one shared folder would
+# make each listing propose the other's documents as withdrawn.
+#
+# ---------------------------------------------------------------------------
+# ONE DOCUMENT THE CRAWL CANNOT NAME — EXCLUDED, THEN DECLARED
+# ---------------------------------------------------------------------------
+# The AMLA fact sheet's anchor text is the word "here". `GENERIC_LINK_TEXT`
+# correctly refuses it, so `best_doc_title` falls to tier 3, the row context —
+# and the ctx walk stops at the nearest ancestor whose class matches
+# /card|item|box|publication|row|result/, which on this Drupal page is a wrapper
+# holding the whole article. MEASURED on the exploratory run, the row came out
+# titled
+#     "31 U.S.C. 310 This statute establishes FinCEN as a bureau within the
+#      Treasury Department and describes FinCEN's duties and powers to include:
+#      Maintaining a government-wide data access service with a r"
+# — 200 characters of the article's opening sentence, `clean_doc_title`'s cap,
+# standing in the folder tree as a leaf. That is not a name.
+#
+# THE THREE ROUTES THAT DO NOT WORK, same as ffiec.yml finding 2 ("View
+# Slides"): `heading_is_title` fires only through `disambiguate_titles`, which
+# rewrites COLLIDING titles, and this one is unique; the url slug gives
+# "20210615 AMLA Fin CEN One Pager FINAL"; and narrowing the ctx class pattern is
+# shared JS that would move titles on every Drupal host in the library.
+#
+# SO IT IS EXCLUDED FROM THE CRAWL AND DECLARED INSTEAD, which is the fix
+# config/sources/fema.yml used for the Flood Disaster Protection Act of 1973 —
+# a document the crawl could not produce correctly, restored by a `mode:
+# declared` source at the publisher's own url. Both halves are below.
+#
+# THE TITLE IS NOT INVENTED. FINCEN names the document on this very page,
+# styling itself "FinCEN" as it always does:
+#     "Click here to go to FinCEN's dedicated web page for AML Act information,
+#      and here for FinCEN's Fact Sheet on the AML Act."
+# so the wording is the publisher's own, taken from the sentence the link sits
+# in. Stored as "FINCEN's Fact Sheet on the AML Act": this library spells the
+# acronym FINCEN throughout, settled by the lead 2026-09-29, and the row title
+# follows the library. Nothing about the url changes.
+#
+# IT ALSO FINGERPRINTS BETTER THAN THE CRAWLED ROW DID. `stamp_declared`
+# (generic_crawler/crawler.py) asks the server for a validator — HEAD, then GET
+# with stream=True — and hashes `url|etag:` or `url|last-modified:` when one is
+# offered, falling back to `url|title (WEAK - no server stamp)` and SAYING SO in
+# `hash_basis`. The crawled row could only ever have been `document_url | title`,
+# which cannot move when FINCEN replaces the file. Read the basis after the first
+# export: it is also the measurement that decides whether a `stored-inventory`
+# signal is justified for this source.
+#
+# ---------------------------------------------------------------------------
+# LISTED IN config/countries.yml under "United States of America", added with
+# this file. That string and `regulator` below must stay byte-identical —
+# country_for() matches exactly and a near miss does not error, it drops the
+# regulator to the tree root. QFCL broke that way on 2026-09-28.
+
+regulator: "Financial Crimes Enforcement Network (FINCEN)"
+owner: lead
+
+sources:
+  - name: "Legal Authorities"
+    mode: generic
+    seed_url: "https://www.fincen.gov/resources/fincens-legal-authorities"
+
+    # The page's own <h1> is "FinCEN's Legal Authorities"; the possessive is
+    # dropped here because the regulator crumb above already says whose they are.
+    # The page row's title keeps the full <h1>, and `_clean_trail` leaves both
+    # standing because "fincen s legal authorities" and "legal authorities" are
+    # different keys — so the leaf does not vanish into its folder the way
+    # ffiec.yml's page row did.
+    source_system: "Statutes and Regulations"
+
+    # NO PRE-LOAD BURST. `auto` opens with three navigations plus detect_shape()
+    # and probe_scope() before anything is read. There is nothing here to detect:
+    # one page, no menu, no tree, no pagination. ffiec.yml records this key being
+    # the difference between 8 documents and none on a host that challenges.
+    strategy: generic
+
+    # ONE PAGE. The five sibling FINCEN pages sit OUTSIDE this prefix (see above),
+    # so nothing can be walked into by accident; these caps make that explicit
+    # rather than incidental.
+    scope: prefix
+    max_pages: 1
+    max_depth: 1
+
+    # THE PAGE IS A DOCUMENT. It is FINCEN stating its own legal basis in about
+    # 3,300 characters — not restated in either PDF, and the only row here whose
+    # content_hash is taken over visible TEXT, which is ONBOARDING Step 2's first
+    # preference and the only kind of hash that can detect an edit. The two PDF
+    # rows are `document_url | title`, the weakest.
+    include_pages: always
+
+    # THE CATEGORY COLUMN, SET EXPLICITLY BECAUSE THE FALLBACK IS THE SITE MENU.
+    # `_category_for` returns this key if set, else the LAST crumb of the RAW
+    # section_path — which here is the breadcrumb "Home > Resources", giving
+    # every row `category: Resources`. That is where the page lives in the site's
+    # navigation, not what the documents are about. ffiec.yml carries the same
+    # key for the same reason, where the fallback was "Home".
+    category: "Statutes and Regulations"
+
+    # CAPTURE THE SECTION PATH, DO NOT TURN IT INTO FOLDERS.
+    #
+    # section_path is stored on every row either way — it comes off the document
+    # record, not off this key — so the site trail "Home > Resources" is kept for
+    # a reader. As FOLDERS it would be wrong twice over: `_clean_trail` drops
+    # "Home" as a non-subject crumb and leaves "Resources", a menu label, sitting
+    # between the source and its documents.
+    #
+    # IT ALSO SETTLES A CONFLICT worth knowing about. Turning this on is the only
+    # way to get `group_headings` folders, which would file both PDFs under
+    # "The AML Act and the CTA" — genuine structure. But the two cannot be
+    # separated: the PAGE row's crumbs come from the breadcrumb and the DOCUMENT
+    # rows' from headings, so switching it on gives the documents a real folder
+    # AND the page a "Resources" one. With two documents that is not a trade
+    # worth making; with fifty across seven sections it would be, and then the
+    # answer is `doc_path_sections: true` plus `group_headings: true` on the host
+    # profile, checked against the page row.
+    doc_path_sections: false
+
+    # doc_path is [regulator, source_system, title]:
+    #     Financial Crimes Enforcement Network (FINCEN)
+    #       Legal Authorities
+    #         FinCEN's Legal Authorities                  <- the page
+    #         FY2021 National Defense Authorization Act   <- crawled
+    #         FINCEN's Fact Sheet on the AML Act          <- declared, below
+    doc_path_title: true
+
+    # ONE EXCLUSION, AND IT IS NOT A REJECTION OF THE DOCUMENT. This drops the
+    # crawled sighting of the AMLA fact sheet, whose title is 200 characters of
+    # the wrong paragraph (see the header). The SAME FILE comes back as its own
+    # row from the declared source below, at the same url, named the way FINCEN
+    # names it. Delete both halves together or not at all — dropping only this
+    # line restores the unusable title, and dropping only the source below loses
+    # the document.
+    #
+    # Substring match against the url (`pat in url`, wrapper line 747), applied
+    # AFTER the crawl, so the run's own document count still reports what was
+    # found. Matched on the stable part of the filename rather than the date
+    # prefix, which is the part FINCEN would change on a re-issue.
+    exclude_documents:
+      - "AMLA%20FinCEN%20One%20Pager"
+
+  # =========================================================================
+  # THE AMLA FACT SHEET, NAMED THE WAY FINCEN NAMES IT
+  # =========================================================================
+  # See "ONE DOCUMENT THE CRAWL CANNOT NAME" in the header for why this is not
+  # simply left to the crawl, and for the three routes that were measured and
+  # rejected first.
+  #
+  # THE SAME TWO STRINGS AS THE CRAWLED SOURCE — regulator and source_system —
+  # so this row lands beside the page and the NDAA rather than opening a folder
+  # of its own. A declared source builds its trail as
+  #     _clean_trail([regulator, source_system] + <the spec's section>) + [title]
+  # and this spec names no section, so the trail is exactly three deep, matching
+  # its siblings.
+  #
+  # `disappeared` is scoped by (regulator, source_system) and both sources export
+  # in one run, so the combined inventory holds all three rows and nothing
+  # proposes anything as withdrawn.
+  - name: "AML Act Fact Sheet"
+    mode: declared
+    # BYTE-IDENTICAL TO THE TOP-LEVEL `regulator:`. A mismatch here does not
+    # error — it files this document under a regulator of its own.
+    regulator: "Financial Crimes Enforcement Network (FINCEN)"
+    source_system: "Statutes and Regulations"
+    # Sets the COLUMN only. `DeclaredDocumentsSource` never consults `category`
+    # for doc_path, so no folder is added; this just keeps the column equal to
+    # the crawled rows'.
+    category: "Statutes and Regulations"
+    # <title> :: <url>. Two parts, so the wrapper's documents_section="" applies
+    # and no folder crumb is invented.
+    documents:
+      - "FINCEN's Fact Sheet on the AML Act :: https://www.fincen.gov/system/files/shared/20210615%20AMLA%20FinCEN%20One%20Pager_FINAL.pdf"

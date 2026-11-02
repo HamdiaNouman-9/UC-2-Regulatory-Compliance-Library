@@ -1,0 +1,149 @@
+# Consumer Financial Protection Bureau (CFPB)
+#
+# THREE SOURCES, ONE WORKBOOK (output/workbooks/cfpb.xlsx): the two Interactive
+# Bureau Regulations below (1026, 1030; 174 rows) and the TRID resource page at
+# the end (48 rows) -- 222 rows, MEASURED on the separate exports of
+# 2026-10-22. `export cfpb` runs all three, one after another, through the
+# same headless Chrome profile.
+#
+# ONE SOURCE BLOCK PER REGULATION, ALL UNDER ONE source_system. Each block is
+# one CFPB regulation's landing page,
+# www.consumerfinance.gov/rules-policy/regulations/<part>/, crawled by
+# crawler/cfpb_crawler.py. To add a regulation, copy a block and change four
+# things: name, seed_url, category (`name` and `category` must match) and
+# expected_pages. source_system stays "Interactive Bureau Regulations". Nothing
+# else names a section: the crawler reads the regulation's own table of contents
+# on every run, so sections, appendices and comments CFPB adds or removes come
+# through as new / disappeared rows.
+#
+# THE SHAPE, per row (user, 2026-10-22: "Interactive Bureau Regulations" is a
+# folder, as the site's breadcrumb has it):
+#
+#   Consumer Financial Protection Bureau (CFPB)
+#     > Interactive Bureau Regulations                          source_system
+#       > 12 CFR Part 1026 - Truth in Lending (Regulation Z)    category
+#         > Subpart A - General                                 TOC group
+#           > § 1026.1 Authority, purpose, coverage, ...        the page
+#
+# The CBJ "Legislation" mechanism: a folder above the regulations can only be
+# source_system (site crumbs land BELOW it), so the regulation is `category`
+# with doc_path_category: true. The cost, accepted: the two regulations share
+# one source_system, so the change signal and `disappeared` are scoped on the
+# pair (CFPB, Interactive Bureau Regulations). The per-source count check still
+# tells them apart -- each block's `name` is its own crawl_source.
+#
+# section_path is the page's own breadcrumb, verbatim:
+#   Interactive Bureau Regulations > 12 CFR Part 1026 (Regulation Z)
+#
+# The groups are the regulation's own sidebar headings: Subpart A-G for 1026,
+# "Sections" for 1030, then "Appendices" and "Supplement I to Part <n> -
+# Official Interpretations" for both. MEASURED 2026-10-22 on cached pages:
+#
+#   1026   58 sections in 7 subparts, 17 appendices, 70 interpretation pages
+#   1030   11 sections, 4 appendices, 14 interpretation pages
+#
+# ACCESS: Akamai. A plain GET is refused 403 (2026-10-22). Chrome is not:
+# headed Chrome read the survey pages first try, and HEADLESS Chrome read every
+# page of both regulations in the export of 2026-10-22 10:19 (174 of 174). So
+# `headless: true`, which also lets the monitor run on a box with no desktop.
+# If a run reports pages refused ("Akamai refused" warnings / a coverage gap),
+# set `headless: false` here first.
+#
+# Each row's text is the page as a reader sees it with every box opened: the
+# Official Interpretation boxes inside section pages are stored EXPANDED, the
+# box title as a heading and its content below it (user, 2026-10-22). Those
+# comments are also Supplement I's own rows, so an edit to one moves both.
+# (inline_interpretations: false would drop the boxes.) Model forms, which are
+# images (290, in seven appendices), are kept INLINE as <img> with an absolute
+# src (user, 2026-10-22), and each image's src is part of the fingerprint.
+#
+# published_date is the effective date of the regulation's current version,
+# from <part>/versions/ (1026: 2026-04-08, 1030: 2023-04-19). It is not part
+# of the fingerprint.
+#
+# The regulator string must match config/countries.yml exactly (it is listed
+# under "United States of America").
+regulator: "Consumer Financial Protection Bureau (CFPB)"
+owner: Abeer
+sources:
+  - name: "12 CFR Part 1026 - Truth in Lending (Regulation Z)"
+    mode: custom
+    crawler_class: "crawler.cfpb_crawler.CFPBRegulationCrawler"
+    init_kwargs:
+      seed_url: "https://www.consumerfinance.gov/rules-policy/regulations/1026/"
+      regulator: "Consumer Financial Protection Bureau (CFPB)"
+      source_system: "Interactive Bureau Regulations"
+      category: "12 CFR Part 1026 - Truth in Lending (Regulation Z)"
+      # The TOC's page count on 2026-10-22. A different count is a warning,
+      # never a refusal.
+      expected_pages: 145
+      headless: true
+      include_pages: always
+      doc_path_title: true
+      doc_path_category: true
+      doc_path_sections: true
+
+  - name: "12 CFR Part 1030 - Truth in Savings (Regulation DD)"
+    mode: custom
+    crawler_class: "crawler.cfpb_crawler.CFPBRegulationCrawler"
+    init_kwargs:
+      seed_url: "https://www.consumerfinance.gov/rules-policy/regulations/1030/"
+      regulator: "Consumer Financial Protection Bureau (CFPB)"
+      source_system: "Interactive Bureau Regulations"
+      category: "12 CFR Part 1030 - Truth in Savings (Regulation DD)"
+      expected_pages: 29
+      headless: true
+      include_pages: always
+      doc_path_title: true
+      doc_path_category: true
+      doc_path_sections: true
+
+  # --------------------------------------------------------------------------
+  # TILA-RESPA Integrated Disclosures (TRID) -- a RESOURCE PAGE, not a
+  # regulation: crawler.cfpb_crawler.CFPBResourcePageCrawler (added 2026-10-22).
+  #
+  #   CFPB > TILA-RESPA Integrated Disclosures (TRID)
+  #          > TILA-RESPA integrated disclosures (TRID)        the page itself
+  #          > <section heading> > <PDF, or a linked CFPB page>
+  #          > Forms > <table on the forms page> > <form PDF>
+  #
+  # Sections are the page's own headings, read every run (a new one is a new
+  # folder). MEASURED 2026-10-22 on cached pages: 48 rows -- 5 pages (the TRID
+  # page, the PACE and 2013 TRID final-rule pages, forms and samples,
+  # webinars) and 43 PDFs (Featured topic 3, Rules 2, Quick references 6,
+  # Guides 4, Forms 27, Webinars 1).
+  #
+  # Dropped on the user's instruction: FAQs and Additional materials -- from
+  # the tree AND from the stored page. Furniture dropped everywhere: the
+  # contact/survey footer and the email sign-up box. "Page last modified" is
+  # KEPT, visible, and recorded as extra_meta cfpb_last_modified.
+  #
+  # PDFs are downloaded by the crawl's own browser session and their text
+  # extracted (pypdfium2): files.consumerfinance.gov refuses the pipeline's own
+  # download with 403, so without this every PDF row would hash url|title.
+  #
+  # Spanish forms ("(en Español)", 12) are not rows: each is the urdu_url of
+  # its English original in the same table -- the repo's translated-document
+  # slot (dynamic_crawler/auto/shapes.py) -- and part of that row's hash.
+  - name: "TILA-RESPA Integrated Disclosures (TRID)"
+    mode: custom
+    crawler_class: "crawler.cfpb_crawler.CFPBResourcePageCrawler"
+    init_kwargs:
+      seed_url: "https://www.consumerfinance.gov/compliance/compliance-resources/mortgage-resources/tila-respa-integrated-disclosures/"
+      regulator: "Consumer Financial Protection Bureau (CFPB)"
+      source_system: "TILA-RESPA Integrated Disclosures (TRID)"
+      exclude_sections: ["FAQs", "Additional materials"]
+      # Its "TILA-RESPA Integrated Disclosure forms" link is the forms page,
+      # which belongs under Forms.
+      defer_sections: ["Featured topic"]
+      # Kept as links in the stored page, never rows: Regulation Z is already
+      # the 1026 source above; the examination procedures are CFPB's
+      # Supervision section (user, 2026-10-22: links only).
+      no_follow: ["/rules-policy/regulations/", "/compliance/supervision-examinations/"]
+      # The forms page files its PDFs under the <h3> over each table.
+      file_subfolders: ["/forms-samples/"]
+      headless: true
+      include_pages: always
+      doc_path_title: true
+      doc_path_category: false
+      doc_path_sections: true

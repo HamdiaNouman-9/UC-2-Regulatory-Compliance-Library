@@ -162,6 +162,7 @@ _COUNTRY_CODES: Dict[str, str] = {
     "Kuwait": "KWT",
     "Canada": "CAN",
     "Pakistan": "PAK",
+    "United States of America": "USA",
 }
 
 

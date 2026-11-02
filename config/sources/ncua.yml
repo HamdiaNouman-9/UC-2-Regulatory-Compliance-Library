@@ -1,0 +1,56 @@
+# NCUA — National Credit Union Administration (United States)
+#
+# One source: the UDAAP chapter of NCUA's Federal Consumer Financial Protection
+# Guide (Compliance Management).
+#
+# THE REGULATOR LIST NAMES THIS PAGE TWICE. "List of Regulators - Country Wise -
+# USA.xlsx" has it as "UDAAP Marketing" (row 7) and "UDAAP Compliance" (row 20),
+# both at the same url. Settled with the user 2026-10-19: ONE source system,
+# named after the page, holding the one page row -- not two copies of the same
+# body under two folders.
+#
+# MEASURED 2026-10-19 (the user's generic-crawler run, output/ncua/pages.json):
+#   status ok, 1 page, 0 files, 0 blocked, 0 errors. Plain generic strategy
+#   reached it; no challenge in front of ncua.gov from this network.
+#   Stored body: h1 + 12 h2 / 5 h3 / 6 h4, 7 checklist tables, inline
+#   footnotes [1]-[7], 42,515 characters of text before cleaning.
+#
+# WHY mode: custom. The engine captures the right region but stores Drupal
+# furniture no profile key removes: 290 div.lr-label cell labels, 9
+# .visually-hidden screen-reader spans, a duplicate title,
+# "Back to top", and a false "(opens new window)" last breadcrumb ("Last
+# modified on ..." is kept, rebuilt as one line). All counted
+# in crawler/ncua_crawler.py, which runs the engine unchanged and cleans its
+# output. Nothing in generic_crawler/crawler.py was changed.
+#
+# SHAPE: National Credit Union Administration (NCUA) > <source system> > <page>.
+# doc_path_sections: false, as on FDIC's "Fair Lending" (the closest existing
+# source: one compliance-manual chapter) -- the site's six-crumb trail is
+# recorded in extra_meta.section_path, not turned into folders.
+
+regulator: "National Credit Union Administration (NCUA)"
+owner: Abeer
+
+sources:
+
+  - name: "Unfair, Deceptive, or Abusive Acts or Practices (UDAAP)"
+    mode: custom
+    crawler_class: "crawler.ncua_crawler.NCUAPageCrawler"
+    init_kwargs:
+      seed_url: "https://ncua.gov/regulation-supervision/manuals-guides/federal-consumer-financial-protection-guide/compliance-management/unfair-deceptive-or-abusive-acts-or-practices-udaap"
+      regulator: "National Credit Union Administration (NCUA)"
+      source_system: "Unfair, Deceptive, or Abusive Acts or Practices (UDAAP)"
+      # NO `category:` LINE, deliberately (user, 2026-10-19). The regulator
+      # list's tab says "Laws & Regulations", but ncua.gov never does; with no
+      # line, `_category_for` takes the site's own last crumb, "Compliance
+      # Management". A column only -- not a folder, not identity.
+      #
+      # One page, and only that page: prefix scope under its own path has
+      # nothing below it, and max_pages 1 says so outright.
+      strategy: generic
+      scope: prefix
+      max_pages: 1
+      max_depth: 0
+      include_pages: always
+      doc_path_title: true
+      doc_path_sections: false

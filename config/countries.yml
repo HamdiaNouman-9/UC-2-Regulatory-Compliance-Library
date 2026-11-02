@@ -135,3 +135,39 @@ countries:
     # identically in config/sources/cbk_ke.yml and crawler/cbk_ke_crawler.py.
     # Not to be confused with the Central Bank of Kuwait (CBK), stem cbk_kw.
     - "Central Bank of Kenya (CBK)"
+
+  # The United States' first entry, onboarded 2026-09-28 (branch
+  # feature/usa-regulators). Listed here in the SAME change that settles
+  # its first source config, not at first crawl, for the reason the
+  # Bahrain and Qatar blocks above record: an unlisted regulator keeps its
+  # folders at the TREE ROOT, every document is still correct, and nothing else
+  # complains -- so the mistake survives for months.
+  #
+  # NAME: "United States of America", the ISO 3166 short name, so that its
+  # alpha-3 in utils/countries.py::_COUNTRY_CODES is the obvious "USA" and
+  # resolve_country("USA") — the API's ?country= filter — lands here. Added to
+  # that dict in this same change, as its comment requires.
+  #
+  # FEMA was listed as "Flood Insurance" on 2026-09-28 and renamed to the
+  # regulatory body on 2026-09-29, in step with config/sources/fema.yml, which
+  # carries the string twice (top level and its declared source). All three must
+  # move together: country_for() matches exactly, so editing one alone does not
+  # error — it drops the regulator to the tree root, which is what happened to
+  # QFCL the day before.
+  # FFIEC added 2026-09-29. config/sources/ffiec.yml has asked for this since it
+  # was onboarded — "add it under the United States, matching the `regulator`
+  # string above EXACTLY ... the entry should land with whatever else the US
+  # onboarding brings" — and `check` has been warning on every ffiec.xlsx export
+  # that its folders sit at the tree root. This is that branch.
+  "United States of America":
+    - "Federal Emergency Management Agency (FEMA)"
+    - "Federal Financial Institutions Examination Council (FFIEC)"
+    - "Financial Crimes Enforcement Network (FINCEN)"
+    - "Federal Deposit Insurance Corporation (FDIC)"
+    - "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    - "Department of Financial Protection and Innovation (DFPI)"
+    - "Office of the Comptroller of the Currency (OCC)"
+    - "Department of Health and Human Services (HHS)"
+    - "National Credit Union Administration (NCUA)"
+    - "Consumer Financial Protection Bureau (CFPB)"
+    - "Federal Reserve Regulatory Services (FRRS)"

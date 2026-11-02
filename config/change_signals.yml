@@ -1585,5 +1585,865 @@ sources:
     signal: crawl
     confirm: false
 
+    confirm: false
+
+  # ---- United States -----------------------------------------------------
+  # FEMA / NFIP (United States). `crawl` is NOT the fallback it usually is here
+  # -- it is the CHEAPEST question available, on the PDPA precedent above: the
+  # whole source is ONE page load. config/sources/fema.yml sets max_pages: 5,
+  # but only the seed is in scope under `scope: prefix`, and three consecutive
+  # runs (2026-09-28 17:09, 2026-09-29 09:38, 11:19) each reported
+  # `n_pages: 1, blocked_pages: 0, errors: 0`.
+  #
+  # THE FOUR ALTERNATIVES:
+  #
+  #   stored-inventory  AVAILABLE ONLY ON PAPER, AND MORE EXPENSIVE. The source
+  #                     now stores 13 urls, so a sweep is 13 requests per run
+  #                     against ONE page load for the crawl -- the same inversion
+  #                     MOIC (90 vs 11) and CBJ (376 vs 10) record above.
+  #
+  #                     AND THE ONE MEASUREMENT WE HAVE DOES NOT SUPPORT IT.
+  #                     `stamp_declared` asked fema.gov for a validator on
+  #                     2026-09-29 while exporting the declared 1973 row, and
+  #                     stored `hash_basis: url|title (WEAK - no server stamp)`.
+  #                     READ THAT AS "no validator was obtained", NOT "the server
+  #                     has none": stamp_declared collapses a missing header and
+  #                     a refused request into the same fallback, and this is the
+  #                     host that answered our first plain GET with a 420-byte
+  #                     Akamai 403. `version_token` DOES separate the two
+  #                     (`probe-failed` vs `url+title`), so ONE supervised sweep
+  #                     would settle it. Until someone runs that, this line is
+  #                     ruled out on missing evidence, not on a measurement.
+  #
+  #   sitemap           NOT MEASURED, and deliberately not measured. It would
+  #                     take requests to a host under the one-supervised-run rule
+  #                     in config/sources/fema.yml's header. Worth trying in the
+  #                     same supervised session as the sweep above: FEMA is
+  #                     Drupal and /sitemap.xml is plausible. If it carries a
+  #                     real lastmod for this url, it beats everything here.
+  #
+  #   snapshot-articles WRONG SHAPE. It exists for one page that CONTAINS many
+  #                     articles -- PDPA's 60 accordion panels, all anchors into
+  #                     one HTTP object. This page contains LINKS to 12 separate
+  #                     objects. There is nothing on the page to split.
+  #
+  #   sama-feed         No "what changed" page for this section. FEMA's own
+  #                     "Last updated July 18, 2024" line is the closest thing,
+  #                     and it is INSIDE the page -- so the crawl already reads
+  #                     it, and it moves this source's content_hash.
+  #
+  # WHAT THE CRAWL DETECTS THAT A PROBE CANNOT. The page row's content_hash is
+  # taken over its VISIBLE TEXT (ONBOARDING Step 2's first preference) and is
+  # the only hash in this source that can detect an edit -- the 11 crawled file
+  # rows are `document_url | title`, the third and weakest preference, which
+  # cannot move when FEMA replaces a PDF behind an unchanged link. Every change
+  # this library CAN see -- an edit to the prose, a statute link added, removed
+  # or re-pointed, the "Last updated" date moving -- moves that one hash. A
+  # stored-inventory sweep would detect strictly LESS, for 13x the requests.
+  #
+  # CONFIRM IS FALSE because there is no token to distrust. `confirm` exists to
+  # re-hash the visible text when a version token lies (CMA's Last-Modified is
+  # the current time, 1,134 false changes). `crawl` already hashes the text, so
+  # confirming would be doing the same work twice.
+  #
+  # WHAT THIS CANNOT SEE: a NEW FEMA instrument published anywhere other than
+  # this page. The crawl is one url and `scope: prefix`, so the siblings named in
+  # fema.yml (.../congressional-reauthorization, .../2006-evaluation) are invisible
+  # until each is added as its own source with its own source_system.
+  #
+  # NO JOB READS THIS YET. There is no monitor_fema in jobs/monitor_jobs.py and
+  # no scheduler slot, so this entry is inert -- it records the decision. Wire it
+  # the way Justice Canada was: its own job on a slot that
+  # ships `enabled: false`, NOT a line in CHEAP_PROBE_SOURCES, because that job
+  # is daily, enabled, and writes through `_crawl_into_db` STRAIGHT TO MSSQL --
+  # and nothing here has been promoted.
+  # `source_system` IS THE PROGRAMME, NOT THE LISTING. fema.yml hangs this
+  # listing under a "Flood Insurance" parent the way cbj.yml hangs ten under
+  # "Legislation" — the page's own "Laws and Regulations" is its `category` and
+  # a folder below this. `settings_for` matches on BOTH halves of the pair, so
+  # this string must stay identical to the `source_system:` in fema.yml; a near
+  # miss silently falls back to the defaults at the top of this file, which is
+  # `stored-inventory` — the one signal ruled out above.
+  - regulator: "Federal Emergency Management Agency (FEMA)"
+    source_system: "Flood Insurance"
+    signal: crawl
+    confirm: false
+
+  # FFIEC (United States), Cybersecurity Awareness. `crawl` for the same reason
+  # as FEMA above and PDPA before it: the source is ONE page load. The config
+  # allows max_pages: 20 / max_depth: 2, but `scope: prefix` on
+  # /resources/cybersecurity-awareness leaves nothing below it to walk, and the
+  # 2026-09-28 run reported `n_pages: 1, n_documents: 8, blocked_pages: 0`.
+  #
+  #   stored-inventory  9 requests against 1 page load, and it could never see a
+  #                     NEW statement appear on the page, which on a "resources"
+  #                     listing is the main event. Same covers_inventory = False
+  #                     argument PDPA and MOIC record above.
+  #   sitemap           NOT MEASURED. It would take requests to a host behind a
+  #                     Cloudflare managed challenge; config/sources/ffiec.yml's
+  #                     header sets the terms and a plain GET is refused there
+  #                     with a CAPTCHA page, so a sitemap probe would likely be
+  #                     refused too and tell us nothing either way.
+  #   snapshot-articles wrong shape — the page links 8 separate PDF objects, it
+  #                     does not contain 8 articles to split.
+  #   sama-feed         none.
+  #
+  # THE PAGE ROW IS THE ONLY ROW THAT CAN DETECT AN EDIT, exactly as on FEMA: the
+  # 8 PDF rows are `document_url | title`, ONBOARDING Step 2's weakest
+  # preference. A new statement added to the page, or a link re-pointed, moves
+  # the page's text hash. A PDF silently replaced behind an unchanged link does
+  # not — recorded as finding 2 on the ffiec.yml entry, and true of every source
+  # on this list that hashes url|title.
+  #
+  # NOTE THE CRAWL IS NOT FREE HERE THE WAY IT IS ON FEMA. This host answers only
+  # a real browser (`strategy: generic` and a JS-capable client); a refused run
+  # reports `zero`, not `blocked`, for the two engine reasons ffiec.yml's last
+  # section documents. Read the HTTP status before believing a zero.
+  - regulator: "Federal Financial Institutions Examination Council (FFIEC)"
+    source_system: "Cybersecurity Awareness"
+    signal: crawl
+    confirm: false
+
+  # FINCEN (United States), Statutes and Regulations. `crawl`, and unusually this
+  # one was measured with a genuine expectation that the answer would be
+  # `stored-inventory` — the declared fact sheet came back with a real
+  # `last-modified` stamp, which is the first affirmative validator any US source
+  # in this library has produced. It is still the wrong signal, and the reason is
+  # WHICH url has the token.
+  #
+  # MEASURED 2026-09-29 through dynamic_crawler/fingerprint.py::version_token
+  # itself — the function the sweep calls — three passes, every stored url:
+  #
+  #   FY2021 NDAA (govinfo.gov)     last-modified+length   STABLE
+  #     'Fri, 02 Jan 2026 21:36:58 GMT|3925814'  identical on all three
+  #   FINCEN Fact Sheet (fincen.gov) last-modified+length  STABLE
+  #     'Wed, 30 Jul 2025 00:49:12 GMT|139321'   identical on all three
+  #   FinCEN's Legal Authorities     url+title              NO TOKEN AT ALL
+  #     '' — the page answers a ranged GET with neither ETag nor Last-Modified
+  #
+  # THE PAGE IS THE DOCUMENT AND THE PAGE HAS NO TOKEN. It is the only row here
+  # whose content_hash is taken over visible TEXT (ONBOARDING Step 2's first
+  # preference) and the only one that can detect an edit at all — the two PDFs
+  # are files we never download. A `stored-inventory` sweep would therefore be
+  # structurally blind to the only thing worth watching: FINCEN rewriting its own
+  # statement of legal authority, adding a statute, or re-pointing a link.
+  #
+  # AND IT WOULD COST MORE: 3 requests per sweep against the crawl's 1 page load.
+  # The MOIC (90 vs 11) and CBJ (376 vs 10) entries above record the same
+  # inversion at larger scale.
+  #
+  # THE CRAWL ALSO CATCHES THE ONE THING A PROBE WOULD HAVE ADDED. The fact sheet
+  # is a `mode: declared` row, and `stamp_declared` re-asks the server on EVERY
+  # run — so its content_hash is `url|last-modified:` and moves when FINCEN
+  # replaces the file. That is a real fingerprint on the one FINCEN-published
+  # file here, obtained inside the crawl, without a sweep.
+  #
+  # WHAT IS STILL NOT COVERED, stated plainly: the govinfo NDAA pdf is a crawled
+  # row hashed `document_url | title`, so GPO silently replacing PLAW-116publ283
+  # is invisible. It is an enrolled public law package; a re-issue would be a
+  # govinfo event, not a FINCEN one, and the day this library wants public laws
+  # watched properly that is a govinfo source with its own entry.
+  #
+  # CONFIRM IS FALSE because `crawl` already hashes the visible text; confirming
+  # would re-fetch to learn what the run just computed. `confirm` exists for a
+  # token that lies (CMA's Last-Modified is the current time, 1,134 false
+  # changes), and there is no token in play here.
+  #
+  # THE HOST IS COOPERATIVE, which is why this is affordable: one plain GET
+  # returns 200 from nginx with no challenge, no JS and no cookie — unlike
+  # ffiec.gov above, whose crawl needs a real browser.
+  - regulator: "Financial Crimes Enforcement Network (FINCEN)"
+    source_system: "Statutes and Regulations"
+    signal: crawl
+    confirm: false
+
+  # FDIC (United States), Fair Lending. `crawl`, and this is the strongest case
+  # of the four US sources rather than the weakest — because here the probe was
+  # not merely unhelpful, it was MEASURED TO LIE.
+  #
+  # THE HOST INVITES THE CHEAP ANSWER. www.fdic.gov returns 200 to a plain GET
+  # with no challenge, no JS and no cookie, so a `stored-inventory` sweep is
+  # genuinely available in a way it is not on ffiec.gov (Cloudflare) or fema.gov
+  # (Akamai). That is exactly why it was measured before being ruled out.
+  #
+  # MEASURED 2026-09-30 through dynamic_crawler/fingerprint.py::version_token —
+  # the function the sweep calls — over every stored url:
+  #
+  #   FIL-5-2015              fil15005.pdf        last-modified+length  STABLE
+  #     'Wed, 06 Mar 2024 18:31:01 GMT|50364'
+  #   FDIC Final Rule         ...sum-b-fr.pdf     last-modified+length  STABLE
+  #     'Thu, 14 Mar 2024 13:54:20 GMT|280973'
+  #   IV-1 Fair Lending...    the page            etag-opaque           MOVES
+  #
+  # THE PAGE'S ETag IS THE CURRENT TIME. It is an epoch with "-gzip" appended,
+  # and it decodes to the moment of the request that asked for it:
+  #
+  #     1790753931-gzip  =  2026-09-30 07:38:51 UTC   <- the 1st request
+  #     1790760482-gzip  =  2026-09-30 09:28:02 UTC   <- the 2nd, 17 seconds
+  #                                                      before the wall clock
+  #                                                      read 09:28:19
+  #
+  # Nothing on the page changed between those two readings: it still states
+  # "Last Updated: August 29, 2025", thirteen months earlier. `Last-Modified`
+  # carries the same value, so there is no second header to fall back to.
+  #
+  # SO A PROBE-BASED SIGNAL HERE WOULD REPORT `modified` ON EVERY SWEEP. That is
+  # the CMA case this file already records — "Last-Modified is the current time,
+  # 1,134 false changes" — reproduced on a different host and caught before it
+  # was wired instead of after.
+  #
+  # AND IT IS WORSE THAN FINCEN'S PROBLEM, NOT THE SAME ONE. FINCEN's page
+  # returns NO token, so a sweep there would be blind to the one row that can
+  # detect an edit. FDIC's page returns a token that always moves, so a sweep
+  # here would be LOUD about a row that never changed. A signal that cries wolf
+  # costs more than a silent one, because the reviewer stops opening the diffs
+  # and then misses the real edit when it comes.
+  #
+  # THE COST COMPARISON IS THE USUAL ONE AND IT POINTS THE SAME WAY: 3 requests
+  # per sweep against ONE page load for the crawl. `scope: prefix` on this seed
+  # resolves to the page's own path, so nothing is below it to walk, and the
+  # 2026-09-30 run reported n_pages: 1, blocked_pages: 0, errors: 0.
+  #
+  # WHAT THE CRAWL DETECTS THAT NOTHING ELSE CAN. The page row's content_hash is
+  # taken over 120,579 characters of VISIBLE TEXT — ONBOARDING Step 2's first
+  # preference, and the largest single stored document in this library. An edit
+  # to the examination procedures, a statute added to the discrimination list, a
+  # citation re-pointed, the "Last Updated" line moving — every one of those
+  # moves that hash, and none of them touches an HTTP header.
+  #
+  # CONFIRM IS FALSE, and note this is NOT because there is no token to distrust.
+  # There is one, and it lies. `confirm` re-hashes the visible text when a
+  # version token cannot be trusted — but it is a modifier on a TOKEN-BASED
+  # signal, and `crawl` already hashes the text as its primary act. Setting it
+  # would re-fetch to learn what the run just computed.
+  #
+  # WHAT THIS CANNOT SEE, stated plainly:
+  #   * THE REST OF THE MANUAL. This source is section IV-1 and `scope: prefix`
+  #     holds it there. The Consumer Compliance Examination Manual has dozens of
+  #     other sections; each is its own source with its own source_system when
+  #     the library wants it, and none of them is watched by this entry.
+  #   * fil15005.pdf REPLACED BEHIND ITS LINK. It is a crawled row hashed
+  #     `document_url | title`, the weakest preference. The declared row beside
+  #     it is not: `stamp_declared` re-asks the server every run and got a real
+  #     `last-modified`, so the final rule IS covered.
+  - regulator: "Federal Deposit Insurance Corporation (FDIC)"
+    source_system: "Fair Lending"
+    signal: crawl
+    confirm: false
+
+  # FDIC's OTHER THREE SOURCE SYSTEMS, added 2026-10-08. They were onboarded in
+  # this branch and had NO entry at all -- `settings_for` matches on the
+  # (regulator, source_system) PAIR, so a regulator with four sources needs four
+  # entries, and three of them were silently falling through to the sweep's
+  # default of `stored-inventory`. On Financial Institution Letters that default
+  # is 954 probes, and every one of them would have lied; see below.
+  #
+  # ALL THREE ARE `crawl`, AND ALL FOUR ALTERNATIVES WERE MEASURED FIRST.
+  #
+  #   sama-feed         none. The FDIC publishes no "what changed" page for
+  #                     these sections.
+  #
+  #   stored-inventory  THE TOKEN IS THE CURRENT TIME. The Fair Lending entry
+  #                     above records this for one page; measured 2026-10-08 it
+  #                     is host-wide. version_token over one url from each
+  #                     source returned an ETag whose first field is an epoch:
+  #
+  #                       FIL letter        1791476037-gzip = 16:13:57 UTC
+  #                       FIL listing       1791475811-gzip = 16:10:11 UTC
+  #                       Supervision page  1791476235-gzip = 16:17:15 UTC
+  #                       Fair Lending page 1791476266-gzip = 16:17:46 UTC
+  #                                           (the clock read 16:17:47 UTC)
+  #
+  #                     Two requests seconds apart look STABLE, which is the
+  #                     trap -- it is the SHAPE of the value that gives it away.
+  #                     A sweep would report all 988 page rows modified every
+  #                     run: the CMA false-change pattern at four times the
+  #                     scale, and the expensive kind of wrong, because a
+  #                     reviewer who stops opening the diffs misses the real
+  #                     edit when it arrives.
+  #
+  #   sitemap           LOOKED FOR PROPERLY THIS TIME, because the FEMA entry
+  #                     above flags it as plausible on a Drupal host and FDIC is
+  #                     Drupal. www.fdic.gov DOES publish one -- robots.txt
+  #                     names it, it is an index of 11 sub-sitemaps, 21,113 urls,
+  #                     100% carrying <lastmod>. It is still not usable, for
+  #                     three independent reasons, any one of them fatal:
+  #
+  #                     1. `parse_sitemap` RAISES on a <sitemapindex> ("point at
+  #                        one of them") and our urls are spread across four of
+  #                        the eleven -- FIL alone sits in pages 1, 2, 3 and 4.
+  #                     2. `assess()` REFUSES the best single sub-sitemap: it
+  #                        holds 538 of the 954 FIL documents, 56% against the
+  #                        80% floor -- "it is not a sitemap of this source".
+  #                     3. <lastmod> IS NOT THE CONTENT DATE. FDIC renders its
+  #                        own "Last Updated" line on every letter; compared
+  #                        across all 953, the two AGREE on 179 and DISAGREE on
+  #                        774. e.g. the page says 2024-10-15 where the sitemap
+  #                        says 2025-04-02. It is a node-touched stamp that moves
+  #                        on CMS operations -- 260 letters share 2024-03-29,
+  #                        which is a migration, not 260 edits.
+  #
+  #   snapshot-articles wrong shape: these sections link separate objects, they
+  #                     are not one page holding many articles.
+  #
+  # CONFIRM IS FALSE on all three: `confirm` re-hashes visible text when a
+  # version token lies, and under `crawl` there is no token -- the run computes
+  # the hash it would be confirming.
+  #
+  # WHAT THE SITEMAP IS STILL GOOD FOR, recorded because it is a real finding
+  # and not this signal's job: it holds 1,082 FIL urls against our 954. The
+  # difference was checked rather than assumed -- 85 are annexes of letters we
+  # DO hold (fil9504a.html beside fil9504.html), 11 are one letter paginated
+  # (fil3905_page1..page10 plus its toc), and the rest are mostly further
+  # annexes and two legacy index pages. Those are reached only FROM a letter,
+  # which is the level this section deliberately does not traverse to. A handful
+  # of plain-slug 2024 urls are the only ones that might be letters the listing
+  # does not carry, and two of those duplicate titles we already hold. Only ONE
+  # stored url is absent from the sitemap: the listing page itself.
+  - regulator: "Federal Deposit Insurance Corporation (FDIC)"
+    source_system: "Laws and Regulations"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Federal Deposit Insurance Corporation (FDIC)"
+    source_system: "Supervision and Examinations"
+    signal: crawl
+    confirm: false
+
+  # THE LARGEST SOURCE IN THIS FILE BY ROW COUNT, and the one where the missing
+  # entry would have cost most: 954 probes a sweep, all of them false changes.
+  # The crawl is a plain-HTTP walk of the listing's 39 pages plus one GET per
+  # letter -- about twelve minutes, no browser -- so `crawl` is also not
+  # expensive here in the way it is on a host that needs one.
+  - regulator: "Federal Deposit Insurance Corporation (FDIC)"
+    source_system: "Financial Institution Letters"
+    signal: crawl
+    confirm: false
+
+  # DODD-FRANK, added 2026-10-05. `crawl` here is the RESIDUAL, not a preference:
+  # the other four signals were ruled out by measurement rather than by
+  # inspection, which on this host took four requests.
+  #
+  # stored-inventory IS NOT EXPENSIVE HERE, IT IS IMPOSSIBLE. Measured through
+  # dynamic_crawler/fingerprint.py::version_token, the function the sweep calls,
+  # against the one stored url:
+  #
+  #     token='', basis='probe-failed', 0.7s
+  #
+  # and the same request repeated by hand, with the same User-Agent and the same
+  # `Range: bytes=0-1` header, to find out WHY — because `probe-failed` covers
+  # both a transport error and any 4xx, and those argue differently:
+  #
+  #     HTTP 403, 5,873 bytes
+  #     Server: cloudflare
+  #     CF-Mitigated: challenge
+  #     <title>Just a moment...</title>, "Enable JavaScript", _cf_chl present
+  #     NO ETag. NO Last-Modified.
+  #
+  # THAT IS A CHALLENGE, NOT A BLOCK, and the difference decides whether this
+  # entry may exist at all. It is not an Error 1020 and not "Access denied";
+  # robots.txt from the same address answers HTTP 200 (2,027 bytes), and none of
+  # its 34 Disallow rules matches our path. We are unverified, not banned. So
+  # this is NOT a skip_hosts case — contrast saudiexchange.sa and simah.com
+  # above, where there is nothing to solve. A browser solves this one, and the
+  # supervised run proved it: status ok, 1 page, 0 blocked, 0 errors, 0 retries.
+  #
+  # sitemap: ruled out by the same robots.txt read. It names NO `Sitemap:` line,
+  # so there is no lastmod feed to watch.
+  #
+  # snapshot-articles: the source is one article, not a page holding many.
+  #
+  # sama-feed: Heritage publishes no "what changed" feed for this Act, and is
+  # not the Act's publisher in the first place — which is the larger caveat on
+  # this whole entry and is recorded in config/sources/dfa.yml.
+  #
+  # THREE US HOSTS HAVE NOW DEFEATED A PROBE IN THREE DIFFERENT WAYS. Keeping
+  # them apart is the point, because they do not justify equal caution:
+  #     FINCEN  answers, returns no token          -> a sweep would be SILENT
+  #     FDIC    answers, ETag is the request time  -> a sweep would be LOUD
+  #     DFA     does not answer a probe at all     -> a sweep would be BLIND
+  # The first two are judgements about a working probe. The third is not a
+  # judgement: there is no probe.
+  #
+  # WHAT THE CRAWL SEES INSTEAD. The page row's content_hash is
+  # content_key(extra_meta.content_text) over 9,518 characters of visible text —
+  # ONBOARDING Step 2's first preference. Heritage revising the explainer, or
+  # withdrawing it, moves that hash. Nothing in an HTTP header would.
+  #
+  # CONFIRM IS FALSE. `confirm` re-hashes visible text when a version TOKEN
+  # cannot be trusted. Here there is no token to distrust, and `crawl` already
+  # hashes the text as its primary act — so setting it would re-fetch to learn
+  # what the run just computed. Same conclusion as the FDIC entry above, reached
+  # from the opposite direction.
+  #
+  # THE ONE-ROW HAZARD, CHECKED RATHER THAN ASSUMED. A refused run returns zero
+  # rows against one stored, a 100% drop. `withdrawal.count_drop(0, 1)` returns
+  # None — the allowance is max(1, 5% of 1) = 1 and the loss is exactly 1, so the
+  # COUNT GATE IS INERT on a source this small. What stops it is
+  # `withdrawal.gate`'s empty-run rule: may_propose=False, "the sweep observed
+  # nothing". Both were called to confirm. Recorded because the count gate is the
+  # one a reader assumes is doing the work.
+  #
+  # AND THE CHALLENGE CANNOT BE STORED AS THE DOCUMENT, which is the worse
+  # failure: generic_crawler/blockcheck.py::text_is_blocked returns "Just a
+  # moment" for this host's 403 title and "" for the real one, "The Dodd-Frank
+  # Act". So a refused scheduled run reports blocked; it does not quietly write a
+  # version row of a Cloudflare interstitial.
+  #
+  # WHAT THIS CANNOT SEE: the Act itself. This source is one commentary page. The
+  # statute was briefly carried as a declared govinfo row and has been removed
+  # from config/sources/dfa.yml, so nothing in this library watches Public Law
+  # 111-203 — if that is wanted, it is a declared source again, and it gets a
+  # real `last-modified` from GPO.
+  - regulator: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    source_system: "Dodd-Frank Wall Street Reform and Consumer Protection Act"
+    signal: crawl
+    confirm: false
+
+  # DFPI (California), Laws and Regulations. `crawl`, and like Dodd-Frank above
+  # this is the signal that remains when no cheap question is POSSIBLE -- not one
+  # that was weighed against a working probe and found expensive, which is the
+  # FDIC and FINCEN case.
+  #
+  # MEASURED 2026-10-08 through dynamic_crawler/fingerprint.py::version_token --
+  # the function the sweep calls -- two passes over four urls spanning both page
+  # types and both upload paths:
+  #
+  #   the index page              ('', 'probe-failed')   both passes, 0.3s
+  #   a law page                  ('', 'probe-failed')   both passes, 0.3s
+  #   a stored pdf (wp-content)   ('', 'probe-failed')   both passes, 0.4s
+  #   another stored pdf          ('', 'probe-failed')   both passes, 0.2s
+  #
+  # AND AN OFF-HOST URL AS THE CONTROL, because "probe-failed" on its own does
+  # not say whose fault it is:
+  #
+  #   oal.ca.gov   ('Thu, 08 Oct 2026 08:55:26 GMT|', 'last-modified')  stable
+  #
+  # so the probe code works and this host refuses it. The same requests by hand
+  # are HTTP 403 with Server: cloudflare, no ETag, no Last-Modified, no
+  # Content-Length -- on the PDFs as well as the pages, so there is no "the CDN
+  # serves files without the challenge" exception to fall back on.
+  #
+  #   stored-inventory  IMPOSSIBLE, not merely expensive. It would be 564
+  #                     requests and all 564 fail. Ruled out on the measurement
+  #                     above rather than on preference.
+  #   sama-feed         LOOKED FOR FIRST, as ONBOARDING Step 8 requires, and
+  #                     there is none. The index carries a "Rulemaking Notices"
+  #                     heading whose only link is a GovDelivery EMAIL
+  #                     SUBSCRIPTION form -- there is no published list of recent
+  #                     actions to read. (If DFPI ever publishes one, it beats
+  #                     everything here: 1 request against 27 page loads, and it
+  #                     would discover documents we do not hold.)
+  #   sitemap           NOT MEASURED, and it would not help if it existed. The
+  #                     sweep probes with a plain HTTP client and every url on
+  #                     this host refuses one; a sitemap would have to be fetched
+  #                     through the same browser the crawl already launches, at
+  #                     which point it is not the cheaper question.
+  #   snapshot-articles WRONG SHAPE. It exists for one page holding many articles
+  #                     as anchors into a single HTTP object. Here the index
+  #                     links 26 separate law pages, each linking separate files.
+  #
+  # CONFIRM IS FALSE because there is no token to distrust. `confirm` exists to
+  # re-hash the visible text when a version token lies -- CMA's Last-Modified is
+  # the current time, 1,134 false changes. There is no token in play at all here.
+  #
+  # WHAT THIS CAN AND CANNOT SEE, stated plainly. All 565 records in the
+  # change-state file carry basis `url+title (identity only -- cannot detect an
+  # edit)`: the five stored page rows hash visible text, the other 559 are file
+  # links this pass never downloads. So the crawl catches a document ADDED,
+  # REMOVED or RE-POINTED -- which on a rulemaking index IS the main event, since
+  # a new PRO proceeding arrives as new links under a new heading -- and does NOT
+  # catch DFPI replacing a PDF behind an unchanged url. Same gap FEMA, FFIEC and
+  # FINCEN record above; larger here, because 559 rows sit on that basis.
+  #
+  # THE CRAWL IS NOT FREE, AND IT IS THE LEAST FREE ON THIS FILE. 27 page loads
+  # (the index plus 26 laws), ~55 seconds, and it must launch a VISIBLE BROWSER:
+  # headless is refused by this host even with a profile that has already cleared
+  # the challenge, which was tested rather than assumed. A headless scheduler box
+  # reports this regulator as having no documents.
+  #
+  # TWO EXPORTS HAVE SETTLED, which is what makes this entry decidable rather
+  # than guessed: 2026-10-08 13:21 and 13:51, 563 records seen in both runs, 0
+  # misses, and the one re-identified row was a title the second run deliberately
+  # changed. `check` returns OK on 564 regulations / 564 versions / 744 folders.
+  #
+  # NO JOB IS ENABLED. jobs/monitor_jobs.py has monitor_dfpi and a
+  # CRAWL_AS_SIGNAL line; config/scheduler.yml ships the slot `enabled: false`,
+  # because output/workbooks/dfpi.xlsx has not been promoted and a detected
+  # change writes through `_crawl_into_db` straight to MSSQL.
+  #
+  # `source_system` MUST MATCH config/sources/dfpi.yml EXACTLY. `settings_for`
+  # matches on both halves of the pair, and a near miss falls back silently to
+  # this file's default -- `stored-inventory`, the one signal measured impossible
+  # here.
+  - regulator: "Department of Financial Protection and Innovation (DFPI)"
+    source_system: "Laws and Regulations"
+    signal: crawl
+    confirm: false
+
+# ---------------------------------------------------------------------------
+# Office of the Comptroller of the Currency (OCC)  -- three sources
+# ---------------------------------------------------------------------------
+# `crawl`, because every cheaper question was measured on 2026-10-12 and each
+# one fails for a reason worth writing down.
+#
+#   stored-inventory  NO TOKEN ON THE PAGES. HEAD on the subtopic pages returns
+#                     neither ETag nor Last-Modified -- checked on
+#                     /topics/supervision-and-examination/capital/index-capital
+#                     .html and /topics/laws-and-regulations/litigation/
+#                     index-litigation.html, both 200 with both headers absent.
+#                     Static PDFs under /news-issuances/ DO carry an honest
+#                     ETag and Last-Modified, so a probe would cover the files
+#                     and be blind to the pages that LIST them -- and on this
+#                     regulator the event that matters is a subtopic page
+#                     gaining or losing a link.
+#
+#   sitemap           PRESENT, WELL FORMED, AND STALE. https://www.occ.gov/
+#                     sitemap.xml is a flat <urlset> (not a <sitemapindex>, so
+#                     parse_sitemap would read it), 15,283 urls, EVERY one with
+#                     a <lastmod>, dates spread 2014-2026 rather than all today.
+#                     It clears `assess`: 319 of our 349 rows are in it, 91.4%,
+#                     over the 80% min_overlap.
+#
+#                     IT STILL CANNOT BE USED, and the reason is a measurement
+#                     rather than a doubt. The Financial Technology subtopic
+#                     page is listed with lastmod 2024-04-17. Its static HTML,
+#                     fetched the same day, links news releases from 2021, 2022,
+#                     2023, 2024, 2025 AND 2026 -- /news-issuances/news-releases/
+#                     2026/nr-occ-2026-78.html among them, plus GENIUS Act
+#                     material that did not exist in 2024. So the page gained
+#                     documents and its lastmod did not move.
+#
+#                     That is a FALSE NEGATIVE, which is the dangerous
+#                     direction. A token that lies LOUDLY -- CMA's Last-Modified
+#                     being the current time -- costs 1,134 false changes and is
+#                     answered by `confirm: true`. A token that lies QUIETLY
+#                     reports "unchanged" while the regulator publishes, and no
+#                     `confirm` setting rescues it: confirm only re-checks rows
+#                     the signal already flagged.
+#
+#   sama-feed         NO SUCH FEED FOR THESE SOURCES. OCC does publish a
+#                     newsroom and bulletins by year, but that is its press
+#                     output, not a "what changed in Laws & Regulations" page.
+#                     Pointed at the newsroom it would report news, and the
+#                     documents here are mostly not news.
+#
+#   snapshot-articles WRONG SHAPE. It exists for one page holding many articles
+#                     as anchors into a single HTTP object. Here each topic has
+#                     a sitemap and 4-12 separate subtopic pages.
+#
+# CONFIRM IS FALSE because there is no token to distrust. `confirm` re-hashes
+# the visible text when a version token lies; no token is in play at all here.
+#
+# THE CRAWL IS 26 REQUESTS AND ABOUT 30 SECONDS. Measured 2026-10-12:
+#
+#     the topics sitemap, once per source       3 requests
+#     the 23 subtopic pages                    23 requests
+#                                              ------------------------
+#                                              26 requests, ~30 seconds
+#
+# THIS ENTRY HAS CARRIED TWO OTHER FIGURES, both honest when written, and the
+# history is kept because it explains the shape rather than just the cost:
+#
+#     subtopic as a folder of bare links   26 requests   349 rows,  23 with text
+#     the same, every link fetched        ~262 requests  349 rows, 283 with text
+#     THE SUBTOPIC PAGE IS THE ROW         26 requests    23 rows,  23 with text
+#
+# The middle row was an attempt to fix the first: 326 of 349 rows were a url and
+# a title with nothing behind them, against FDIC's 984 of 991 carrying text. The
+# answer turned out not to be fetching the links but not promoting them -- the
+# subtopic page IS the document, and its links live inside its stored body.
+#
+# EVERY ROW HASHES VISIBLE TEXT -- 23 of 23, ONBOARDING Step 2's FIRST
+# preference, with no row in this regulator sitting on `url|title`.
+#
+# THAT IS NOT UNUSUAL, though an earlier version of this entry said it was.
+# Measured across all 36 workbooks in output/workbooks on 2026-10-12, storing a
+# body for every row is ordinary: qfcl 8004/8034, qfcl_qfca_rules 781/783, mc
+# 51/51, mhrsd.regs 63/63, cbb_reg_res 71/71, fdic 99%, sama 98%.
+#
+# WHAT IS DIFFERENT HERE is that OCC has no FILE rows. The low figures elsewhere
+# -- DFPI 5%, QCB 3%, MOH and CBJ and ZATCA 0% -- are regulators whose rows are
+# mostly PDFs, and nothing in this repo fetches a file for its text. So the
+# missing `url|title` tail follows from the agreed shape, not from a stronger
+# fingerprint.
+#
+# SO THERE IS NO "CANNOT DETECT AN EDIT" GAP HERE. An edit to any of the 23
+# pages moves its hash. What the crawl cannot see is a change to a document one
+# of those pages LINKS to -- a PDF replaced behind an unchanged url on a page
+# this regulator does not store as a row. That is a consequence of the agreed
+# shape rather than a weakness of the signal: those files were never rows.
+#
+# WHICH MAKES `_strip_furniture` LOAD-BEARING FOR THE SIGNAL, not merely tidy.
+# "Share This Page" appears on effectively every page, "Popular Links" on 54 and
+# "Top Tasks" on 49, and "Related News and Issuances" is a rolling three-item
+# feed on 19 of the 23. Left in the stored text, OCC reshuffling its own quick
+# links or publishing any news at all would report most of this regulator as
+# modified.
+#
+# TWO EXPORTS HAVE SETTLED, which is what makes this entry decidable rather than
+# guessed. The two runs were compared row by row on the identity tuple
+# (document_url, doc_path, title) and on content_hash: 349 rows against 349, 0
+# identities only in the first, 0 only in the second, 0 content hashes moved.
+# `check` returns OK on 349 regulations / 349 versions / 375 folders, no errors
+# and no warnings.
+#
+# NO JOB IS ENABLED. jobs/monitor_jobs.py has monitor_occ and a CRAWL_AS_SIGNAL
+# line; config/scheduler.yml ships the slot `enabled: false`, because
+# output/workbooks/occ.xlsx has not been promoted and a detected change writes
+# through `_crawl_into_db` straight to MSSQL.
+#
+# `source_system` MUST MATCH config/sources/occ.yml EXACTLY, on BOTH halves of
+# the pair -- `settings_for` keys on (regulator, source_system) and a near miss
+# falls back silently to this file's default, `stored-inventory`, the one signal
+# measured impossible here. THREE ENTRIES, because three sources: FDIC ran with
+# three of its four source systems unlisted for exactly this reason.
+  - regulator: "Office of the Comptroller of the Currency (OCC)"
+    source_system: "Supervision and Examination"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Office of the Comptroller of the Currency (OCC)"
+    source_system: "Laws and Regulations"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Office of the Comptroller of the Currency (OCC)"
+    source_system: "Consumers and Communities"
+    signal: crawl
+    confirm: false
+
+# ---------------------------------------------------------------------------
+# Department of Health and Human Services (HHS)  -- one source, ~6,040 rows
+# ---------------------------------------------------------------------------
+# `crawl`. The source is the "Explore Laws and Regulations" block on
+# www.hhs.gov/regulations/index.html: ten sections, each a folder
+# (config/sources/hhs.yml). Export of 2026-10-19: 6,037 rows, of which 5,843
+# are Guidance Portal items (one hhs.gov PDF each), 98 HIPAA, 44 PREP Act,
+# 37 FR/eCFR pages across sections 2, 8, 9 and 10.
+#
+#   stored-inventory  IMPOSSIBLE. www.hhs.gov answers a plain client with
+#                     Akamai's 403 "Access Denied" (Server-Timing: ak_p,
+#                     errors.edgesuite.net), measured 2026-10-12; the sweep
+#                     probes with a plain client. Not re-probed for a token,
+#                     deliberately: saudiexchange.sa's Akamai block was created
+#                     by our own repeated probing.
+#   sama-feed         None that covers the source. "Regulatory actions" is
+#                     federalregister.gov's feed of HHS documents, one row of
+#                     ~6,040; the Guidance Portal has no feed.
+#   sitemap           NOT MEASURED. It would have to come through the same
+#                     browser the crawl launches, at which point it is not the
+#                     cheaper question (same reasoning as DFPI above).
+#
+# THE FULL CRAWL IS TOO LONG FOR A WEEKLY SIGNAL. Export of 2026-10-19: 6 h 40
+# min, of which ~3.5 h is the Guidance Portal's 5,850 detail pages and ~2.5 h
+# the orchestrator's refused-PDF phase (hhs.gov refuses plain `requests` on
+# every PDF; in monitoring that phase only touches new/modified rows).
+#
+# SO THE MONITOR RE-READS THE LISTING, NOT EVERY DETAIL PAGE. monitor_hhs sets
+# HHS_DETAIL_REFRESH_DAYS=28 (crawler/hhs_crawler.py, `detail_refresh_days`):
+#   - the whole guidance listing, 1,140 pages, every run. It carries each
+#     item's title, division, status and issue date, and the guidance row's
+#     hash is `url|title|status|issue_date`: an addition, a withdrawal, a draft
+#     going final or a reissue all show here.
+#   - a detail page (which only says which hhs.gov file the item links) only
+#     for a NEW item, plus the oldest 7/28 of the kept ones, so every detail
+#     page is re-read within four weekly runs. Kept in
+#     ~/.cache/hhs_progress/guidance_details.json, written by every run and
+#     export. The first run on a machine without it reads them all (~4 h).
+#   - the nine other sections in full, FR/eCFR included.
+# Estimated about an hour per run; NOT YET MEASURED as a monitor run.
+#
+# HHS DOES WITHDRAW GUIDANCE. Between 2026-10-16 and 10-19 it unpublished about
+# 221 CMS items (detail page 403 "Access Denied", the Drupal answer for an
+# unpublished node; PDF still served) and published about 221 others. 10-19
+# and 10-20 agreed within 2 items. Such a run is real change: ~221 disappeared,
+# ~221 new.
+#
+# A SHORT RUN SAYS SO, as a "coverage gap" warning (the orchestrator's
+# check_run_trustworthy word, which makes the run untrusted so nothing it
+# missed is proposed for withdrawal):
+#   - guidance detail pages still refused after the crawler's one paced retry
+#     (kept in guidance_refused.json and read first next run);
+#   - section pages Akamai refused, and the FR/eCFR block. That block happened
+#     2026-10-15 and again 2026-10-20 (~36 rows, 0.6% -- inside the 5% count
+#     tolerance, so without the warning they would read as disappeared).
+#
+# A VISIBLE BROWSER: headless=False, same requirement as DFPI. A headless
+# scheduler box would report this source as unreadable -- the crawler raises
+# rather than returning an empty source.
+#
+# GUIDANCE PDFs CARRY NO TEXT (hhs.gov refuses the download), so their hash is
+# the listing's `url|title|status|issue_date`: it cannot see a PDF replaced in
+# place under the same url and listing entry. Every page row hashes its
+# visible text.
+#
+# NO JOB IS ENABLED. jobs/monitor_jobs.py has monitor_hhs and a CRAWL_AS_SIGNAL
+# line; config/scheduler.yml ships the slot `enabled: false`, because
+# output/workbooks/hhs.xlsx has not been promoted and a detected change writes
+# through `_crawl_into_db` straight to MSSQL.
+#
+# `source_system` MUST MATCH config/sources/hhs.yml EXACTLY -- `settings_for`
+# keys on the (regulator, source_system) pair and a near miss falls back
+# silently to `stored-inventory`, the signal ruled out above.
+  - regulator: "Department of Health and Human Services (HHS)"
+    source_system: "Laws and Regulations"
+    signal: crawl
+    confirm: false
+
+# ---------------------------------------------------------------------------
+# National Credit Union Administration (NCUA)  -- one source, ONE page row
+# ---------------------------------------------------------------------------
+# `crawl`. The source is the UDAAP chapter of NCUA's Federal Consumer Financial
+# Protection Guide (config/sources/ncua.yml): one page, no files, one row.
+#
+#   stored-inventory  THE TOKEN LIES LOUDLY. Measured 2026-10-19 06:26 UTC, two
+#                     plain GETs 9 seconds apart, both 200 with no challenge:
+#                       Last-Modified  Mon, 19 Oct 2026 06:04:43 GMT
+#                       ETag           W/"1792389883"   (the same instant)
+#                       Cache-control  max-age=3600, public
+#                     while the page's OWN line reads "Last modified on
+#                     06/18/26" (<time datetime="2026-06-18T11:46:16-04:00">).
+#                     Both headers are Drupal's page-cache build time, not the
+#                     content's, so they move whenever the cache is rebuilt --
+#                     the FDIC ETag pattern. A weekly sweep would almost always
+#                     report the page modified. `confirm: true` would catch each
+#                     one by re-hashing the text, i.e. run the crawl anyway.
+#   sitemap / feed    NOT LOOKED FOR. The whole source is one GET; nothing a
+#                     sitemap or feed could answer is cheaper than that.
+#
+# ONE PAGE LOAD through the generic engine (`strategy: generic`, `max_pages: 1`,
+# `max_depth: 0`), then crawler/ncua_crawler.py cleans the stored html. Plain
+# `requests` also reaches the host, so nothing here needs a visible browser.
+#
+# THE ROW HASHES VISIBLE TEXT, after furniture removal -- ONBOARDING Step 2's
+# first preference -- and that text includes the page's own "Last modified"
+# line (kept visible on purpose), so an NCUA edit that advances the stamp moves
+# the hash even if the prose change is tiny.
+#
+# CONFIRM IS FALSE: the crawl already hashes the text; there is no token in play.
+#
+# TWO EXPORTS HAVE SETTLED, 2026-10-19 11:04 and 11:19 (after the "Last
+# modified" line was kept): 1 row against 1, same (document_url, doc_path,
+# title), content_hash b83b799f546ed6b944446b463741f22e both times, stored html
+# byte-identical. `check` OK, no errors, no warnings.
+#
+# NO JOB IS ENABLED. jobs/monitor_jobs.py has monitor_ncua and a
+# CRAWL_AS_SIGNAL line; config/scheduler.yml ships the slot `enabled: false`,
+# because output/workbooks/ncua.xlsx has not been promoted and a detected change
+# writes through `_crawl_into_db` straight to MSSQL.
+#
+# `source_system` MUST MATCH config/sources/ncua.yml EXACTLY -- `settings_for`
+# keys on the (regulator, source_system) pair and a near miss falls back
+# silently to `stored-inventory`, the signal ruled out above.
+  - regulator: "National Credit Union Administration (NCUA)"
+    source_system: "Unfair, Deceptive, or Abusive Acts or Practices (UDAAP)"
+    signal: crawl
+    confirm: false
+
+# ---------------------------------------------------------------------------
+# Consumer Financial Protection Bureau (CFPB)  -- one source per regulation
+# ---------------------------------------------------------------------------
+# `crawl`. Each source is one regulation of CFPB's Interactive Bureau
+# Regulations (config/sources/cfpb.yml), one row per page of its table of
+# contents: 1026 (Regulation Z) 145 pages, 1030 (Regulation DD) 29, counted
+# 2026-10-22. Every row is a page row and hashes its visible text.
+#
+#   stored-inventory  IMPOSSIBLE. www.consumerfinance.gov answers a plain client
+#                     with Akamai's 403 (Server: AkamaiGHost), measured
+#                     2026-10-22; the sweep probes with a plain client. Not
+#                     re-probed for a token, for the same reason as HHS above.
+#   versions page     THE HONEST TOKEN, AND NOT USABLE AS A SIGNAL YET.
+#                     <part>/versions/ lists each version as /<part>/<date>/ and
+#                     marks the current one; a new version of the regulation is
+#                     a new date there. No signal type reads it, and it too is
+#                     behind Akamai. The crawler records the date as each row's
+#                     published_date (and cfpb_next_version for one published
+#                     but not yet in effect), so a person reading the workbook
+#                     sees it.
+#   sitemap / feed    NOT MEASURED -- through the same browser the crawl
+#                     launches, so not the cheaper question (DFPI, HHS above).
+#
+# THE CRAWL DISCOVERS. The table of contents is re-read every run, so a page
+# CFPB adds is `new` and one it drops is `disappeared`, with no config change.
+#
+# A SHORT RUN SAYS SO: pages Akamai refused are counted in a "coverage gap"
+# warning (the orchestrator's check_run_trustworthy word), so a run that read
+# less than the table of contents lists proposes nothing for withdrawal.
+#
+# HEADLESS CHROME, NO DESKTOP NEEDED: Akamai refuses a plain client but read
+# headless Chrome on 2026-10-22 and in every export since, unlike DFPI and HHS. About
+# 176 page loads, 2 s apart, plus TRID -- estimated 25-40 min, NOT YET MEASURED.
+#
+# MEASURED (a `crawl` signal's proof is two crawls of an unchanged site
+# fingerprinting the same): regulations exported 2026-10-22 11:50 and 12:56,
+# then with TRID 2026-10-26 13:32 and 14:13 -- 0 rows new or lost and 0 hashes
+# moved across all four (TRID: 10-22 14:12, 10-26 13:32, 14:13 the same).
+# 10-26 12:43 left two TRID PDFs unread (slow file server, then a 120 s
+# download limit, now 900 s): QUARANTINED as a coverage gap, as designed.
+#
+# NO JOB IS ENABLED. jobs/monitor_jobs.py has monitor_cfpb and a
+# CRAWL_AS_SIGNAL line; config/scheduler.yml ships the slot `enabled: false`:
+# output/workbooks/cfpb.xlsx (2026-10-26 14:13) is exported and audited but
+# not promoted, and a detected change writes through `_crawl_into_db`
+# straight to MSSQL.
+#
+# ONE ENTRY, because every regulation in config/sources/cfpb.yml shares the
+# source_system "Interactive Bureau Regulations" (each regulation is its
+# `category`; user's tree, 2026-10-22). A regulation added there needs NO entry
+# here. It MUST MATCH cfpb.yml EXACTLY -- `settings_for` keys on the
+# (regulator, source_system) pair and a near miss falls back silently to
+# `stored-inventory`, the signal ruled out above.
+  - regulator: "Consumer Financial Protection Bureau (CFPB)"
+    source_system: "Interactive Bureau Regulations"
+    signal: crawl
+    confirm: false
+
+# TRID (added 2026-10-22): its own source_system, so its own entry. `crawl`
+# for the same reason (Akamai refuses a plain client, pages and PDFs alike).
+# The crawl reads 5 pages and downloads ~43 PDFs through the browser session
+# each run; PDF rows hash their extracted text, page rows their visible text,
+# and "Page last modified" is in the page text, so a CFPB edit that advances it
+# moves the hash. Runs inside monitor_cfpb with the regulations.
+  - regulator: "Consumer Financial Protection Bureau (CFPB)"
+    source_system: "TILA-RESPA Integrated Disclosures (TRID)"
+    signal: crawl
+    confirm: false
+
+# ---------------------------------------------------------------------------
+# Federal Reserve Regulatory Services (FRRS)  -- one page row per regulation
+# ---------------------------------------------------------------------------
+# `crawl`: each source is one page, one plain GET (config/sources/frrs.yml).
+# stored-inventory not used: Last-Modified stamps the whole page, most of which
+# is the FRRS-wide sidebar. Rows hash the article's visible text only.
+#
+# MEASURED: exports 2026-10-27 10:14 and 10:20 -- same 2 rows, 0 hashes moved,
+# html byte-identical. Slot disabled until frrs.xlsx is promoted.
+#
+# source_system must match frrs.yml exactly (`settings_for` keys on the pair).
+  - regulator: "Federal Reserve Regulatory Services (FRRS)"
+    source_system: "Regulation H"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Federal Reserve Regulatory Services (FRRS)"
+    source_system: "Regulation BB"
+    signal: crawl
+    confirm: false
+
+# X and DD (compliance guides, added 2026-10-27): same reasoning; their
+# Last-Modified is a site-wide build stamp (Wed, 25 Feb 2026 on both), and the
+# page's own "Last Update" line is in the hashed text. MEASURED: exports
+# 2026-10-27 10:45 and 10:50 -- all 4 rows, 0 hashes moved.
+  - regulator: "Federal Reserve Regulatory Services (FRRS)"
+    source_system: "Regulation X"
+    signal: crawl
+    confirm: false
+
+  - regulator: "Federal Reserve Regulatory Services (FRRS)"
+    source_system: "Regulation DD"
+    signal: crawl
+    confirm: false
+
 # Not listed, deliberately:
 #   MOH x2  same shape as MOE; both forms are still approved=false.
