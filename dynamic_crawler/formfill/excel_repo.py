@@ -165,6 +165,14 @@ class ExcelRepo:
                     else datetime.now().isoformat(timespec="seconds")
                 return
 
+    def set_extra_meta(self, regulation_id: int, extra_meta_json: str) -> None:
+        """Bookkeeping write: extra_meta only, updated_at untouched (CHG-006).
+        Mirrors MSSQLRepository.set_extra_meta."""
+        for r in self.t["regulations"]:
+            if r.get("id") == regulation_id:
+                r["extra_meta"] = _flat(extra_meta_json)
+                return
+
     def get_regulation_by_id(self, regulation_id: int) -> Optional[dict]:
         return next((dict(r) for r in self.t["regulations"]
                      if r.get("id") == regulation_id), None)

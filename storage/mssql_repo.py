@@ -509,6 +509,21 @@ class MSSQLRepository(DocumentRepository):
             logger.error(f"Failed to insert regulation: {e}")
             raise
 
+    def set_extra_meta(self, regulation_id: int, extra_meta_json: str) -> None:
+        """Bookkeeping write: extra_meta only, updated_at NOT touched.
+
+        update_regulation bumps updated_at on every call, which is right for
+        a modification and wrong for a note about one (CHG-006 writes the
+        hidden-text counts after the row exists; a bumped updated_at would
+        read as a second change and drift from the version row's created_at).
+        """
+        with self._lock:
+            with self._get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE regulations SET extra_meta = ? WHERE id = ?",
+                            (extra_meta_json, regulation_id))
+                conn.commit()
+
     def update_regulation(self, regulation_id: int, **kwargs):
         """
         updated_at defaults to SYSDATETIMEOFFSET() (unchanged behaviour).

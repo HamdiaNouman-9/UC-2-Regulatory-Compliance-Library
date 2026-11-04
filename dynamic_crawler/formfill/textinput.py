@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
+from processor.hidden_text import strip_hidden_html   # CHG-006; pure, no I/O
+
 # Matches orchestrator.py's MIN_TEXT_LEN. Kept as a parameter so the two cannot
 # drift silently: the caller passes its own value in.
 DEFAULT_MIN_TEXT_LEN = 200
@@ -124,11 +126,17 @@ class Decision:
     # every attachment a second time.
     html_text: str = ""
     file_parts: List[Tuple[str, str]] = field(default_factory=list)  # (name, text)
+    # CHG-006: what the hidden-text pass removed from the PAGE before it was
+    # used (processor.hidden_text VisibleText.as_meta()), or None when nothing
+    # was hidden. The orchestrator records it in extra_meta["hidden_text"].
+    hidden_text: Optional[dict] = None
 
     def __str__(self) -> str:
         if self.skip:
             return f"SKIP — {self.reason}"
-        return (f"ANALYSE {'+'.join(self.sources)} ({len(self.text or ''):,} chars) "
+        hidden = (f", {self.hidden_text['removed_chars']:,} hidden chars removed"
+                  if self.hidden_text else "")
+        return (f"ANALYSE {'+'.join(self.sources)} ({len(self.text or ''):,} chars{hidden}) "
                 f"— {self.reason}")
 
 
@@ -161,6 +169,41 @@ def decide(
     actual mechanism -- a direct .pdf link, not a metadata field), it is folded
     into the same URL list rather than handled as a separate case.
     """
+    # CHG-006: the reader's view of the page. When the page hides something
+    # (display:none, off-screen, zero font ...) the model gets the markup
+    # WITHOUT it, in place of the crawler's content_text, which was flattened
+    # from the same page and may carry the hidden words (measured 2026-11-04:
+    # 4 of 36,312 rows). When nothing is hidden -- 42,353 of 42,448 stored
+    # pages -- the choice below is exactly what it was, so the analysis input
+    # and its hash do not move.
+    hidden_meta = None
+    if document_html and document_html.strip():
+        document_html, hv = strip_hidden_html(document_html)
+        if hv.removed_chars:
+            hidden_meta = hv.as_meta()
+            content_text = ""                           # flattened from the same page: do not trust it
+    dec = _decide(document_html=document_html, content_text=content_text,
+                  document_url=document_url, attachment_url=attachment_url,
+                  attachment_urls=attachment_urls, fetch_file_text=fetch_file_text,
+                  fetch_page_text=fetch_page_text, min_text_len=min_text_len,
+                  threshold=threshold)
+    dec.hidden_text = hidden_meta
+    return dec
+
+
+def _decide(
+    *,
+    document_html: str = "",
+    content_text: str = "",
+    document_url: str = "",
+    attachment_url: str = "",
+    attachment_urls: Optional[List[str]] = None,
+    fetch_file_text: Optional[Callable[[str], Optional[str]]] = None,
+    fetch_page_text: Optional[Callable[[str], Optional[str]]] = None,
+    min_text_len: int = DEFAULT_MIN_TEXT_LEN,
+    threshold: float = SAME_CONTENT_THRESHOLD,
+) -> Decision:
+    """The gate and the choice, unchanged; `decide` above prepares the page."""
     html_text = (content_text or "").strip() or (document_html or "").strip()
     doc_is_file = is_file_url(document_url)
     urls: List[str] = []

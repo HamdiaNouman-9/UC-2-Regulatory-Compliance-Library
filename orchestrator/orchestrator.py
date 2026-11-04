@@ -902,17 +902,43 @@ class Orchestrator:
 
     def extract_text_content_unified(self, doc, regulation_id: Optional[int] = None):
         """The gate, then HTML-vs-file. Replaces first-tier-wins."""
+        self._page_hidden = None                   # set by _safe_page_text (CHG-006)
         dec = decide_for_document(
             doc,
             fetch_file_text=self._safe_pdf_text,
             fetch_page_text=self._safe_page_text,
             min_text_len=MIN_TEXT_LEN,
         )
+        if dec.hidden_text is None and self._page_hidden:
+            dec.hidden_text = self._page_hidden    # the live-fetched page hid something
         self._last_decision = dec
         logger.info("  %s", dec)
         if dec.skip:
             return None, None
         return dec.text, dec.content_type
+
+    def _record_hidden_text(self, regulation_id, doc, dec) -> None:
+        """extra_meta["hidden_text"] = {"page": {...} | None, "files": [...]}
+        when the page or any attachment hid text; nothing written otherwise.
+        The page part comes from Decision.hidden_text (decide(), or the live
+        fetch), the file parts from extract_text_from_pdf_smart's metadata
+        collected by _download_and_extract_pdf during this decision."""
+        page = getattr(dec, "hidden_text", None) if dec is not None else None
+        files = list(getattr(self, "_files_hidden", None) or [])
+        self._files_hidden = []
+        if not page and not files:
+            return
+        try:
+            meta = dict(getattr(doc, "extra_meta", None) or {})
+            meta["hidden_text"] = {"page": page, "files": files}
+            doc.extra_meta = meta
+            self.repo.set_extra_meta(regulation_id, json.dumps(meta, ensure_ascii=False, default=str))
+            removed = (page or {}).get("removed_chars", 0) + sum(f.get("removed_chars", 0) for f in files)
+            self._log_step(regulation_id, "hidden_text", "SUCCESS",
+                           f"{removed:,} hidden chars removed from the model's copy "
+                           f"(page: {bool(page)}, files: {len(files)})")
+        except Exception as e:                     # bookkeeping must never stop a run
+            logger.warning("  hidden_text not recorded for %s: %s", regulation_id, e)
 
     def _safe_pdf_text(self, url: str) -> Optional[str]:
         """Despite the name (kept to avoid touching the one call site above),
@@ -930,8 +956,14 @@ class Orchestrator:
         try:
             import requests
             from bs4 import BeautifulSoup
+            from processor.hidden_text import strip_hidden_html
             r = requests.get(url, timeout=45, headers=_FILE_DOWNLOAD_HEADERS)
-            soup = BeautifulSoup(r.text, "html.parser")
+            # CHG-006: the reader's view of the live page, same rules as the
+            # stored page in decide(); what went is reported through
+            # Decision.hidden_text by extract_text_content_unified.
+            html, hv = strip_hidden_html(r.text)
+            self._page_hidden = hv.as_meta() if hv.removed_chars else None
+            soup = BeautifulSoup(html, "html.parser")
             for t in soup(["script", "style", "noscript", "header", "footer", "nav"]):
                 t.decompose()
             return soup.get_text(" ", strip=True)
@@ -1053,6 +1085,11 @@ class Orchestrator:
             dec = getattr(self, "_last_decision", None)
             t["status"] = "SKIPPED" if not text else "SUCCESS"
             t["message"] = str(dec)
+
+        # CHG-006: what the hidden-text pass removed, on the row, for a person
+        # to see and for the quarantine step (CHG-008). Bookkeeping, not a
+        # modification: extra_meta only, updated_at untouched.
+        self._record_hidden_text(regulation_id, doc, dec)
 
         if not text:
             return
@@ -1461,6 +1498,13 @@ class Orchestrator:
                 return None
 
             text_content, metadata = OCRProcessor.extract_text_from_pdf_smart(pdf_path=tmp_path)
+
+            # CHG-006: keep what the file hid, for _record_hidden_text.
+            ht = metadata.get("hidden_text") or {}
+            if ht.get("removed_chars"):
+                if not hasattr(self, "_files_hidden") or self._files_hidden is None:
+                    self._files_hidden = []
+                self._files_hidden.append({"file": url.rsplit("/", 1)[-1][:80], **ht})
 
             if metadata.get("low_quality"):
                 # Non-empty, so `if text_content:` alone would call this a

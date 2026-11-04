@@ -110,9 +110,31 @@ class OCRProcessor:
         bad_pages = []
         ocr_pages = []
 
+        # CHG-006: the reader's view of each page. Spans under four points,
+        # outside the page box, or in the colour of what is drawn under them
+        # are dropped here, before the quality checks, and counted. A dropped
+        # span that is a copy of text visible elsewhere in the document is a
+        # duplicate, not hidden text (producers draw ghost pages off-page).
+        # The scanned/OCR paths above and below are untouched: an OCR layer
+        # is invisible text by design and must be read.
+        from processor.hidden_text import pdf_visible_pool, visible_pdf_page_text
+        visible_pool = pdf_visible_pool(pdf_doc)
+        hidden = {'removed_chars': 0, 'duplicate_chars': 0, 'reasons': {}, 'samples': []}
+
         for page_num in range(total_pages):
             page = pdf_doc[page_num]
-            text = page.get_text("text")
+            vt = visible_pdf_page_text(page, known_visible=visible_pool)
+            text = vt.text
+            if vt.removed_chars or vt.duplicate_chars:
+                hidden['removed_chars'] += vt.removed_chars
+                hidden['duplicate_chars'] += vt.duplicate_chars
+                for k, c in vt.reasons.items():
+                    hidden['reasons'][k] = hidden['reasons'].get(k, 0) + c
+                if len(hidden['samples']) < 3:
+                    hidden['samples'] += [list(s) for s in vt.samples[:3 - len(hidden['samples'])]]
+                if vt.removed_chars:
+                    logger.info(f"Page {page_num + 1}: {vt.removed_chars} hidden chars removed "
+                                f"({', '.join(vt.reasons)})")
 
             # Check 1: Is this page useful?
             if OCRProcessor._is_bad_page(text):
@@ -144,7 +166,8 @@ class OCRProcessor:
             'total_pages': total_pages,
             'good_pages': len(good_pages),
             'bad_pages': len(bad_pages),
-            'ocr_pages': len(ocr_pages)
+            'ocr_pages': len(ocr_pages),
+            'hidden_text': hidden,          # CHG-006; zeros when nothing was hidden
         }
         OCRProcessor._flag_low_quality(metadata)
 
