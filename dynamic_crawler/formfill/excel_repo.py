@@ -38,6 +38,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.html_clean import clean_html
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,6 +152,10 @@ class ExcelRepo:
 
     def _insert_regulation(self, doc) -> int:
         d = _as_dict(doc)
+        # CHG-001: same cleaning as MSSQLRepository, so a workbook holds what
+        # the database would -- the workbook is what gets promoted.
+        if d.get("document_html"):
+            d["document_html"] = clean_html(d["document_html"])
         rid = self._id("regulations")
         d["id"] = rid
         d["inserted_at"] = datetime.now().isoformat(timespec="seconds")
@@ -157,6 +163,8 @@ class ExcelRepo:
         return rid
 
     def update_regulation(self, regulation_id: int, **fields) -> None:
+        if "document_html" in fields:
+            fields["document_html"] = clean_html(fields["document_html"])
         updated_at = fields.pop("updated_at", None)
         for r in self.t["regulations"]:
             if r.get("id") == regulation_id:
@@ -347,7 +355,8 @@ class ExcelRepo:
             "content_hash": content_hash, "status": status,
             "updated_date": _flat(updated_date or date.today()),
             "change_summary": change_summary,
-            "content_text": _flat(content_text), "content_html": _flat(content_html),
+            "content_text": _flat(content_text),
+            "content_html": _flat(clean_html(content_html)),
             "created_at": _flat(created_at) if created_at is not None
                 else datetime.now().isoformat(timespec="seconds"),
         })

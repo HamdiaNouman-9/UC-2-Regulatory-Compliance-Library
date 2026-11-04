@@ -6,6 +6,7 @@ import re
 import time
 from storage.repository import DocumentRepository
 from models.models import RegulatoryDocument
+from utils.html_clean import clean_html
 import logging
 
 logger = logging.getLogger(__name__)
@@ -413,7 +414,12 @@ class MSSQLRepository(DocumentRepository):
             extra_meta["urdu_url"] = document.urdu_url
         extra_meta_json = json.dumps(extra_meta) if extra_meta else None
 
-        document_html = getattr(document, "document_html", None)
+        # CHG-001: stored markup is cleaned HERE, in the repo, not in the 30-odd
+        # crawlers and not in the API -- every writer of document_html goes
+        # through this file (insert, update_regulation, the version row), so
+        # a caller cannot forget. The hash was stamped from the live page at
+        # the crawler's exit, before this, so it is not affected.
+        document_html = clean_html(getattr(document, "document_html", None))
 
         # type defaults to "R" for regulations; callers can override via document.type
         doc_type   = getattr(document, "type",   "R") or "R"
@@ -519,6 +525,11 @@ class MSSQLRepository(DocumentRepository):
         """
         if not kwargs:
             return
+        # CHG-001: the modified path refreshes document_html through here
+        # (orchestrator._modified_row_fields), so the insert-time cleaning
+        # would otherwise be undone by the very next re-crawl of the page.
+        if "document_html" in kwargs:
+            kwargs["document_html"] = clean_html(kwargs["document_html"])
         updated_at = kwargs.pop("updated_at", None)
         set_parts = [f"{k} = ?" for k in kwargs.keys()]
         values = list(kwargs.values())
@@ -1194,6 +1205,9 @@ class MSSQLRepository(DocumentRepository):
         Insert a new version snapshot into regulation_versions.
         Returns the new version_id.
         """
+        # CHG-001: the version snapshot is the same markup as the main row and
+        # is served by the same endpoints, so it is held to the same list.
+        content_html = clean_html(content_html)
         created_at_sql = "?" if created_at is not None else "GETDATE()"
         query = f"""
             INSERT INTO regulation_versions
