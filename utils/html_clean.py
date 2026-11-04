@@ -33,7 +33,12 @@ ATTRIBUTES
     every `on*` handler, `srcdoc`, `target`, `formaction`. `href`/`src` keep
     only http, https, mailto, tel and relative urls; `javascript:` and `data:`
     are dropped (relative urls are left as they are, which is what
-    scripts/absolutise_document_html.py expects to find).
+    scripts/absolutise_document_html.py expects to find). ONE exception,
+    measured on the database 2026-11-04: `<img src="data:image/png;base64,…">`
+    is kept, for raster image types only. SAMA pastes figures into its
+    rulebook that way (63 rows) and MC once; without this they would render
+    as broken images. A data: url anywhere else, and `data:image/svg+xml`
+    anywhere (an svg can carry script), is still dropped.
 
 It is IDEMPOTENT: cleaning clean markup returns it unchanged, so the call is
 safe on the modified path and on rows that were never dirty.
@@ -53,6 +58,7 @@ from typing import Dict, Optional, Set
 import nh3
 
 __all__ = ["ALLOWED_TAGS", "ALLOWED_ATTRIBUTES", "ALLOWED_URL_SCHEMES",
+           "DATA_IMAGE_PREFIXES",
            "CLEAN_CONTENT_TAGS", "clean_html", "dropped_in"]
 
 # Content tags only. nh3's own default list plus the few that regulator CMSes
@@ -90,6 +96,22 @@ ALLOWED_ATTRIBUTES: Dict[str, Set[str]] = {
 
 ALLOWED_URL_SCHEMES: Set[str] = {"http", "https", "mailto", "tel"}
 
+#: The only place a `data:` url survives: an <img src> carrying a raster image.
+DATA_IMAGE_PREFIXES = ("data:image/png", "data:image/jpeg", "data:image/jpg",
+                       "data:image/gif", "data:image/webp", "data:image/bmp")
+
+
+def _attribute_filter(element: str, attribute: str, value: str) -> Optional[str]:
+    """nh3 calls this with the DECODED value of every surviving attribute.
+    `data` is in the scheme set handed to nh3 only so that this function gets
+    to see data: urls at all; it lets through img@src with a raster image
+    type and drops every other data: url."""
+    if value.lstrip().lower().startswith("data:"):
+        if element == "img" and attribute == "src" and                 value.lstrip().lower().startswith(DATA_IMAGE_PREFIXES):
+            return value
+        return None
+    return value
+
 
 def clean_html(html: Optional[str]) -> Optional[str]:
     """Return `html` reduced to the allowlist above; None/empty pass through.
@@ -104,7 +126,8 @@ def clean_html(html: Optional[str]) -> Optional[str]:
         tags=ALLOWED_TAGS,
         clean_content_tags=CLEAN_CONTENT_TAGS,
         attributes=ALLOWED_ATTRIBUTES,
-        url_schemes=ALLOWED_URL_SCHEMES,
+        attribute_filter=_attribute_filter,
+        url_schemes=ALLOWED_URL_SCHEMES | {"data"},   # see _attribute_filter
         strip_comments=True,
         link_rel="noopener noreferrer",
     )

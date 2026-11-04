@@ -54,3 +54,6 @@ benchmarks/runs/
 /*.xlsx
 /*.pptx
 pptx_extract/
+
+# SQL Server backups restored locally for testing; never commit
+*.bak

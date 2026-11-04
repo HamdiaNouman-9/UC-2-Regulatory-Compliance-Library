@@ -21,7 +21,7 @@ after truncation, and each of these got past it: an unquoted `onerror`, an
 | `storage/mssql_repo.py` | `clean_html` on all three writers of HTML: `_insert_regulation`, `update_regulation` when `document_html` is among the fields, `insert_regulation_version` (`content_html`). |
 | `dynamic_crawler/formfill/excel_repo.py` | The same three calls, so a workbook holds what the database would. The workbook is what gets promoted. |
 | `scripts/html_clean_scan.py` | Count-only scan of stored rows or workbooks: what would be dropped, per regulator, and whether any visible text would be lost. No apply mode, on purpose. |
-| `tests/test_html_clean.py` | 48 cases: removal, retention, text kept inside a forbidden container, idempotence, visible text unchanged on every fixture, all six writers. |
+| `tests/test_html_clean.py` | 54 cases: removal, retention, text kept inside a forbidden container, idempotence, visible text unchanged on every fixture, all six writers. |
 | `requirements.txt` | `nh3==0.3.7`. |
 
 The cleaner lives in the repo layer, not in the crawlers (about thirty of
@@ -34,7 +34,8 @@ them) and not in the API, because every writer of `document_html` goes through
 **Removed with content:** script, style, noscript, comments. These are exactly
 what the fingerprint already ignores. **Removed, words kept:** iframe, object,
 embed, form, input, button, select, svg, meta, link, base, every `on*`
-handler, `target`, `javascript:` and `data:` urls.
+handler, `target`, `javascript:` and `data:` urls, except `data:image/*`
+raster images on `img`.
 
 ## Why the content hash is safe
 
@@ -65,48 +66,42 @@ entities in `crawler/fingerprint.py` `text_of_html`, not in the cleaner.
 | `<o:p>`, `<sc>`, Word-export attributes (SAMA) | ~60 | Word artefacts; 30 of 6,103 SAMA rows touched at all |
 | option, select, input, form, button, svg icons, iframe, meta, style bodies, Drupal placeholders | ~500 | the forbidden list working |
 
-One allowlist change: `bordercolor`. Every other drop is bookkeeping, a handler,
-or a custom tag whose text survives. 416 workbook cells held the overflow
-marker and were skipped; the database run below covers those rows.
+One allowlist change from the workbooks: `bordercolor`. Every other drop is
+bookkeeping, a handler, or a custom tag whose text survives. 416 workbook
+cells held the overflow marker and were skipped; the database run covers them.
 
-A database run is still worth doing before merge: it reaches rows the
-workbooks do not hold (ZATCA, MOH, KDIPA, CBJ, CBI exports carry no HTML) and
-the 416 overflow cells. It could not be run from the development laptop,
-which has no `.env` and no SQL Server. See the next section.
+## What the scan found (database, 2026-11-04)
 
-## Running the database scan (for whoever has the credentials)
+Run against `uc2-db_2026-09-22.bak` restored into SQL Server 2025 Express on
+the development laptop (the shared dev server at 10.11.12.76 is not reachable
+from outside the office network). 42,444 of 46,938 regulation rows carry
+HTML; 23,365 would change; the scan takes about a minute.
 
-The scan only reads. It opens one `SELECT id, regulator, document_html FROM
-regulations`, cleans each row in memory and prints counts. Nothing is written
-and no row is changed, so it is safe on the live database at any time.
+| Finding | Count | Verdict |
+|---|---|---|
+| `<img src="data:image/png;base64,…">` (SAMA 63 rows, MC 1) | 64 | real figures pasted into the rulebook; **allowlist changed**: `data:image/*` raster types are now kept on `img@src` only, and nowhere else |
+| `javascript:` hrefs (MC article modals 103, CMA empty anchors 43) | 146 | by design |
+| SAMA links with U+00A0 inside the url | 2 | broken on the live site too; dropped |
+| CBB link to an `.xls` form | 1 | inside an HTML comment the regulator commented out; never visible |
+| CBE 9915 "Monitoring Framework": labels of a JavaScript-drawn SVG chart (`foreignObject`) | 1 row, 335 chars | the only row whose visible text changes; the same terms are in the paragraph above the chart. Accepted. |
+| `<glossary>` (CBB) | 47,443 | as in the workbooks |
+| `a@target`, `data-*`, `aria-*`, `role`, `tabindex`, Drupal placeholders, `<o:p>` | ~17,000 | as in the workbooks |
 
-```
-git checkout feature/chg-001-html-ingestion-cleaner
-pip install nh3==0.3.7
-python -m scripts.html_clean_scan --samples 5 --text > html_clean_scan_db.txt
-```
+ZATCA, SIO, CMA, CBE, LMRA, PDPA, RERA and SIMAH rows, which the workbook
+scan never saw, show nothing new. The full dropped ranking is in the scan
+output; re-run with `python -m scripts.html_clean_scan --samples 5 --text`
+against any copy of the database.
 
-It uses the same `.env` as the monitor jobs (`MSSQL_SERVER`, `MSSQL_DATABASE`,
-`MSSQL_USERNAME`, `MSSQL_PASSWORD`). Expect a few minutes; the workbook run of
-60,637 rows took under two.
+The database copy was 22 September 2026. Rows added since then live in the
+workbooks that were scanned separately.
 
-What to look at in the output, in order:
+## End-to-end: two CBK Kenya crawls into the local copy (2026-11-04)
 
-1. `rows whose VISIBLE TEXT changes` must be **0**. Any other number means a
-   row would lose words, and the `--text` listing at the bottom names the row
-   id, the regulator, and the first word that differs. Send that part back.
-2. The `dropped, all regulators` ranking. Everything on it should be a
-   handler (`*@onclick`), bookkeeping (`data-*`, `aria-*`, `target`), a
-   forbidden tag (script, iframe, form, svg, meta), or a custom tag whose
-   text survives (`glossary`, `ref`). A tag or attribute you do not recognise,
-   with a high count, is the one to query: it may be content a regulator's
-   CMS emits that the allowlist does not know, like `bordercolor` was.
-3. The per-regulator table. ZATCA, MOH, KDIPA, CBJ and CBI appear here for the
-   first time; their dropped lists are in the per-regulator section below it.
-
-Send back the whole file. Nothing else is needed from the database side:
-the writers are covered by `tests/test_html_clean.py`, and old rows are not
-rewritten by this change.
+Pass one inserted all 234 documents through `_insert_regulation`; pass two
+classified 234 unchanged, 0 modified, and no stored hash or `updated_at`
+moved. The three HTML rows match `clean_html` of the raw October workbook
+markup, with identical visible text and content hash. Details in
+[chg_001_handoff_2026-11-04.md](chg_001_handoff_2026-11-04.md).
 
 ## Not done on this branch
 
