@@ -1,0 +1,11 @@
+{
+  "name": "rcl-web-tests",
+  "private": true,
+  "description": "CHG-002: browser-side HTML display tests (DOMPurify under jsdom). Run: npm install && npm test",
+  "scripts": {
+    "test": "node --test html_display.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

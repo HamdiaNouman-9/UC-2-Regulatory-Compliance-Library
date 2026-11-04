@@ -57,3 +57,6 @@ pptx_extract/
 
 # SQL Server backups restored locally for testing; never commit
 *.bak
+
+# Node test harness for the web UI (tests/js)
+node_modules/

@@ -117,15 +117,163 @@ function esc(s) {
   ));
 }
 
-function sanitizeHtml(html, maxLen) {
-  let h = html || "";
-  if (maxLen && h.length > maxLen) h = h.slice(0, maxLen);
-  h = h.replace(/<script[\s\S]*?<\/script>/gi, "")
-       .replace(/<style[\s\S]*?<\/style>/gi, "")
-       .replace(/\son\w+\s*=\s*"(.*?)"/gi, "")
-       .replace(/\son\w+\s*=\s*'(.*?)'/gi, "")
-       .replace(/javascript:/gi, "");
-  return h;
+/* ---------------------------------------------------------------- *
+ *  Stored HTML display (CHG-002)                                    *
+ *                                                                   *
+ *  Two layers, so that a bypass of one gains nothing:               *
+ *    1. DOMPurify decides what is SHOWN. Same allowlist as the      *
+ *       ingestion cleaner (utils/html_clean.py), read from          *
+ *       html_allowlist.js, which `python -m utils.html_clean`       *
+ *       generates. Links open in a new tab with noopener.           *
+ *    2. A sandboxed iframe decides what can RUN: nothing. No        *
+ *       scripts, no same-origin, no forms; a CSP inside the frame   *
+ *       allows only images and inline styles.                       *
+ *  Rows stored before CHG-001 were never cleaned, so this layer is  *
+ *  not optional even though storage is now clean.                   *
+ * ---------------------------------------------------------------- */
+
+const HTML_DISPLAY_LIMIT = 200000;   // characters of CLEANED html shown
+
+let _purifier = null;
+
+/** A configured DOMPurify instance, or null when the library or the
+ *  allowlist did not load (the caller then shows plain text, never raw html). */
+function purifier() {
+  if (_purifier) return _purifier;
+  const list = window.HTML_ALLOWLIST;
+  const DP = window.DOMPurify;
+  if (!list || !Array.isArray(list.tags) || !list.attributes || !DP || !DP.isSupported) return null;
+
+  const perTag = list.attributes;                 // {"*": [...], "a": [...], ...}
+  const globalAttrs = new Set(perTag["*"] || []);
+  const everyAttr = new Set();
+  Object.values(perTag).forEach((arr) => arr.forEach((a) => everyAttr.add(a)));
+  const dataImg = list.data_image_prefixes || [];
+  // http/https/mailto/tel, or a relative url (no scheme), exactly as nh3 allows.
+  const uriRe = new RegExp(
+    "^(?:(?:" + list.url_schemes.join("|") + "):|[^a-z]|[a-z+.\\-]+(?:[^a-z+.\\-:]|$))", "i");
+
+  const p = DP();                                 // own instance: hooks are per instance
+  p.setConfig({
+    ALLOWED_TAGS: list.tags,
+    ALLOWED_ATTR: Array.from(everyAttr),          // per-tag narrowing in the hook below
+    ALLOWED_URI_REGEXP: uriRe,
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    ALLOW_UNKNOWN_PROTOCOLS: false,
+    KEEP_CONTENT: true,                           // a removed <form> keeps its words
+    FORBID_CONTENTS: (list.clean_content_tags || []).concat(["svg", "math", "foreignobject", "template"]),
+    // Parse as a BODY fragment, as nh3 does. Without this a leading <noscript>
+    // or <style> is parsed in head mode and its text falls out into the body.
+    FORCE_BODY: true,
+    WHOLE_DOCUMENT: false,
+  });
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    const tag = node.nodeName.toLowerCase();
+    const name = data.attrName;
+    if (!globalAttrs.has(name) && !(perTag[tag] || []).includes(name)) {
+      data.keepAttr = false;                      // allowed somewhere, not on this tag
+      return;
+    }
+    if (tag === "img" && name === "src") {
+      const v = String(data.attrValue || "").trim().toLowerCase();
+      if (v.startsWith("data:")) {
+        if (dataImg.some((pfx) => v.startsWith(pfx))) data.forceKeepAttr = true;   // inline raster image
+        else data.keepAttr = false;               // any other data: url
+      }
+    }
+  });
+  p.addHook("afterSanitizeAttributes", (node) => {
+    if (node.nodeName === "A" && node.hasAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", list.link_rel || "noopener noreferrer");
+    }
+  });
+  _purifier = p;
+  return p;
+}
+
+/** Clean stored html for display. Returns {html, truncated}, or null when
+ *  no sanitiser is available. Truncation happens AFTER cleaning, at a tag
+ *  boundary, and the cut piece is re-parsed so no element is left open. */
+function cleanStoredHtml(raw) {
+  const p = purifier();
+  if (!p) return null;
+  let out = p.sanitize(String(raw || ""));
+  let truncated = false;
+  if (out.length > HTML_DISPLAY_LIMIT) {
+    const cut = out.lastIndexOf(">", HTML_DISPLAY_LIMIT);
+    out = p.sanitize(out.slice(0, cut > 0 ? cut + 1 : HTML_DISPLAY_LIMIT));
+    truncated = true;
+  }
+  return { html: out, truncated };
+}
+
+/** Words only, for the fallback when the sanitiser is missing. DOMParser
+ *  builds an inert document: nothing in it runs or is fetched. */
+function textOfHtml(raw) {
+  try {
+    return new DOMParser().parseFromString(String(raw || ""), "text/html").body.textContent || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// What the frame's own document looks like: the old .desc-box rules, inlined
+// because the frame has no access to style.css (and must not: no same-origin).
+const DESC_FRAME_CSS = [
+  'html,body{margin:0;padding:16px 18px;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;',
+  'font-size:13.5px;line-height:1.6;color:#1f2937;background:#fcfdfe;word-wrap:break-word;}',
+  "p{margin:0 0 10px 0} table{border-collapse:collapse;margin:8px 0} td,th{vertical-align:top}",
+  "img{max-width:100%;height:auto} a{color:#0b7a78}",
+].join("");
+
+/** The sandboxed frame that shows cleaned html. `sandbox` with no
+ *  allow-scripts and no allow-same-origin: the content cannot run code,
+ *  reach this page, its storage or its API, or submit a form. Popups are
+ *  allowed so links open in a new tab, and that tab escapes the sandbox so
+ *  the regulator's own site works normally there. */
+function descriptionFrame(cleanHtml) {
+  const f = document.createElement("iframe");
+  f.className = "desc-frame";
+  f.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
+  f.setAttribute("referrerpolicy", "no-referrer");
+  f.setAttribute("title", "Stored document content");
+  f.srcdoc =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src https: http: data:; style-src \'unsafe-inline\'; form-action \'none\'">' +
+    '<base target="_blank"><style>' + DESC_FRAME_CSS + "</style></head><body>" +
+    cleanHtml + "</body></html>";
+  return f;
+}
+
+/** Fill the description box for a regulation: sandboxed frame when the
+ *  sanitiser is available, escaped plain text when it is not, a note when
+ *  there is nothing stored. */
+function mountDescription(box, detail) {
+  const raw = detail.document_html || "";
+  if (!raw) {
+    box.innerHTML = '<span style="color:var(--muted);">No stored document content for this regulation.</span>';
+    return;
+  }
+  const cleaned = cleanStoredHtml(raw);
+  if (!cleaned) {
+    box.innerHTML =
+      '<div class="desc-fallback-note">Sanitiser not loaded (vendor/purify.min.js or html_allowlist.js missing); showing text only.</div>' +
+      "<div class=\"desc-text\">" + esc(textOfHtml(raw)) + "</div>";
+    return;
+  }
+  box.classList.add("has-frame");
+  box.innerHTML = "";
+  box.appendChild(descriptionFrame(cleaned.html));
+  if (cleaned.truncated) {
+    const note = document.createElement("div");
+    note.className = "desc-truncated-note";
+    note.innerHTML =
+      `Showing the first ${HTML_DISPLAY_LIMIT.toLocaleString()} characters of the cleaned page (${raw.length.toLocaleString()} stored). ` +
+      `<a href="${esc(detail.document_url || "#")}" target="_blank" rel="noopener noreferrer">Open full source document</a>`;
+    box.insertAdjacentElement("afterend", note);
+  }
 }
 
 const DISPOSITIONS = {
@@ -513,11 +661,6 @@ function renderRegulationTab(detail) {
   const meta = detail.extra_meta || {};
   const statusText = meta.status || detail.status || "";
   const pillCls = statusPillClass(statusText);
-  const html = sanitizeHtml(detail.document_html, 200000);
-  const truncatedNote = (detail.document_html || "").length > 200000
-    ? `<div class="desc-truncated-note">Showing first 200,000 of ${detail.document_html.length.toLocaleString()} characters.
-       <a href="${esc(detail.document_url || '#')}" target="_blank" rel="noopener">Open full source document</a></div>`
-    : "";
 
   $("#tab-regulation").innerHTML = `
     <div class="reg-header">
@@ -532,10 +675,7 @@ function renderRegulationTab(detail) {
     ${metaChips(detail)}
 
     <div class="section-label">&#128196; Description</div>
-    <div class="desc-box">
-      ${html ? html : '<span style="color:var(--muted);">No stored document content for this regulation.</span>'}
-    </div>
-    ${truncatedNote}
+    <div class="desc-box" id="descBox"></div>
 
     <div class="footer-cards">
       <div class="foot-card">
@@ -560,6 +700,9 @@ function renderRegulationTab(detail) {
     <div class="section-label">&#128193; Attached documents</div>
     ${attachmentsList(detail)}
   `;
+  // The stored html never goes through the template string above: it is
+  // cleaned and mounted in a sandboxed frame here (CHG-002).
+  mountDescription($("#descBox"), detail);
 }
 
 /* ---------------------------------------------------------------- *

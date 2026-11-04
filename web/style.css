@@ -154,6 +154,11 @@ html, body {
 .desc-box p { margin: 0 0 10px 0; }
 .desc-box table { border-collapse: collapse; margin: 8px 0; }
 .desc-box img { max-width: 100%; }
+/* CHG-002: the stored html lives in a sandboxed iframe inside the box */
+.desc-box.has-frame { padding: 0; overflow: hidden; }
+.desc-frame { display: block; width: 100%; height: 360px; border: 0; background: #fcfdfe; }
+.desc-fallback-note { font-size: 11px; color: var(--danger); margin-bottom: 8px; }
+.desc-text { white-space: pre-wrap; }
 .desc-truncated-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
 
 .footer-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 16px; }
