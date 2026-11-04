@@ -124,6 +124,28 @@ the gate. A random 2,995 clean pages give an input, type and skip decision
 identical to the old gate's, byte for byte, so their analysis input hash
 does not move. 99 seconds for the lot.
 
+## Orchestrator pass into the database copy (Ministry of Commerce, 2026-11-04)
+
+The workbook pass above left one thing unexercised: `MSSQLRepository.
+set_extra_meta` against a real SQL Server. A second MC crawl, analysers
+off, into the local database copy found the gap was real: the first
+version of that method took a repository lock that does not exist
+(`'MSSQLRepository' object has no attribute '_lock'`). The recorder's
+catch-all did its job, every one of the 57 rows was analysed with its
+hidden text removed and the run finished, but no counts were written. The
+unit test had not caught it because its test double granted the object a
+lock. Both fixed: the method uses the thread-local connection like every
+other write in the file, and the double now fakes `_get_conn` only. The
+recorder was then re-run for real on the 57 rows: all 57 carry
+`extra_meta["hidden_text"]`, `updated_at` unchanged on all 57, no
+warnings, 57 log steps.
+
+Two notes on the copy. The crawl inserted the 57 MC documents as new rows
+(ids 48088 and up) rather than matching the 73 stored ones, because the
+stored rows came from an earlier crawler and carry different identity
+fields; that is a property of the September data, not of this branch. The
+stored rows' content hashes, set stale for the test, were put back.
+
 ## What changed (so far)
 
 | Where | What |

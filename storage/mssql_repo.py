@@ -517,12 +517,15 @@ class MSSQLRepository(DocumentRepository):
         hidden-text counts after the row exists; a bumped updated_at would
         read as a second change and drift from the version row's created_at).
         """
-        with self._lock:
-            with self._get_conn() as conn:
-                cur = conn.cursor()
-                cur.execute("UPDATE regulations SET extra_meta = ? WHERE id = ?",
-                            (extra_meta_json, regulation_id))
-                conn.commit()
+        # Connections are thread-local (_get_conn); there is no repository
+        # lock. A first version of this method took one that does not exist
+        # and the live run of 2026-11-04 caught it; the recorder's catch-all
+        # kept the run going but nothing was written.
+        with self._get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE regulations SET extra_meta = ? WHERE id = ?",
+                        (extra_meta_json, regulation_id))
+            conn.commit()
 
     def update_regulation(self, regulation_id: int, **kwargs):
         """

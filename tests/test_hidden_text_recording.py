@@ -6,7 +6,6 @@ updated_at, in both repositories and through the orchestrator's recorder.
 from __future__ import annotations
 
 import json
-import threading
 import types
 
 import pytest
@@ -36,9 +35,11 @@ def _mssql_with_recorder():
         def __exit__(self, *a):
             pass
 
+    # Only _get_conn is faked. Nothing else is added to the object: a test
+    # double that grants attributes the real repository lacks (a `_lock`, once)
+    # hides exactly the failure the live run of 2026-11-04 found.
     repo = MSSQLRepository.__new__(MSSQLRepository)
     repo._get_conn = lambda: Conn()
-    repo._lock = threading.Lock()
     return repo, calls
 
 
