@@ -140,6 +140,25 @@ class Decision:
                 f"— {self.reason}")
 
 
+def prepare_page(document_html: str, content_text: str) -> Tuple[str, str, Optional[dict]]:
+    """CHG-006: the reader's view of the page, for every path that hands a
+    stored page to a model -- decide() below for crawls, and the API's
+    re-analysis runner (apis/pipeline_api.py), which reads the stored row
+    directly and so must prepare it the same way.
+
+    Returns (document_html, content_text, hidden_meta). When the page hides
+    something, the markup comes back pruned, content_text comes back empty
+    (it was flattened from the same page and may carry the hidden words) and
+    hidden_meta holds VisibleText.as_meta(). Otherwise all three are exactly
+    what went in and hidden_meta is None."""
+    if not (document_html and document_html.strip()):
+        return document_html, content_text, None
+    pruned, hv = strip_hidden_html(document_html)
+    if not hv.removed_chars:
+        return document_html, content_text, None
+    return pruned, "", hv.as_meta()
+
+
 def decide(
     *,
     document_html: str = "",
@@ -176,12 +195,7 @@ def decide(
     # 4 of 36,312 rows). When nothing is hidden -- 42,353 of 42,448 stored
     # pages -- the choice below is exactly what it was, so the analysis input
     # and its hash do not move.
-    hidden_meta = None
-    if document_html and document_html.strip():
-        document_html, hv = strip_hidden_html(document_html)
-        if hv.removed_chars:
-            hidden_meta = hv.as_meta()
-            content_text = ""                           # flattened from the same page: do not trust it
+    document_html, content_text, hidden_meta = prepare_page(document_html, content_text)
     dec = _decide(document_html=document_html, content_text=content_text,
                   document_url=document_url, attachment_url=attachment_url,
                   attachment_urls=attachment_urls, fetch_file_text=fetch_file_text,
@@ -321,5 +335,5 @@ def decide_for_document(doc, *, fetch_file_text=None, fetch_page_text=None,
     )
 
 
-__all__ = ["Decision", "decide", "decide_for_document", "is_file_url",
+__all__ = ["Decision", "decide", "decide_for_document", "prepare_page", "is_file_url",
            "containment", "same_content", "shingles"]

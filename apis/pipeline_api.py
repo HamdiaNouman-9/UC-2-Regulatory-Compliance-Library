@@ -27,6 +27,7 @@ from processor import analysis_cache
 from processor.requirement_matcher import RequirementMatcher
 from processor.LlmAnalyzer import LLMAnalyzer
 from orchestrator.orchestrator import Orchestrator
+from dynamic_crawler.formfill.textinput import prepare_page   # CHG-006
 
 from utils.lang_translator import (
     translate_regulation,
@@ -2372,8 +2373,18 @@ def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> Non
         # not a copy of crawled markup, and deliberately excluded from the
         # public API (utils/public_meta.py's NEVER_PUBLISH) since OCR output
         # is often rough and isn't fit to show as "the document".
-        main_text = (meta.get("org_pdf_text") or meta.get("content_text")
-                    or row.get("document_html") or "").strip()
+        # CHG-006: the crawl path prunes hidden text inside decide(); this
+        # runner reads the stored row directly, so the same preparation is
+        # applied here. When the stored page hides something, the pruned
+        # markup is the body and the stored content_text (flattened from the
+        # same page) is not used. org_pdf_text is OCR output, not the page,
+        # so its precedence is untouched.
+        page_hidden = None
+        page_html = row.get("document_html") or ""
+        page_text = meta.get("content_text") or ""
+        if not meta.get("org_pdf_text"):
+            page_html, page_text, page_hidden = prepare_page(page_html, page_text)
+        main_text = (meta.get("org_pdf_text") or page_text or page_html or "").strip()
         if len(main_text) < 200 and row.get("document_url"):
             # Nothing stored at all -- e.g. a PDF-only crawl that was never
             # OCR'd (this is exactly what CBE's Presidential Decree rows
@@ -2395,6 +2406,7 @@ def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> Non
                                        extra_meta=json.dumps(updated_meta, ensure_ascii=False))
                 logger.info(f"backfilled extra_meta.org_pdf_text/content_text for regulation "
                            f"{regulation_id} from document_url OCR ({len(main_text)} chars)")
+                meta = updated_meta          # what is stored now; nothing below may write less
         if len(main_text) >= 200:
             documents.append({"source_document": "main_body", "text": main_text})
         raw_links = meta.get("attachment_links") or ""
@@ -2403,6 +2415,13 @@ def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> Non
             if text and len(text.strip()) >= 200:
                 name = url.rsplit("/", 1)[-1][:80] or url
                 documents.append({"source_document": name, "text": text})
+        # CHG-006: what the page or any attachment hid goes to
+        # extra_meta["hidden_text"] exactly as on the crawl path (the
+        # attachment part was collected by the fetches above); updated_at is
+        # not touched and a failure here never stops the analysis.
+        from types import SimpleNamespace
+        _fetch_orch._record_hidden_text(
+            regulation_id, SimpleNamespace(extra_meta=meta), SimpleNamespace(hidden_text=page_hidden))
         if not documents:
             raise ValueError("no document in this regulation's bundle produced "
                              ">=200 chars of usable text -- nothing to analyse")

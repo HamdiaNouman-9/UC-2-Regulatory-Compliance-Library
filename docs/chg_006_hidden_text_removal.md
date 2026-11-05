@@ -146,16 +146,47 @@ stored rows came from an earlier crawler and carry different identity
 fields; that is a property of the September data, not of this branch. The
 stored rows' content hashes, set stale for the test, were put back.
 
+## Re-analysis from the API (2026-11-05)
+
+Found while mapping the prompt layer for CHG-007: the three API endpoints
+that re-analyse a stored regulation (`POST /regulation/{id}/analyze`,
+`/analysis/trigger`, `/analysis/trigger/run/{run_id}`) share one runner in
+`apis/pipeline_api.py` that reads the stored `content_text` or
+`document_html` directly, never through `decide()`. The attachment half of
+that runner already went through the extractor this branch wired, so files
+were covered; the page half was not. A reviewer pressing re-analyse on one
+of the 95 stored pages that hide something would have sent the hidden
+words to the model.
+
+The fix lifts the page preparation out of `decide()` into one function,
+`prepare_page(document_html, content_text)` in `textinput.py`, which both
+`decide()` and the runner now call: pruned markup in place of the stored
+text when the page hides anything, the inputs untouched otherwise. The
+runner then records the counts through the orchestrator's own
+`_record_hidden_text`, so `extra_meta["hidden_text"]` is written on this
+path exactly as on the crawl path, `updated_at` untouched. `org_pdf_text`
+(pre-OCR'd text, not the page) keeps its precedence and is not prepared,
+because when it is the body the page is not sent at all. One more line
+makes the runner adopt the backfilled `extra_meta` it has just stored, so
+the recorder can never write back less than what the backfill wrote.
+
+Verified by `tests/test_hidden_text_api_reanalysis.py`, which drives the
+real runner with a stand-in repository and analyser up to the hand-over of
+the documents: hidden words gone and recorded; a clean page sent as stored
+with nothing written; `org_pdf_text` sent as is.
+
 ## What changed (so far)
 
 | Where | What |
 |---|---|
 | `processor/hidden_text.py` | the two functions and the `VisibleText` result (`text`, `removed_chars`, `reasons`, `samples`, `ratio()`, `as_meta()`) |
-| `dynamic_crawler/formfill/textinput.py` | `decide()` now prepares the page: `strip_hidden_html` on `document_html`; if anything was hidden the pruned **markup** replaces `content_text` as the page input (the analyser's own normaliser still renders its tables), otherwise the choice is exactly what it was. The gate and the html-versus-file choice moved unchanged into `_decide()`. `Decision.hidden_text` carries the counts; `str(dec)` says "N hidden chars removed" |
+| `dynamic_crawler/formfill/textinput.py` | `prepare_page(document_html, content_text)` is the one place the page is prepared, used by `decide()` and by the API runner: `strip_hidden_html` on `document_html`; if anything was hidden the pruned **markup** replaces `content_text` as the page input (the analyser's own normaliser still renders its tables), otherwise the choice is exactly what it was. The gate and the html-versus-file choice moved unchanged into `_decide()`. `Decision.hidden_text` carries the counts; `str(dec)` says "N hidden chars removed" |
 | `orchestrator/orchestrator.py` | `_safe_page_text` prunes the live page the same way and reports through `Decision.hidden_text`; `_download_and_extract_pdf` keeps each file's counts; `_record_hidden_text` writes `extra_meta["hidden_text"] = {"page", "files"}` after the text decision, only when something was hidden, and never raises |
 | `processor/Text_Extractor.py` | `extract_text_from_pdf_smart` reads each page through `visible_pdf_page_text` with the document-wide duplicate pool, before the bad-page and broken-text checks; `metadata["hidden_text"]` added (zeros when clean). Scanned and OCR paths untouched. The crawlers that call it (CBI, LMRA, MLCU, MLSD, NBR) see one extra metadata key and nothing else |
 | `storage/mssql_repo.py`, `dynamic_crawler/formfill/excel_repo.py` | `set_extra_meta(id, json)`: extra_meta only, `updated_at` untouched, because `update_regulation` bumps it and a note about a change must not read as a second change |
 | `tests/test_hidden_text_gate.py` | hidden text gone from the model input and recorded; wins over `content_text`; a clean page gives the identical input and type as before; the gate still skips an all-hidden page; recorded when a file duplicates the page |
+| `apis/pipeline_api.py` | the re-analysis runner calls `prepare_page` on the stored row before building `main_body` (unless `org_pdf_text` is the body), records the counts through `_record_hidden_text`, and adopts the backfilled `extra_meta` it stores |
+| `tests/test_hidden_text_api_reanalysis.py` | the real runner, stand-in repository and analyser: hidden words removed and recorded with `updated_at` untouched; a clean page sent as stored, nothing written; `org_pdf_text` keeps precedence |
 | `tests/test_hidden_text_recording.py` | `set_extra_meta` in both repositories leaves `updated_at` alone while `update_regulation` still bumps it; the recorder writes page and file parts once, writes nothing when clean, never raises; the PDF extractor reports and removes white text on a real three-page file |
 | `scripts/hidden_text_scan.py` | count-only scan of stored pages (per regulator, reasons with samples, rows over the quarantine ratio, `content_text` presence) and of PDF files; no apply mode |
 | `tests/test_hidden_text.py` | every hiding technique on the list removes and names its reason; ghost copies within a page and across pages are duplicates, not hidden; collapsed sections, details, faint and small-but-readable text stay; PDF white-on-white, near-background on a box, tiny and off-page go; white on a dark box and text over an image stay; layout equals plain extraction when nothing is hidden |
