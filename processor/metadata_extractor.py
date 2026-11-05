@@ -15,6 +15,8 @@ from typing import Optional
 from openai import OpenAI
 from typing import Optional, Tuple
 
+from processor.quoted_source import quote_source   # CHG-007: data markers
+
 logger = logging.getLogger(__name__)
 
 _CLIENT = None
@@ -57,6 +59,16 @@ Rules:
 - Return only the JSON object, nothing else.
 """
 
+def _build_user_message(excerpt: str, filename: Optional[str]) -> str:
+    """CHG-007: the excerpt is the whole user message here, so it is the one
+    place in this file where document text enters a prompt. It goes between
+    markers carrying a code drawn for this call, with the one sentence after
+    it; the file-name hint stays outside the block, as it is ours."""
+    hint = f"[Filename hint: {filename}]\n\n" if filename else ""
+    q = quote_source(excerpt, "document")
+    return f"{hint}{q.block}\n{q.notice}"
+
+
 def extract_metadata_from_text(
     text: str,
     filename: Optional[str] = None,
@@ -81,8 +93,7 @@ def extract_metadata_from_text(
         logger.warning("extract_metadata_from_text called with empty text")
         return _empty_metadata(filename)
 
-    hint = f"[Filename hint: {filename}]\n\n" if filename else ""
-    user_msg = f"{hint}{excerpt}"
+    user_msg = _build_user_message(excerpt, filename)
 
     try:
         response = _get_client().chat.completions.create(

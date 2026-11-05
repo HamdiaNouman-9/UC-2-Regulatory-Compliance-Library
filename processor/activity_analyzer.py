@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 from processor.llm_client import LLMClient, TruncatedResponseError, StructuralLLMError
+from processor.quoted_source import quote_source   # CHG-007: data markers
 
 logger = logging.getLogger(__name__)
 
@@ -283,9 +284,11 @@ class ActivityAnalyzer:
     # ------------------------------------------------------------------ #
 
     def _prompt_activity(self, chunk_text: str, requirements_json: str, language: str) -> str:
+        q = quote_source(chunk_text, "document")          # CHG-007
         return f"""<document>
-{chunk_text}
+{q.block}
 </document>
+{q.notice}
 
 <requirements>
 {requirements_json}

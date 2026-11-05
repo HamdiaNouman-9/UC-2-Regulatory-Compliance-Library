@@ -8,6 +8,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from processor.llm_client import LLMClient
+from processor.quoted_source import quote_source   # CHG-007: data markers
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -824,6 +825,7 @@ class StagedLLMAnalyzer:
             publication_date: str = "",
              language="English"
     ) -> str:
+        q = quote_source(text, "document")                # CHG-007
         return f"""You are a senior regulatory compliance analyst.
 Extract structured requirements and atomic obligations from the regulatory circular below.
 
@@ -862,7 +864,8 @@ Reference Number: {reference}
 Publication Date: {publication_date}
 
 Regulation Text:
-{text}
+{q.block}
+{q.notice}
 """
 
     def _prompt_stage1_chunk(
@@ -878,6 +881,7 @@ Regulation Text:
         Grouping is decided deterministically in code (_group_obligations)
         after all chunks are merged, so this call stays short and, per
         docs/determinism.md, reproducibly so."""
+        q = quote_source(chunk_text, "document")          # CHG-007
         return f"""You are a senior regulatory compliance analyst.
 Extract atomic obligations from the excerpt of a regulatory circular below.
 This is one part of a larger document -- extract only what is in THIS excerpt.
@@ -921,7 +925,8 @@ Reference Number: {reference}
 Publication Date: {publication_date}
 
 Regulation Excerpt:
-{chunk_text}
+{q.block}
+{q.notice}
 """
 
     def _prompt_stage2(self, obligations_json: str, language="English") -> str:

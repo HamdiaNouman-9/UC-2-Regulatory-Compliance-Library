@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 from processor.llm_client import LLMClient, TruncatedResponseError, StructuralLLMError
+from processor.quoted_source import quote_source   # CHG-007: data markers
 from utils.lang_detector import detect_language
 
 logger = logging.getLogger(__name__)
@@ -569,9 +570,16 @@ class RequirementAnalyzer:
                 "this excerpt (e.g. \"Section 3, Article (1)\"), so two requirements from different "
                 "restarted sections never end up citing the identical bare article number."
             )
+        # CHG-007: the excerpt goes between markers carrying a code drawn for
+        # this call, with any lookalike of our markers or tags removed, and
+        # the one sentence saying what the block is. The two checks above ran
+        # on the raw chunk, so the [Continuing ...] and [SECTION ...] markers
+        # keep working.
+        q = quote_source(chunk_text, "document")
         return f"""<document>
-{chunk_text}
+{q.block}
 </document>
+{q.notice}
 
 <context>
 Document title: {document_title}
