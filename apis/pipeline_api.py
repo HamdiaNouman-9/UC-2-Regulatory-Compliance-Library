@@ -2333,11 +2333,27 @@ def _set_analysis_stage(regulation_id: int, stage: str, **extra) -> None:
         _analysis_state[regulation_id] = current
 
 
+def _held_for_review(row) -> bool:
+    """CHG-008: a row the injection guard quarantined. Analysis waits for a
+    reviewer's decision (POST /runs/{run_id}/changes/{id}/decision), which
+    releases it and starts the analysis itself."""
+    return (str((row or {}).get("status") or "")).strip().lower() == "quarantine"
+
+
 def _run_requirement_activity_analysis_for_regulation(regulation_id: int) -> None:
     try:
         row = repo.get_regulation_by_id(regulation_id)
         if not row:
             raise ValueError(f"no regulations row with id={regulation_id}")
+        if _held_for_review(row):
+            with _analysis_lock:
+                _analysis_state[regulation_id] = {
+                    "state": "held", "stage": "held",
+                    "finished_at": datetime.utcnow().isoformat(),
+                    "error": "regulation is quarantined by the injection guard (CHG-008); "
+                             "a reviewer's accept decision releases it and starts the analysis"}
+            logger.warning("analysis of regulation %s refused: quarantined", regulation_id)
+            return
         version = repo.get_active_regulation_version(regulation_id) or {}
         version_id = version.get("version_id")
         if not version_id:
@@ -2473,7 +2489,16 @@ def trigger_requirement_activity_analysis(regulation_id: int):
     row = repo.get_regulation_by_id(regulation_id)
     if not row:
         raise HTTPException(status_code=404, detail="Regulation not found")
+    if _held_for_review(row):                      # CHG-008: say so at once rather than in the poll
+        return {"regulation_id": regulation_id, "state": "held",
+                "reason": "quarantined by the injection guard; accept the change in its run to release"}
+    return _start_requirement_activity_analysis(regulation_id)
 
+
+def _start_requirement_activity_analysis(regulation_id: int) -> dict:
+    """Start the Stage A/B run in a thread and return at once. Shared by the
+    endpoint above and by the review's release of a quarantined row
+    (run_results_api, CHG-008)."""
     with _analysis_lock:
         current = _analysis_state.get(regulation_id) or {}
         if current.get("state") == "running":
@@ -2490,6 +2515,9 @@ def trigger_requirement_activity_analysis(regulation_id: int):
     return {"regulation_id": regulation_id, "state": "started",
             "started_at": _analysis_state[regulation_id]["started_at"],
             "poll": f"/regulation/{regulation_id}/analyze"}
+
+
+run_results_api.set_on_release(_start_requirement_activity_analysis)   # CHG-008
 
 
 @app.get("/regulation/{regulation_id}/analyze", tags=["Requirements & Activities"])

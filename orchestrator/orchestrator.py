@@ -81,6 +81,7 @@ from dynamic_crawler.changesignal import (clean_fields, fields_of, files_of,
                                           identity_for as _shared_identity_for,
                                           identity_key)
 from dynamic_crawler.formfill.textinput import decide_for_document
+from processor import injection_guard   # CHG-008; pure, config read on first use
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -1077,6 +1078,14 @@ class Orchestrator:
                 f"attachment-bundle document")
             return
 
+        # CHG-008: a document that tries to instruct the model is held for a
+        # person. Runs whether or not the analysers are on, so a crawl with
+        # analyse=False still holds what it would have held; in observe mode
+        # it only records. The row is already inserted or versioned above,
+        # so nothing is lost either way and the crawl carries on.
+        if self._apply_injection_guard(regulation_id, doc, dec):
+            return
+
         if not self.analyse:
             self._log_step(regulation_id, "requirement_activity_analysis", "SKIPPED",
                            f"analyse=False; would have sent {len(text):,} chars "
@@ -1094,6 +1103,61 @@ class Orchestrator:
         # requirement_matching stop being written from here.
         self._run_requirement_activity_analysis(
             regulation_id=regulation_id, version_id=version_id, doc=doc, dec=dec)
+
+    def _apply_injection_guard(self, regulation_id, doc, dec) -> bool:
+        """CHG-008. Scan what the text decision would send to the analysers
+        (page text and attachments, from the Decision) plus CHG-006's
+        hidden-text counts if the row carries them. Returns True when the
+        row is held and analysis must be skipped.
+
+        enforce: status -> "quarantine", the hits and context recorded in
+                 extra_meta["injection_guard"], steps logged QUARANTINED.
+        observe: the same record and an OBSERVED step; status untouched,
+                 analysis runs.
+        A failure inside the guard itself is logged and the document is
+        analysed as before (the guard must never lose a document); a hit
+        that cannot be recorded in enforce mode is still held, because an
+        unrecorded hit must not reach a model."""
+        try:
+            meta = dict(getattr(doc, "extra_meta", None) or {})
+            verdict = injection_guard.inspect_decision(dec, meta.get("hidden_text"))
+        except Exception as e:                     # a bug in the guard must not stop a crawl
+            logger.warning("  injection guard failed for %s: %s", regulation_id, e)
+            self._log_step(regulation_id, "injection_guard", "ERROR", str(e)[:200])
+            return False
+        if not verdict.hit:
+            return False
+        guard_mode = injection_guard.mode()
+        record = verdict.as_meta()
+        record["mode"] = guard_mode
+        record["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        meta["injection_guard"] = record
+        doc.extra_meta = meta
+        meta_json = json.dumps(meta, ensure_ascii=False, default=str)
+        try:
+            if guard_mode == "enforce":
+                self.repo.update_regulation(regulation_id, status=injection_guard.STATUS_QUARANTINE,
+                                            extra_meta=meta_json)
+            else:
+                self.repo.update_regulation(regulation_id, extra_meta=meta_json)
+        except Exception as e:
+            logger.warning("  injection guard hit not recorded for %s: %s", regulation_id, e)
+            self._log_step(regulation_id, "injection_guard", "ERROR",
+                           f"hit not recorded ({e}); {verdict.summary()}")
+            if guard_mode == "enforce":
+                self._log_step(regulation_id, "requirement_activity_analysis", "QUARANTINED",
+                               "held for review (record failed); analysis skipped")
+                return True
+            return False
+        if guard_mode == "enforce":
+            logger.warning("  QUARANTINED %s: %s", regulation_id, verdict.summary())
+            self._log_step(regulation_id, "injection_guard", "QUARANTINED", verdict.summary())
+            self._log_step(regulation_id, "requirement_activity_analysis", "QUARANTINED",
+                           "held for review; analysis skipped until a reviewer accepts")
+            return True
+        logger.warning("  injection guard (observe) %s: %s", regulation_id, verdict.summary())
+        self._log_step(regulation_id, "injection_guard", "OBSERVED", verdict.summary())
+        return False
 
     def _run_requirement_activity_analysis(self, regulation_id, version_id, doc, dec):
         """New Requirement/Activity pipeline: per-document bundle (html +

@@ -1,0 +1,56 @@
+# CHG-008: what the injection guard looks for before a document is analysed.
+#
+# READ processor/injection_guard.py FIRST. This file is the list; the module
+# is the rule. Every entry here was run in observe mode over every stored
+# page before enforcement (docs/chg_008_injection_quarantine.md records the
+# counts); add a pattern the same way: observe first, enforce only once it
+# has hit nothing genuine.
+#
+# mode: the default when INJECTION_GUARD_MODE is not set in the environment.
+#   observe  -> record and log hits, never change a row's status, analysis runs
+#   enforce  -> a hit sets the row to "quarantine" and skips its analysis
+mode: observe
+
+# Multi-word phrases, matched case-insensitively on whitespace-normalised
+# text. Regular expression syntax is allowed. Keep every entry long enough
+# that it cannot occur in a regulation by accident: a single word never
+# qualifies, and the observe pass is the proof.
+phrases:
+  - "ignore (?:all |any |the )?(?:previous|prior|above|earlier|preceding) (?:instructions?|rules?|directions?|prompts?)"
+  - "disregard (?:all |any |the )?(?:previous|prior|above|earlier|preceding) (?:instructions?|rules?|directions?|prompts?)"
+  - "forget (?:all |any |the )?(?:previous|prior|above|earlier) (?:instructions?|rules?)"
+  - "do not follow (?:the |your |any )?(?:previous |above )?(?:instructions?|rules?)"
+  # The colon is required: "instructions to the AI model must be logged" is a
+  # sentence a governance regulation can contain; "INSTRUCTION TO THE
+  # ANALYST:" is an address to the reader.
+  - "(?:important |new |additional )?instructions? (?:to|for) the (?:analyst|model|assistant|ai|llm|system)\\s*:"
+  - "new instructions? follows?"
+  - "system (?:message|prompt|instruction)s?\\s*:"
+  - "you are (?:now|no longer) (?:a|an|the) "
+  - "act as (?:a|an|the) (?:new |different )?(?:assistant|analyst|model|system)"
+  - "reply with exactly"
+  - "respond (?:with|using) only (?:the following|this)"
+  - "return (?:an |the )?empty (?:list|result|output|array|object|response)"
+  - "(?:this|the) (?:excerpt|document|text) contains no requirements"
+  - "must appear in your (?:output|response|answer)"
+  - "as an ai (?:language )?model"
+  # Not on the list, on purpose: "prompt injection". It is a description, not
+  # an instruction, and a cyber-security or AI-governance regulation may use
+  # the words; the observe pass of 2026-11-05 found it only in this
+  # project's own security documents, which is where it would also be found
+  # in a future regulation about the subject.
+
+# Copies of our own prompt structure inside a document: the CHG-007 marker
+# shape and the tag names the analyser prompts use. Genuine regulation text
+# never carries them (measured over 47,230 rows and 22 PDFs, 2026-11-05),
+# so any copy is a forgery by construction.
+marker_shapes: true
+
+# Hidden text (from CHG-006's counts in extra_meta["hidden_text"]). A page
+# or file where more than `ratio` of its characters were hidden, provided it
+# had at least `min_chars` characters in all: the CHG-006 measurement found
+# fifteen tiny genuine landing pages where one hidden label is most of the
+# page, so the ratio alone is not a safe trigger.
+hidden_text:
+  ratio: 0.10
+  min_chars: 2000

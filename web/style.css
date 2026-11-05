@@ -333,3 +333,16 @@ html, body {
 .usage-table .bar { height: 5px; background: var(--accent-soft); border-radius: 3px; margin-bottom: 4px; }
 .usage-table .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 @media (max-width: 900px) { .dash-hero { grid-template-columns: 1fr; } .dash-hero-side { border-left: 0; padding-left: 0; } }
+
+/* CHG-008: a row held by the injection guard */
+.pill-held { background: #fff4e5; color: #9a5b00; }
+.hold-box { border: 1px solid #f0c36d; border-left: 5px solid #e39b0b; background: #fff8ec; border-radius: 8px; padding: 14px 16px; margin: 0 0 16px 0; }
+.hold-title { font-weight: 700; font-size: 15px; color: #7a4a00; }
+.hold-sub { color: var(--muted); font-size: 13px; margin: 4px 0 8px 0; }
+.hold-reasons { margin: 0 0 8px 18px; padding: 0; font-size: 13px; }
+.hold-hit { font-size: 13px; margin: 6px 0; }
+.hold-hit code { background: #fde9c4; padding: 1px 5px; border-radius: 4px; }
+.hold-ctx { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: pre-wrap; }
+.hold-actions { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hold-note { color: var(--muted); font-size: 12px; }
+.hold-result { margin-top: 8px; font-size: 13px; }

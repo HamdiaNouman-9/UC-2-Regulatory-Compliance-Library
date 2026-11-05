@@ -146,6 +146,7 @@ function priorityClass(p) {
 
 function statusPillClass(statusText) {
   const s = (statusText || "").toLowerCase();
+  if (s.includes("quarantine")) return "pill-held";              // CHG-008
   if (s.includes("in-force") || s.includes("active")) return "pill-in-force";
   if (s.includes("supersed") || s.includes("withdraw") || s.includes("repeal")) return "pill-superseded";
   return "pill-neutral";
@@ -732,7 +733,12 @@ async function runAnalysis(regId, onDone) {
   btn.disabled = true;
   renderAnalysisLog("queued", "Starting…");
   try {
-    await apiPost(`/regulation/${regId}/analyze`);
+    const started = await apiPost(`/regulation/${regId}/analyze`);
+    if (started && started.state === "held") {                     // CHG-008
+      renderAnalysisError("Held for review: " + (started.reason || "quarantined by the injection guard") + ". Accept the row in the block above to release it.");
+      btn.disabled = false;
+      return;
+    }
     let attempts = 0;
     const poll = async () => {
       attempts += 1;
@@ -792,6 +798,7 @@ async function openRegulation(regId) {
     const resp = await api(`/regulation/${regId}`);
     const detail = resp.data;
     renderRegulationTab(detail);
+    await renderReviewHold(regId);                                 // CHG-008
     setCrumbs((detail.doc_path && detail.doc_path.length) ? detail.doc_path : ["Compliance Radar", detail.title || "Regulation"]);
     await loadRequirementsTab(regId, detail.title || "");
   } catch (e) {
@@ -1217,3 +1224,74 @@ apiInput.addEventListener("change", () => {
 checkHealth();
 renderTreeRoots();
 renderBrowse(null);
+
+/* ---------------------------------------------------------------- *
+ *  CHG-008: a row the injection guard held. The block says why, shows *
+ *  the phrase in context, and offers the reviewer's accept / reject,  *
+ *  which are the run's own decision endpoints; accept releases the    *
+ *  row and starts the analysis it was held from.                      *
+ * ---------------------------------------------------------------- */
+
+const HOLD_REASONS = {
+  instruction_phrase: "instruction phrases were found in the text",
+  marker_copy: "a copy of the analyser's own prompt markers was found in the text",
+  hidden_text_share: "a large share of the text is hidden from a reader",
+};
+
+async function renderReviewHold(regId) {
+  let rv;
+  try { rv = await api(`/regulations/${regId}/review`); } catch (e) { return; }
+  if (!rv || !rv.held) return;
+  const g = rv.guard || {};
+  const reasons = (g.reasons || []).map(r => `<li>${esc(HOLD_REASONS[r] || r)}</li>`).join("");
+  const hits = (g.hits || []).map(h => `
+      <div class="hold-hit"><b>${esc(h.source)}</b> matched <code>${esc(h.match)}</code>
+        <div class="hold-ctx">${esc(h.context)}</div></div>`).join("");
+  const hidden = (g.hidden || []).map(x => `
+      <div class="hold-hit"><b>${esc(x.source)}</b>: ${Math.round((x.ratio || 0) * 100)}% of ${(x.total_chars || 0).toLocaleString()} characters hidden from a reader</div>`).join("");
+  const pc = rv.pending_change;
+  const actions = pc
+    ? `<div class="hold-actions">
+         <button class="btn-sm primary" id="holdAcceptBtn">Accept: release and analyse</button>
+         <button class="btn-sm" id="holdRejectBtn">Reject</button>
+         <span class="hold-note">run ${pc.run_id}, change ${pc.change_id} (${esc(pc.type)})</span>
+       </div>`
+    : `<div class="hold-note">No pending change found for this row; decide it from its run's change list.</div>`;
+  $("#tab-regulation").insertAdjacentHTML("afterbegin", `
+    <div class="hold-box" id="holdBox">
+      <div class="hold-title">&#9888;&#65039; Held for review: this document tried to instruct the analysis model</div>
+      <div class="hold-sub">It was saved but not analysed (${esc(g.mode || "enforce")} mode${g.at ? ", " + esc(String(g.at).slice(0, 16).replace("T", " ")) : ""}).</div>
+      <ul class="hold-reasons">${reasons}</ul>
+      ${hits}${hidden}
+      ${actions}
+      <div class="hold-result" id="holdResult"></div>
+    </div>`);
+  if (pc) {
+    $("#holdAcceptBtn").addEventListener("click", () => decideHeld(regId, pc, "accepted"));
+    $("#holdRejectBtn").addEventListener("click", () => decideHeld(regId, pc, "rejected"));
+  }
+}
+
+async function decideHeld(regId, change, decision) {
+  let who = "";
+  try { who = localStorage.getItem("reviewer_name") || ""; } catch (e) { /* storage may be unavailable */ }
+  who = (window.prompt("Your name, recorded with the decision:", who) || "").trim();
+  if (!who) return;
+  try { localStorage.setItem("reviewer_name", who); } catch (e) { /* ignore */ }
+  const out = $("#holdResult");
+  out.textContent = "Recording\u2026";
+  const res = await apiPost(`/runs/${change.run_id}/changes/${change.change_id}/decision`, {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision, reviewed_by: who }),
+  });
+  if (res && res.decision === decision) {
+    const a = res.analysis;
+    out.textContent = decision === "accepted"
+      ? "Released. " + (a && a.state ? "Analysis " + a.state + "." : (typeof a === "string" ? a : ""))
+      : "Rejected; the row stays out of the library.";
+    setTimeout(() => openRegulation(regId), 1500);
+  } else {
+    out.textContent = "Could not record the decision: " + ((res && (res.detail || res.error)) || "unknown error");
+  }
+}
+

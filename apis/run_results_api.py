@@ -5,6 +5,8 @@
     GET  /runs/{run_id}/changes             the new / modified / deleted documents of that run
     POST /runs/{run_id}/changes/{id}/decision   accept or reject ONE change
     POST /runs/{run_id}/decisions           accept or reject several at once
+    GET  /regulations/{id}/review           is the row held by the injection guard (CHG-008), why,
+                                            and which run change a decision goes to
     GET  /alerts                            runs that raised a warning or critical alert
     GET  /scheduler/jobs                    what config/scheduler.yml schedules and when it fires next
     GET  /metrics                           request counts and latency, job history, table sizes
@@ -27,11 +29,40 @@ from storage import run_store
 
 router = APIRouter()
 _repo = None
+_on_release = None      # CHG-008: called with a regulation id when a held row is accepted
 
 
-def init(repo) -> None:
-    global _repo
+def init(repo, on_release=None) -> None:
+    global _repo, _on_release
     _repo = repo
+    if on_release is not None:
+        _on_release = on_release
+
+
+def set_on_release(fn) -> None:
+    """CHG-008: what to do when a reviewer accepts a quarantined row -- the
+    pipeline API passes the function that starts the analysis the guard
+    skipped. Set after that function exists, so the import order of the two
+    API modules does not matter."""
+    global _on_release
+    _on_release = fn
+
+
+def _after_decision(result: dict) -> dict:
+    """CHG-008: an accepted quarantined row gets the analysis it was held
+    from. A failure to start it is reported on the result and never undoes
+    the decision, which is already committed."""
+    if not result.get("released"):
+        return result
+    if _on_release is None:
+        result["analysis"] = "not started: no analysis runner registered"
+        return result
+    try:
+        started = _on_release(int(result["regulation_id"]))
+        result["analysis"] = started if isinstance(started, (str, dict)) else "started"
+    except Exception as e:                      # the decision stands; the reviewer sees why analysis did not
+        result["analysis"] = f"not started: {e}"
+    return result
 
 
 class DecisionBody(BaseModel):
@@ -83,7 +114,7 @@ def run_changes(run_id: int, type: Optional[str] = Query(None, description="new 
 
 @router.post("/runs/{run_id}/changes/{change_id}/decision", tags=["Runs"])
 def decide_one(run_id: int, change_id: int, body: DecisionBody):
-    return _guard(run_store.decide, run_id, change_id, body.decision, body.reviewed_by, body.note)
+    return _after_decision(_guard(run_store.decide, run_id, change_id, body.decision, body.reviewed_by, body.note))
 
 
 @router.post("/runs/{run_id}/decisions", tags=["Runs"])
@@ -93,10 +124,23 @@ def decide_many(run_id: int, body: BulkDecisionBody):
     done, failed = [], []
     for cid in body.change_ids:
         try:
-            done.append(run_store.decide(_repo, run_id, cid, body.decision, body.reviewed_by, body.note))
+            done.append(_after_decision(
+                run_store.decide(_repo, run_id, cid, body.decision, body.reviewed_by, body.note)))
         except run_store.DecisionError as e:
             failed.append({"change_id": cid, "status": e.status, "error": str(e)})
     return {"run_id": run_id, "decided": len(done), "failed": failed, "results": done}
+
+
+@router.get("/regulations/{regulation_id}/review", tags=["Runs"])
+def regulation_review(regulation_id: int):
+    """CHG-008: for the review page. `held` is true while the injection guard's
+    quarantine stands; `guard` is its record (reasons, hits in context, hidden
+    shares, mode, time, and `released` once decided); `pending_change` is the
+    run change whose accept or reject decides the row."""
+    out = run_store.review_state(_repo, regulation_id)
+    if out is None:
+        raise HTTPException(404, f"regulation {regulation_id} not found")
+    return out
 
 
 @router.get("/alerts", tags=["Alerts"])

@@ -54,3 +54,6 @@ benchmarks/runs/
 /*.xlsx
 /*.pptx
 pptx_extract/
+
+# database backups restored locally (CHG-001/002/006/007/008); never commit
+*.bak

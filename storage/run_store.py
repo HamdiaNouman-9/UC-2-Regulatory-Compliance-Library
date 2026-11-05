@@ -6,13 +6,22 @@ Two tables, created on first use (additive, idempotent, like run_history):
     run_changes   one row per document a run found new / modified / deleted, plus the
                   reviewer's decision
 
-WHAT A DECISION DOES (the review is the only thing that touches `regulations.status`,
-which is the human decision column -- see Orchestrator._set_status):
+WHAT A DECISION DOES (`regulations.status` is the human decision column -- see
+Orchestrator._set_status; since CHG-008 the orchestrator's injection guard also
+writes it, and only the value 'quarantine', when a document tried to instruct
+the model and is held for this review):
 
     new       accepted -> status 'active'      rejected -> status 'reject'
     modified  accepted -> status 'active'      rejected -> the previous version is put back
-                                               (content, hash, active flag); status untouched
+                                               (content, hash, active flag); status untouched,
+                                               unless the row was quarantined: then 'active',
+                                               because the restored version is the trusted one
     deleted   accepted -> status 'withdrawn'   rejected -> nothing changes, the decision is recorded
+
+A quarantined row (CHG-008) is released by the same decision: the result carries
+`was_quarantined` and `released` (true on accept), the release is written to
+extra_meta["injection_guard"]["released"], and the API starts the analysis the
+guard skipped.
 
 A run itself never writes any of this: new and modified documents are already in the
 database when the run ends, deleted ones are still there, and nothing is withdrawn until
@@ -333,11 +342,86 @@ def decide(repo, run_id: int, change_id: int, decision: str, reviewed_by: str,
             if current == decision:
                 return {"change_id": change_id, "decision": decision, "applied": "already recorded"}
             raise DecisionError(f"change {change_id} was already {current}", 409)
+        quarantined, extra_meta = _quarantine_state(cur, reg_id)
         applied = _apply(cur, typ, reg_id, ver_id, prev_id, decision)
+        if quarantined:
+            applied += "; " + _release(cur, typ, reg_id, extra_meta, decision, reviewed_by)
         cur.execute("UPDATE run_changes SET decision=?, reviewed_by=?, reviewed_at=GETUTCDATE(), note=? "
                     "WHERE change_id=?", decision, reviewed_by.strip()[:100], (note or "")[:500] or None, change_id)
         conn.commit()
-    return {"change_id": change_id, "type": typ, "regulation_id": reg_id, "decision": decision, "applied": applied}
+    out = {"change_id": change_id, "type": typ, "regulation_id": reg_id, "decision": decision, "applied": applied}
+    if quarantined:
+        out["was_quarantined"] = True
+        out["released"] = decision == "accepted"
+    return out
+
+
+QUARANTINE = "quarantine"          # written by Orchestrator._apply_injection_guard (CHG-008)
+
+
+def _quarantine_state(cur, reg_id):
+    """(is the row held, its extra_meta as a dict). A row that is not held
+    costs one small SELECT."""
+    if reg_id is None:
+        return False, {}
+    cur.execute("SELECT status, CAST(extra_meta AS NVARCHAR(MAX)) FROM regulations WHERE id=?", reg_id)
+    r = cur.fetchone()
+    if not r or (r[0] or "").strip().lower() != QUARANTINE:
+        return False, {}
+    try:
+        meta = json.loads(r[1]) if r[1] else {}
+    except Exception:
+        meta = {}
+    return True, (meta if isinstance(meta, dict) else {})
+
+
+def _release(cur, typ, reg_id, extra_meta, decision, reviewed_by) -> str:
+    """CHG-008: the decision on a held row. _apply has already set the status
+    for the accepted cases and for a rejected new row; a rejected modified
+    row has had its previous version restored and becomes active again,
+    because that restored content is the trusted one. The release is written
+    on the guard's own record so a reviewer can see who let it through."""
+    note = "released" if decision == "accepted" else "rejected"
+    if typ == "modified" and decision == "rejected":
+        cur.execute("UPDATE regulations SET status='active' WHERE id=?", reg_id)
+        note += "; status = active (previous version restored)"
+    guard = dict(extra_meta.get("injection_guard") or {})
+    guard["released"] = {"decision": decision, "reviewed_by": reviewed_by.strip()[:100],
+                         "at": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+    extra_meta = dict(extra_meta)
+    extra_meta["injection_guard"] = guard
+    cur.execute("UPDATE regulations SET extra_meta=? WHERE id=?",
+                json.dumps(extra_meta, ensure_ascii=False, default=str), reg_id)
+    return f"quarantine {note}"
+
+
+def review_state(repo, regulation_id: int) -> Optional[dict]:
+    """CHG-008: what the review page needs for one row: is it held, the
+    guard's record (reasons, hits in context, hidden shares, mode, time,
+    release), and the run change a decision would go to. None when the
+    regulation does not exist."""
+    with repo._get_conn() as conn:
+        cur = conn.cursor()
+        ensure_tables(cur)
+        cur.execute("SELECT status, CAST(extra_meta AS NVARCHAR(MAX)) FROM regulations WHERE id=?", regulation_id)
+        r = cur.fetchone()
+        if not r:
+            return None
+        status = (r[0] or "").strip()
+        try:
+            meta = json.loads(r[1]) if r[1] else {}
+        except Exception:
+            meta = {}
+        guard = (meta.get("injection_guard") if isinstance(meta, dict) else None) or None
+        cur.execute("SELECT TOP 1 change_id, run_id, change_type, decision FROM run_changes "
+                    "WHERE regulation_id=? ORDER BY CASE WHEN decision='pending' THEN 0 ELSE 1 END, change_id DESC",
+                    regulation_id)
+        c = cur.fetchone()
+    change = {"change_id": c[0], "run_id": c[1], "type": c[2], "decision": c[3]} if c else None
+    return {"regulation_id": regulation_id, "review_status": status or None,
+            "held": status.lower() == QUARANTINE, "guard": guard,
+            "pending_change": change if change and change["decision"] == "pending" else None,
+            "last_change": change}
 
 
 def _apply(cur, typ, reg_id, ver_id, prev_id, decision) -> str:
