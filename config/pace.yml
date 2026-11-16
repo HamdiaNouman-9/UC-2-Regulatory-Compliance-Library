@@ -1,4 +1,17 @@
-default : normal
+# Per-host pacing for the generic crawler (dynamic_crawler/formfill/runner.py),
+# read through dynamic_crawler/formfill/access.py since CHG-009 (2026-11-10).
+# Before that nothing read this file.
+#
+# The pause before every navigation is drawn at random from base_ms, then
+# multiplied by the host's level. A host is matched on itself or any parent
+# domain (www.cma.gov.sa matches cma.gov.sa). A `pace:` key in a hints file
+# names a level and overrides the host table for that one form.
+#
+# throttle_only: hosts that rate-limit bursts but have never banned the
+# address. They are paced like everyone else and a 429 is waited out, but a
+# refusal there is not counted as a block.
+base_ms: [1500, 3500]
+default: normal
 levels:
   normal: 1
   careful: 3
@@ -18,4 +31,4 @@ hosts:
 
 throttle_only:
  - nbr.gov.bh
- - lloc.gov.bh  
+ - lloc.gov.bh

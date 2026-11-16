@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 DECISIONS = ("accepted", "rejected")
 CHANGE_TYPES = ("new", "modified", "deleted")
+# CHG-009: how many consecutive blocked cycles earn the critical alert. The
+# count itself is kept by the crawler's per-host routine
+# (dynamic_crawler/formfill/access.py); the threshold lives here with the
+# rule that reads it.
+ESCALATE_AFTER_CYCLES = 2
 
 
 class DecisionError(Exception):
@@ -96,6 +100,17 @@ def alerts_for(state: str, error: Optional[str], result: Optional[dict]) -> List
         add("warning", "run_skipped", str(r.get("reason") or r.get("skipped"))[:200])
     if r.get("run_trustworthy") is False:
         add("warning", "run_untrusted", "; ".join(r.get("gate_problems") or [])[:300] or "gate failed")
+    # CHG-009 step 10: a site that refused the crawler in two scheduled cycles
+    # in a row is a person's decision (wait, ask for an allowlist, unschedule,
+    # upload by hand). The count comes from the host's block memory through
+    # the orchestrator report. Once per blocked cycle, on the attempt that
+    # closed it (`cycle_attempt` back to 0): the next cycle's first attempt
+    # and a run skipped inside the 6-hour window carry the count too, and
+    # would otherwise mail the same news two or three times a cycle.
+    acc = r.get("access") or {}
+    if (int(acc.get("blocked_cycles") or 0) >= ESCALATE_AFTER_CYCLES
+            and int(acc.get("cycle_attempt") or 0) == 0):
+        add("critical", "site_blocked_repeatedly", blocked_message(acc))
     if r.get("baseline_verdict") not in (None, "PASS"):
         add("warning", "baseline_not_passed", str(r.get("baseline_verdict")))
     feed = r.get("feed") or {}
@@ -119,22 +134,31 @@ def alerts_for(state: str, error: Optional[str], result: Optional[dict]) -> List
     return out
 
 
+def blocked_message(acc: dict) -> str:
+    """The one sentence a person reads, the same on every channel."""
+    host = acc.get("host") or "the site"
+    n = int(acc.get("blocked_cycles") or 0)
+    since = str(acc.get("first_blocked_at") or "")[:10]
+    return (f"{host} has refused the crawler in {n} consecutive scheduled cycles"
+            + (f" since {since}" if since else "")
+            + ". It will be tried again on the next scheduled cycle. A person decides: "
+            "wait, request an allowlist, unschedule the site, or upload by hand.")
+
+
 def _level(alerts: List[dict]) -> str:
     order = {"critical": 3, "warning": 2, "info": 1}
     return max((a["level"] for a in alerts), key=lambda x: order[x], default="none")
 
 
 def _notify(run_id: int, job: str, alerts: List[dict]) -> None:
-    """Best-effort webhook for warning and critical alerts (ALERT_WEBHOOK_URL)."""
-    url = os.getenv("ALERT_WEBHOOK_URL", "").strip()
-    worth = [a for a in alerts if a["level"] in ("warning", "critical")]
-    if not url or not worth:
-        return
+    """Best-effort delivery of warning and critical alerts through the channel
+    named in ALERT_CHANNEL (storage/alert_channels.py). The alert is already
+    on the run row before this is called; delivery never breaks the record."""
     try:
-        import requests
-        requests.post(url, json={"run_id": run_id, "job": job, "alerts": worth}, timeout=5)
+        from storage import alert_channels
+        alert_channels.send(run_id, job, alerts)
     except Exception as e:                         # an alert must never break the run record
-        logger.warning("alert webhook failed: %s", e)
+        logger.warning("alert delivery failed: %s", e)
 
 
 # --------------------------------------------------------------------------- #

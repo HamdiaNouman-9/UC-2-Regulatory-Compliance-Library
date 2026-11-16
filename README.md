@@ -133,3 +133,30 @@ succeeds set `allow_live: true` and enable the scheduler slot.
 python -m dynamic_crawler.formfill snapshot dynamic_crawler/hints/simah.rules.yml
 python -m dynamic_crawler.formfill snapshot dynamic_crawler/hints/simah.rules.yml --status   # no request
 ```
+
+## 5. Alerts (CHG-009)
+
+Every run's alerts are stored on its row and shown by `GET /alerts` with
+nothing configured. Delivery is optional and chosen in `.env` (never in
+code; `.env` is ignored by git):
+
+```
+ALERT_CHANNEL=email            # none (default) | webhook | email | teams | slack
+                               # teams and slack are placeholders: logged, not sent
+# email
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587                  # 587 = STARTTLS, 465 = SSL
+SMTP_USER=alerts@example.com   # leave both empty for an unauthenticated relay
+SMTP_PASSWORD=
+ALERT_EMAIL_FROM=alerts@example.com
+ALERT_EMAIL_TO=ops@example.com, lead@example.com
+ALERT_EMAIL_LEVEL=critical     # or warning, to mail warnings too
+# webhook
+ALERT_WEBHOOK_URL=
+```
+
+The escalation this exists for: a site that has refused the crawler in two
+consecutive scheduled cycles raises a critical `site_blocked_repeatedly`
+alert, once per blocked cycle, and a person decides what to do (wait,
+request an allowlist, unschedule the site, upload by hand). Details in
+`docs/chg_009_bot_protection_backoff.md`, rules 9 and 10.

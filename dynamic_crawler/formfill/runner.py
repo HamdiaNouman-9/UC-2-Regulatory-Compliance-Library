@@ -29,24 +29,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
+from dynamic_crawler.formfill import access
 from dynamic_crawler.formfill.schema import compile_field_regexes
 from generic_crawler.crawler import (GENERIC_LINK_TEXT, disambiguate_titles,
                                      title_from_slug)
 
 # "Press Here" is GOSI's; the rest come from the shared list.
 _GENERIC_TEXT = GENERIC_LINK_TEXT | {"press here", "here", "click", "link"}
-
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 _DOC_EXT_RE = re.compile(r"\.(pdf|docx?|xlsx?|pptx?|csv|zip)(\?|$)", re.I)
 
@@ -55,22 +55,37 @@ _DOC_EXT_RE = re.compile(r"\.(pdf|docx?|xlsx?|pptx?|csv|zip)(\?|$)", re.I)
 # 1,054 characters of "law", passed the fill-rate check, and would have been
 # indexed into the library as the Credit Information Law. Any regulator can put a
 # WAF in front of their site, so this is checked on every page.
-_BLOCK_RE = re.compile(
-    r"(you have been blocked|attention required|cf-error-details|just a moment"
-    r"|checking your browser|access denied|error 10\d\d|ddos protection"
-    r"|请稍候|captcha-bypass|verify you are (a )?human)", re.I)
+#
+# CHG-009: the phrase list lives in generic_crawler/blockcheck.py and the verdict
+# in utils/pacer.py, reached through access.classify, so this runner and the
+# requests-based crawlers agree on what a wall is. `_load` classifies the HTTP
+# status as well; this text-only check remains for a page already in hand.
+_PROBE_JS = ("()=>({t: document.title || '',"
+             "      x: (document.body ? document.body.innerText : '').slice(0, 3000),"
+             "      a: document.querySelectorAll('a[href]').length,"
+             "      n: (document.body ? document.body.innerText.length : 0)})")
+
+
+def _pause(page, pace) -> int:
+    """The jittered wait before a navigation (CHG-009). None pace, no wait: a
+    snapshot replay touches no network and must not be slowed for nothing.
+    Returns the milliseconds waited, for the run log."""
+    if pace is None:
+        return 0
+    ms = pace.draw()
+    if ms > 0:
+        page.wait_for_timeout(ms)
+    return ms
 
 
 def _blocked(page) -> str:
     """Return a reason string when the page is a bot-protection wall, else ''."""
     try:
-        probe = page.evaluate(
-            "()=>({t: document.title || '',"
-            "      x: (document.body ? document.body.innerText : '').slice(0, 3000)})")
+        probe = page.evaluate(_PROBE_JS)
     except Exception:
         return ""
-    m = _BLOCK_RE.search(f"{probe['t']}\n{probe['x']}")
-    return m.group(0)[:60] if m else ""
+    url = getattr(page, "url", "") or ""
+    return access.classify(url, 0, None, probe.get("t", ""), probe.get("x", "")).reason
 
 
 def emit(event: dict) -> None:
@@ -881,7 +896,7 @@ def _row_signature(page, row_sel: str, link_sel: str) -> str:
 def _click_through(page, pagination: dict, row_sel: str, link_sel: str,
                    css_fields: dict, rx_fields: dict, rows: list, seen: set,
                    section_prefix, section_levels, wait_ms: int,
-                   page_log: list) -> dict:
+                   page_log: list, pace=None) -> dict:
     """Walk a JavaScript pager, harvesting each page. Page 1 is already harvested.
 
     Returns {"note": ..., "warnings": [...]}. Every turn is verified against the
@@ -897,6 +912,7 @@ def _click_through(page, pagination: dict, row_sel: str, link_sel: str,
     for page_no in range(2, max_pages + 1):
         sig_before = _row_signature(page, row_sel, link_sel)
         url_before = page.url
+        _pause(page, pace)          # a pager click is a navigation too (CHG-009)
         try:
             outcome = page.evaluate(JS_CLICK_NEXT, next_sel)
         except Exception as e:
@@ -985,23 +1001,89 @@ def snapshot_html(html: str, base_url: str) -> str:
     return (html[:m.end()] + tag + html[m.end():]) if m else tag + (html or "")
 
 
-def _load(page, url: str, wait_ms: int, tries: int = 3, snap: str | None = None) -> bool:
+@dataclass
+class LoadResult:
+    """What one navigation came to. Truthy when the page arrived.
+
+    `refusal` is set when the site said no (a 403, a 429, a wall page); then
+    `ok` is False and the load was NOT retried. A falsy result with no refusal
+    is a page that failed to arrive -- a timeout, an empty render -- after
+    every attempt, which is the old meaning of `_load` returning False.
+    """
+    ok: bool
+    status: int = 0
+    attempts: int = 0
+    refusal: access.Refusal = field(default_factory=access.Refusal)
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _load(page, url: str, wait_ms: int, tries: int = 3,
+          snap: str | None = None, pace=None) -> LoadResult:
     """These sites are flaky. An empty page must never be read as 'no rows' —
     that is exactly the silent failure that puts holes in the library.
 
     `snap` is saved HTML: serve it instead of fetching, and touch no network.
+
+    A REFUSAL IS NOT RETRIED (CHG-009). Before this, a 403 with an empty body
+    was indistinguishable from a slow render and went round the retry loop
+    three times, then twice more for every detail page -- and the scheduler
+    notes for HHS and CFPB record where that leads: "a retry loop against
+    Akamai is what makes a block". Each navigation's status and text are now
+    classified by access.classify (utils.pacer's verdict); a refusal returns
+    at once with `refusal` set, for the caller to count and act on. The retry
+    loop remains for what it was written for: timeouts and pages that have
+    not finished rendering.
+
+    `pace` (CHG-009) is the host's access.Pace: a jittered wait is taken before
+    EVERY goto, including a retry, and the two fixed wheel strokes that every
+    page used to get are replaced by access.vary -- a different scroll and a
+    mouse move each time. A snapshot replay passes no pace and pays nothing.
     """
     if snap is not None:
         page.set_content(snapshot_html(snap, url), wait_until="domcontentloaded")
         page.wait_for_timeout(min(wait_ms, 300))
-        return True
-    for _ in range(tries):
+        return LoadResult(True, 200, 1)
+    status = 0
+    for attempt in range(1, tries + 1):
+        status, headers = 0, None
+        # The main-frame response, caught on the wire. The full Chromium build
+        # (the `chromium` channel) does not render a 4xx/5xx with an EMPTY body:
+        # `goto` raises net::ERR_HTTP_RESPONSE_CODE_FAILURE and returns nothing,
+        # so a bare 403 read as "a page that failed to load" and was retried --
+        # measured against the stub site 2026-11-10. The listener sees the
+        # status whether or not the browser agrees to show the page.
+        seen = _watch_navigation(page)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            _pause(page, pace)
+            try:
+                resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            except Exception:
+                if seen.get("status"):
+                    refusal = access.classify(url, seen["status"], seen.get("headers"), "", "")
+                    if refusal:
+                        return LoadResult(False, seen["status"], attempt, refusal)
+                raise
+            if resp is not None:
+                status = int(getattr(resp, "status", 0) or 0)
+                try:
+                    headers = resp.headers
+                except Exception:
+                    headers = None
+            elif seen.get("status"):
+                status, headers = seen["status"], seen.get("headers")
+            challenge_uncleared = False
+            if access.is_challenge(status, headers, _title(page)):
+                status, headers, cleared = _await_challenge(page, url, seen, status, headers)
+                challenge_uncleared = not cleared
             page.wait_for_timeout(wait_ms)
-            for _ in range(2):
-                page.mouse.wheel(0, 6000)
-                page.wait_for_timeout(250)
+            if pace is not None:
+                access.vary(page)
+            else:
+                for _ in range(2):
+                    page.mouse.wheel(0, 6000)
+                    page.wait_for_timeout(250)
             # Wait for the page to STOP GROWING rather than for a fixed time.
             # SIMAH renders its 17 articles late: at 1.7s the body is 686
             # characters and div.accordion does not exist yet, so a fixed wait
@@ -1014,20 +1096,359 @@ def _load(page, url: str, wait_ms: int, tries: int = 3, snap: str | None = None)
                     break
                 settled = size
                 page.wait_for_timeout(400)
+            probe = page.evaluate(_PROBE_JS)
+            refusal = access.classify(url, status, headers,
+                                      probe.get("t", ""), probe.get("x", ""))
+            if refusal:
+                refusal.challenge = challenge_uncleared
+                return LoadResult(False, status, attempt, refusal)
             # "Enough links" alone is the wrong test. SIMAH's law page is a
             # single document with almost no links — it reports 1 anchor until
             # the nav finishes rendering — and a >15 threshold silently threw the
             # whole page away as a failed load. Text is the other evidence that a
             # page arrived, and a document page has plenty of it.
-            state = page.evaluate(
-                "()=>({a: document.querySelectorAll('a[href]').length,"
-                "      t: (document.body ? document.body.innerText.length : 0)})")
-            if state["a"] > 15 or state["t"] > 400:
-                return True
+            if probe.get("a", 0) > 15 or probe.get("n", 0) > 400:
+                return LoadResult(True, status, attempt)
         except Exception:
             pass
+        finally:
+            _unwatch_navigation(page, seen)
         page.wait_for_timeout(1500)
-    return False
+    return LoadResult(False, status, tries)
+
+
+def _title(page) -> str:
+    try:
+        return page.title() or ""
+    except Exception:
+        return ""
+
+
+def _await_challenge(page, url: str, seen: dict, status, headers):
+    """A challenge interstitial is a page that may turn into the real one: the
+    browser runs the site's script and the site then reloads the page with a
+    clearance cookie set. Give it access.CHALLENGE_WAIT_MS, watching the
+    title and the navigation listener, and return the status and headers of
+    whatever it became. Classification happens on that, not on the 403 the
+    interstitial arrived with -- without this the headed retry could clear a
+    challenge and still be reported as refused, because the first status was
+    kept. A challenge that does not clear comes back unchanged and is then
+    classified by its title, as before."""
+    emit({"event": "challenge", "url": url, "status": status,
+          "wait_ms": access.CHALLENGE_WAIT_MS})
+    step = 500
+    for _ in range(max(1, access.CHALLENGE_WAIT_MS // step)):
+        page.wait_for_timeout(step)
+        st = seen.get("status") or status
+        hd = seen.get("headers") if seen.get("status") else headers
+        if not access.is_challenge(st, hd, _title(page)):
+            emit({"event": "challenge_cleared", "url": url, "status": st})
+            return st, hd, True
+    emit({"event": "challenge_uncleared", "url": url, "status": status})
+    return status, headers, False
+
+
+def _watch_navigation(page) -> dict:
+    """Record the main frame's navigation response as it arrives. Returns the
+    dict the listener fills (`status`, `headers`) plus the handler under `_h`,
+    for `_unwatch_navigation`. A page without listeners (the fakes in tests)
+    gets an empty dict and nothing else happens."""
+    seen: dict = {}
+    on = getattr(page, "on", None)
+    if on is None:
+        return seen
+
+    def handler(r):
+        try:
+            if r.request.is_navigation_request() and r.frame == page.main_frame:
+                seen["status"] = int(r.status or 0)
+                try:
+                    seen["headers"] = r.headers
+                except Exception:
+                    seen["headers"] = None
+        except Exception:
+            pass
+    try:
+        on("response", handler)
+        seen["_h"] = handler
+    except Exception:
+        pass
+    return seen
+
+
+def _unwatch_navigation(page, seen: dict) -> None:
+    h = seen.pop("_h", None)
+    if h is None:
+        return
+    try:
+        page.remove_listener("response", h)
+    except Exception:
+        pass
+
+
+class RunStopped(Exception):
+    """CHG-009: the site refused twice in one run; the run ends here, keeping
+    what it has. Raised by `_Guard.load`, caught once per phase in `run()`."""
+
+    def __init__(self, url: str, refusal):
+        super().__init__(f"stopped: {refusal.reason} at {url}")
+        self.url, self.refusal = url, refusal
+
+
+def _draw_ms(bounds) -> int:
+    lo, hi = bounds
+    return int(random.uniform(lo, hi))
+
+
+class _Guard:
+    """One run's refusal policy (CHG-009).
+
+    The FIRST refusal earns one long pause (access.RETRY_PAUSE_MS, or the
+    site's own Retry-After when it sent one) and ONE retry of that URL. If
+    the page then arrives the run carries on and the refusal is counted as
+    recovered. Any refusal after that -- the retry failing, or a later page
+    once the retry has been spent -- ends the run: the host's block memory
+    is advanced (`AccessState.record_block`) and `RunStopped` is raised for
+    `run()` to close the phase and account for every row not opened.
+
+    `in_run_retry` False is the cycle's second attempt, the one made 6 hours
+    after the first blocked attempt (access.REATTEMPT_HOURS): one load, and
+    the first refusal ends the run, so a scheduled cycle costs a site at
+    most three loads of a refused page.
+
+    Why two and not five (the CFPB crawler's number): CFPB's five are
+    consecutive page reads on a host already letting the profile through.
+    Here the first refusal is the signal and the single retry after a long
+    pause is the test of whether it was transient. Continuing past that at
+    the same pace is how a temporary challenge became a firewall rule on
+    simah.com and saudiexchange.sa.
+
+    `pace` None and `state` None on a snapshot replay: nothing is paced and
+    nothing is recorded, because nothing touched the network.
+    """
+
+    def __init__(self, pace, state, warnings: list, in_run_retry: bool = True):
+        self.pace, self.state, self.warnings = pace, state, warnings
+        self.refusals = 0        # refused navigations seen, the stopping one included
+        self.recovered = 0       # refusals that passed on the single retry
+        self.retried = not in_run_retry   # the one retry has been spent
+        self.stopped = ""        # "" or why the run ended
+
+    def load(self, page, url: str, wait_ms: int, tries: int = 3,
+             snap: str | None = None, retry_page=None) -> LoadResult:
+        """`retry_page`, when given, is called with the refusal before the
+        single retry and may return a different page to retry on -- the seed
+        load passes `_Browser.retry_page`, so an uncleared challenge gets its
+        one retry with the visitor script, and a site that refuses headless
+        gets it in a visible browser when a display exists. None keeps the
+        same page."""
+        res = _load(page, url, wait_ms, tries, snap=snap,
+                    pace=None if snap is not None else self.pace)
+        if not res.refusal:
+            return res
+        self.refusals += 1
+        ref = res.refusal
+        if not self.retried:
+            self.retried = True
+            wait = _draw_ms(access.RETRY_PAUSE_MS)
+            if ref.throttled:
+                wait = access.retry_after_ms(ref.retry_after, wait)
+            emit({"event": "refusal", "url": url, "reason": ref.reason, "kind": ref.kind,
+                  "status": ref.status, "wait_ms": wait, "action": "pause, then one retry"})
+            self.warnings.append(f"REFUSED at {url} ({ref.reason!r}): paused "
+                                 f"{wait / 1000:.0f}s and retried once")
+            page.wait_for_timeout(wait)
+            other = retry_page(ref) if retry_page is not None else None
+            if other is not None:
+                page = other
+            again = _load(page, url, wait_ms, tries=1, pace=self.pace)
+            if not again.refusal:
+                self.recovered += 1
+                emit({"event": "recovered", "url": url})
+                return again
+            self.refusals += 1
+            ref = again.refusal
+        self.stopped = f"blocked at {url}: {ref.reason}"
+        manifest = self.state.record_block(ref.reason) if self.state is not None else {}
+        emit({"event": "stopped", "url": url, "reason": ref.reason, "kind": ref.kind,
+              "status": ref.status, "consecutive_blocks": manifest.get("consecutive_blocks"),
+              "blocked_cycles": manifest.get("blocked_cycles"),
+              "next_attempt_after": manifest.get("next_attempt_after")})
+        self.warnings.append(
+            f"STOPPED BY BOT PROTECTION at {url} ({ref.reason!r})"
+            + (" after the one retry. " if self.refusals > 1
+               else " on the cycle's re-attempt. ")
+            + "Rows not opened are recorded as detail_skipped, not as emptied. "
+            + (f"Next attempt after {manifest['next_attempt_after']}."
+               if manifest.get("next_attempt_after") else
+               f"Cycle closed as blocked ({manifest.get('blocked_cycles', 0)} in a row); "
+               "next attempt on the next scheduled cycle."))
+        raise RunStopped(url, ref)
+
+
+class _Browser:
+    """The browser for one run, and what it looks like to the site (CHG-009).
+
+    LIVE: a persistent context on output/profiles/<host>/, so cookies survive
+    between runs; the `chromium` channel (the full browser in new headless
+    mode, not the headless shell) with a fallback to the default build when the
+    channel is not installed; the form's `locale:` for
+    navigator.language and Accept-Language; and the browser's OWN user
+    agent with `HeadlessChrome` read back as `Chrome`. Both installed builds
+    report `HeadlessChrome/141...` (measured 2026-11-10), so the string is read
+    from a first launch and the context is opened again with it corrected --
+    one extra launch per process, cached in `_UA_CACHE` after that.
+
+    REPLAY: a plain context, no profile, no network. Nothing to look like.
+
+    `retry_page` is the guard's retry hook for the seed. An uncleared
+    challenge gets the one retry with `access.VISITOR_SCRIPT` on the same
+    profile (step 8, measured on dfpi.ca.gov 2026-11-12: the script is the
+    one thing that clears Cloudflare's managed challenge, headless as well).
+    Any other refusal headless, when a display exists, gets it in a visible
+    window on the same profile. Tadawul's `requires_headed` already forces
+    headed from the start; this is the same answer, discovered at run time
+    rather than declared.
+
+    CHANNEL: the installed Chrome first, Playwright's Chromium second, the
+    default build last. Measured 2026-11-12: with the challenge cleared,
+    dfpi.ca.gov's origin refused Playwright 1.56's Chromium 141 four times
+    of four and served the installed Chrome 157 at once; a bundled browser a
+    year behind the current one is itself a tell. `playwright install chrome`
+    puts a current Chrome on a scheduler host.
+    """
+
+    CHANNELS = ("chrome", "chromium")
+
+    ARGS = ["--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+
+    def __init__(self, pw, host: str, headless: bool, replay: bool, locale: str,
+                 scripted: bool = False):
+        self.pw, self.host, self.replay = pw, host, replay
+        self.locale = locale or access.DEFAULT_LOCALE
+        self.headless = headless
+        self.started_headed = not headless     # what the run asked for at the start
+        self.scripted = self.started_scripted = bool(scripted) and not replay
+        self.ctx = self.page = self._browser = None
+        self.user_agent = _UA_CACHE.get("ua", "")
+        self.channel = ""
+        self.headed_retry = False
+        self.script_retry = False
+        self.relaunches = 0
+
+    # ---- launching ----------------------------------------------------------
+    def _context_kw(self, headless: bool) -> dict:
+        # `locale` sets navigator.language AND the Accept-Language header, and
+        # it wins over an extra header of the same name (measured 2026-11-10:
+        # the site saw `en-US`, not the richer list passed alongside). One
+        # source, then: the form's locale, as the browser sends it.
+        kw = dict(headless=headless, locale=self.locale, viewport=dict(access.VIEWPORT),
+                  args=list(self.ARGS))
+        if self.user_agent:
+            kw["user_agent"] = self.user_agent
+        return kw
+
+    def _open(self, headless: bool):
+        kw = self._context_kw(headless)
+        if self.replay:
+            self._browser = self.pw.chromium.launch(headless=headless, args=kw.pop("args"))
+            kw.pop("headless")
+            self.channel = "default"
+            return self._browser.new_context(**kw)
+        prof = access.profile_dir(self.host)
+        prof.mkdir(parents=True, exist_ok=True)
+        ctx = None
+        for channel in self.CHANNELS:
+            try:
+                ctx = self.pw.chromium.launch_persistent_context(str(prof), channel=channel, **kw)
+                self.channel = channel
+                break
+            except Exception as e:
+                emit({"event": "note", "message": f"{channel} channel unavailable: "
+                                                  f"{str(e).splitlines()[0][:100]}"})
+        if ctx is None:
+            ctx = self.pw.chromium.launch_persistent_context(str(prof), **kw)
+            self.channel = "default"
+        if self.scripted:
+            ctx.add_init_script(access.VISITOR_SCRIPT)
+        return ctx
+
+    def launch(self, headless: bool):
+        ctx = self._open(headless)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not self.user_agent:
+            try:
+                ua = page.evaluate("navigator.userAgent") or ""
+            except Exception:
+                ua = ""
+            fixed = access.visitor_user_agent(ua)
+            if ua and fixed != ua:
+                # Read once, corrected, cached: the context is opened again with
+                # the right string because a context's user agent cannot change.
+                _UA_CACHE["ua"] = self.user_agent = fixed
+                self._close(ctx)
+                return self.launch(headless)
+            if ua:
+                _UA_CACHE["ua"] = self.user_agent = ua
+        self.ctx, self.page, self.headless = ctx, page, headless
+        return page
+
+    def relaunch(self, headless: bool, scripted: bool | None = None):
+        self.relaunches += 1
+        if scripted is not None:
+            self.scripted = scripted
+        self.close()
+        return self.launch(headless)
+
+    def retry_page(self, refusal=None):
+        """The seed's single retry: with the visitor script after an uncleared
+        challenge, else in a visible browser when that is possible, else on
+        the same page. One tactic per retry; what carries across runs is the
+        manifest's memory (`needs_script`, `needs_headed`)."""
+        if self.replay:
+            return None
+        if refusal is not None and refusal.challenge and not self.scripted:
+            emit({"event": "note", "message": "challenge did not clear; retrying once "
+                                              "with the visitor script on the same profile"})
+            self.script_retry = True
+            return self.relaunch(headless=self.headless, scripted=True)
+        if not self.headless or not access.display_available():
+            return None
+        emit({"event": "note", "message": "seed refused headless; retrying once in a "
+                                          "visible browser on the same profile"})
+        self.headed_retry = True
+        return self.relaunch(headless=False)
+
+    # ---- closing ------------------------------------------------------------
+    def _close(self, ctx):
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        if self._browser is not None:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+
+    def close(self):
+        if self.ctx is not None:
+            self._close(self.ctx)
+        self.ctx = self.page = None
+
+    def info(self) -> dict:
+        return {"user_agent": self.user_agent, "channel": self.channel,
+                "headless": self.headless, "headed_retry": self.headed_retry,
+                "started_headed": self.started_headed,
+                "scripted": self.scripted, "script_retry": self.script_retry,
+                "started_scripted": self.started_scripted,
+                "locale": self.locale, "viewport": dict(access.VIEWPORT),
+                "profile": "" if self.replay else str(access.profile_dir(self.host)),
+                "relaunches": self.relaunches}
+
+
+_UA_CACHE: dict = {}
 
 
 def _url_key(url: str) -> str:
@@ -1069,6 +1490,68 @@ def _stamp_hashes(records: list) -> None:
         rec["content_hash"] = ("" if rec.get("detail_skipped")
                                else content_key(rec.get("text")
                                                 or rec.get("row_text") or ""))
+
+
+def _access_summary(state, guard=None) -> dict | None:
+    """The `access` block of a run summary, one shape whether the run started
+    or was refused before start (`guard` None). It carries the host's block
+    memory to the orchestrator's report and from there to the run store's
+    alert rule (step 10): how many scheduled cycles in a row this host has
+    refused, since when, and which attempt of a cycle this run was."""
+    if state is None:
+        return None
+    m = state.manifest()
+    return {"host": state.host,
+            "refusals": guard.refusals if guard else 0,
+            "recovered": guard.recovered if guard else 0,
+            "consecutive_blocks": m.get("consecutive_blocks", 0),
+            "cycle_attempt": m.get("cycle_attempt", 0),
+            "blocked_cycles": m.get("blocked_cycles", 0),
+            "first_blocked_at": m.get("first_blocked_at"),
+            "next_attempt_after": m.get("next_attempt_after"),
+            "needs_headed": bool(m.get("needs_headed")),
+            "needs_script": state.needs_script()}
+
+
+def _run_block(summary: dict) -> dict:
+    """The part of a run summary the orchestrator's trust gate reads, and the
+    `access` block the run store's alert rule reads."""
+    return {"blocked_pages": summary.get("blocked_pages", 0),
+            "warnings": list(summary.get("warnings") or []),
+            "refused": bool(summary.get("refused")),
+            "refused_reason": summary.get("refused_reason", ""),
+            "stopped": summary.get("stopped", ""),
+            "source": summary.get("source", "live"),
+            "access": summary.get("access")}
+
+
+def _write_refused(out: Path, hints: dict, seed: str, started: float, why: str,
+                   state) -> dict:
+    """A run that did not start. Same three files as a run that did, so every
+    reader finds what it expects; `refused` says why there is nothing in them."""
+    summary = {
+        "name": hints.get("name"), "seed": seed, "engine": "formfill",
+        "hints_version": hints.get("version"),
+        "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(timespec="seconds"),
+        "seconds": round(time.time() - started, 1),
+        "listing_pages": 0, "rows": 0, "records": 0, "documents": 0, "html_files": 0,
+        "phase2_ran": False, "targeted": False, "detail_skipped": 0,
+        "blocked_pages": 0, "refused": True, "refused_reason": why, "stopped": "",
+        "access": _access_summary(state),
+        "source": "live", "snapshot": "", "warnings": [f"REFUSED before start: {why}"],
+        "pages": [],
+    }
+    (out / "pages.json").write_text(json.dumps(
+        {"seed": seed, "shape": hints.get("shape"), "engine": "formfill",
+         "source": "live", "snapshot": "", "pages": [], "documents": [],
+         "run": _run_block(summary)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "rows.json").write_text("[]", encoding="utf-8")
+    (out / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+    emit({"event": "done", "rows": 0, "records": 0, "documents": 0, "html_files": 0,
+          "seconds": summary["seconds"], "warnings": 1, "out_dir": str(out)})
+    emit({"event": "warning", "message": summary["warnings"][0]})
+    return summary
 
 
 def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 1200,
@@ -1194,8 +1677,40 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
     list_total: int | None = None   # a WHOLE-LIST total, when the page states one
     blocked = 0        # pages that came back as a bot-protection wall
 
+    # CHG-009: one pace per run, from config/pace.yml by host (a `pace:` key in
+    # the form overrides it), drawn fresh before every navigation. None on a
+    # replay: a snapshot touches no network, so there is nothing to pace.
+    pace = None if snap_html is not None else access.pace_for(seed, hints)
+    # `access_state`, not `state`: the click pager below assigns a dict to a
+    # local named `state`, and the first live run of this branch (MHRSD,
+    # 2026-11-10) died on `'dict' object has no attribute 'record_ok'` after
+    # completing its crawl and before writing a file.
+    access_state = None if pace is None else access.AccessState(pace.host)
+    # The cycle's re-attempt (6 h after a blocked first attempt) is one load:
+    # the first refusal ends it. Only the scheduled attempt carries the
+    # 2-minute in-run retry.
+    attempt = 1 if access_state is None else access_state.attempt_number()
+    guard = _Guard(pace, access_state, warnings, in_run_retry=(attempt == 1))
+
     emit({"event": "start", "name": hints.get("name"), "seed": seed,
-          "row_selector": row_sel, "mode": pagination.get("mode")})
+          "row_selector": row_sel, "mode": pagination.get("mode"),
+          "cycle_attempt": attempt})
+    if pace is not None:
+        emit({"event": "pace", "host": pace.host, "level": pace.level,
+              "base_ms": list(pace.base_ms), "multiplier": pace.multiplier,
+              "throttle_only": pace.throttle_only})
+
+    # Inside the 6-hour window after a cycle's first blocked attempt the live
+    # run does not start (access.AccessState); going anyway is the "retry
+    # loop against Akamai" the scheduler notes warn about. The outcome is
+    # written like any other run's, with `refused` set, so the orchestrator sees
+    # a run that did not happen rather than a site that emptied.
+    if access_state is not None:
+        allowed, why = access_state.may_attempt()
+        if not allowed:
+            emit({"event": "refused", "host": pace.host, "reason": why})
+            warnings.append(f"REFUSED before start: {why}")
+            return _write_refused(out, hints, seed, started, why, access_state)
 
     with sync_playwright() as pw:
         # Some sites fingerprint headless Chromium and refuse it outright.
@@ -1215,16 +1730,40 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
             print(json.dumps({"event": "note",
                               "message": "requires_headed: forcing a visible browser "
                                          "(this site rejects headless)"}), flush=True)
-        browser = pw.chromium.launch(
-            headless=headless,
-            args=["--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"])
-        ctx = browser.new_context(user_agent=UA, locale="en-US")
-        page = ctx.new_page()
+        # CHG-009: a host whose last clean run only cleared in a visible browser
+        # (a Cloudflare managed challenge re-challenges every headless run, a
+        # warm profile notwithstanding -- crawler/dfpi_crawler.py) starts
+        # visible when a display exists, instead of paying the refusal, the
+        # pause and the relaunch again. Without a display it starts headless
+        # and the run ends under the refusal rule, which is the truth of it.
+        if (headless and snapshot is None and access_state is not None
+                and access_state.needs_headed() and access.display_available()):
+            headless = False
+            emit({"event": "note", "message": "last clean run on this host needed a "
+                                              "visible browser; starting with one"})
+        # CHG-009 step 8: a host that needed the visitor script within the
+        # last 30 days starts with it; the stamp is renewed only when the
+        # script is what recovers a run, so a host that stops challenging
+        # falls back to a clean start by itself.
+        scripted = (snapshot is None and access_state is not None
+                    and access_state.needs_script())
+        if scripted:
+            emit({"event": "note", "message": "this host needed the visitor script within "
+                                              f"{access.SCRIPT_MEMORY_DAYS} days; starting with it"})
+        bs = _Browser(pw, host=(pace.host if pace is not None else access.host_of(seed)),
+                      headless=headless, replay=snap_html is not None,
+                      locale=str(hints.get("locale") or access.DEFAULT_LOCALE),
+                      scripted=scripted)
+        page = bs.launch(headless)
+        emit({"event": "browser", **bs.info()})
 
         # ---------------- PHASE 1: the listing ----------------
+        stopped: RunStopped | None = None
         try:
-            if not _load(page, seed, wait_ms, snap=snap_html):
+            loaded = guard.load(page, seed, wait_ms, snap=snap_html,
+                                retry_page=bs.retry_page)
+            page = bs.page          # the retry may have relaunched the browser
+            if not loaded:
                 warnings.append("seed page failed to load after 3 attempts")
             blocked_reason = _blocked(page)
             if blocked_reason:
@@ -1336,7 +1875,7 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
 
             empty_streak = 0
             for i, lurl in enumerate(listing_urls, 1):
-                if i > 1 and not _load(page, lurl, wait_ms):
+                if i > 1 and not guard.load(page, lurl, wait_ms):
                     page_log.append({"url": lurl, "matched": 0, "new": 0, "status": "load-failed"})
                     warnings.append(f"listing page failed to load: {lurl}")
                     continue
@@ -1443,6 +1982,7 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                         break
 
                     before = len(rows)
+                    _pause(page, pace)
                     try:
                         page.click(next_sel, timeout=8000)
                     except Exception as e:
@@ -1502,10 +2042,17 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
             if pagination.get("mode") == "click" and not is_tree:
                 res = _click_through(page, pagination, row_sel, link_sel, css_fields,
                                      rx_fields, rows, seen, section_prefix,
-                                     section_levels, wait_ms, page_log)
+                                     section_levels, wait_ms, page_log, pace=pace)
                 plan_note = res["note"]
                 warnings.extend(res["warnings"])
                 emit({"event": "plan", "pages": plan_note["pages_walked"], **plan_note})
+        except RunStopped as e:
+            # The listing was cut short. What was harvested is kept; phase 2
+            # does not open anything, and every row is recorded as not opened.
+            stopped = e
+            blocked += 1
+            page_log.append({"url": e.url, "matched": 0, "new": 0, "status": "blocked",
+                             "reason": e.refusal.reason})
         finally:
             page.close()
 
@@ -1513,8 +2060,11 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
         records, documents = [], {}
         # NOTE: for a tree this is the SAME list object as `rows`, not a copy —
         # that is what lets the walk below discover new nodes while iterating.
-        targets = rows if do_details else []
-        skipped: list[dict] = []
+        targets = rows if (do_details and stopped is None) else []
+        # A listing cut short with rows in hand: on a form that opens detail
+        # pages every row is recorded once, as not opened. A form without
+        # detail pages keeps its rows as the records they already are.
+        skipped: list[dict] = list(rows) if (do_details and stopped is not None) else []
         if targets and targeted is not None:
             targets, skipped, warns = _split_targets(rows, targeted, is_tree)
             warnings.extend(warns)
@@ -1528,14 +2078,14 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                             "use tree.max_nodes instead")
 
         if targets:
-            dp = ctx.new_page()
+            dp = bs.ctx.new_page()
             # Rows that live inside the seed document share one load of it. The
             # stamps from phase 1 were on a page that is now closed, so the same
             # deterministic passes are replayed here to put them back.
             in_page_ready: bool | None = None       # None = not attempted yet
 
             def _prepare_in_page() -> bool:
-                if not _load(dp, seed, wait_ms, tries=2, snap=snap_html):
+                if not guard.load(dp, seed, wait_ms, tries=2, snap=snap_html):
                     warnings.append("could not reload the seed page for its panels — "
                                     "panel text is missing from this run")
                     return False
@@ -1547,8 +2097,10 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                                   [], set(), section_prefix, section_levels, again)
                 return True
 
+            progress = {"i": 0}
             try:
                 for i, r in enumerate(targets, 1):
+                    progress["i"] = i
                     # A row that already points AT a file has no detail page to
                     # open. Trying anyway loads a PDF in a browser tab, finds no
                     # HTML, and books it as a failed fetch — so the file never
@@ -1560,54 +2112,31 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                                       declared=True)      # the form named this row
                         records.append(_record(r, section, seed))
                         continue
-                    if not r["href"] or not _load(dp, r["href"], wait_ms, tries=2):
-                        records.append(_record(r, section, seed))
-                        continue
-                    # Phase 2 loads a fresh tab, so anything the form expanded in
-                    # phase 1 is collapsed again here. Expand before capturing or
-                    # the saved HTML is the closed version of the page.
-                    if expand_sel:
-                        _expand(dp, expand_sel)
-                    reason = _blocked(dp)
-                    if reason:
-                        # Store the row, never the challenge page as its content.
-                        blocked += 1
-                        records.append(_record(r, section, seed))
-                        if blocked <= 3:
-                            warnings.append(
-                                f"BLOCKED BY BOT PROTECTION at {r['href']}: {reason!r}")
-                        continue
-                    try:
-                        d = dp.evaluate(JS_DETAIL, [strip_sels, extract_map])
-                    except Exception:
-                        records.append(_record(r, section, seed))
-                        continue
+                    # ONE NAVIGATION PER ROW (CHG-009, 2026-11-10). Until this
+                    # change a block here loaded, expanded, wall-checked and
+                    # evaluated every row's page, and the `else` branch below then
+                    # did all four again and overwrote the result; the in_page
+                    # branch never read it either. Measured against a stub site:
+                    # every detail page was fetched twice, since 67b1e9b5
+                    # (2026-08-05). On a snapshot replay that first load had no
+                    # snapshot to serve and went to the live site -- once per row
+                    # of the SIMAH form the replay exists to keep offline. Removed;
+                    # each branch below makes the one navigation it needs.
                     if r.get("in_page"):
                         # No page to fetch: the content is an element of the seed
                         # document, which is loaded once for every such row.
                         if in_page_ready is None:
                             in_page_ready = _prepare_in_page()
 
-                        # THE STAMPS DO NOT SURVIVE THE NAVIGATION ABOVE.
-                        #
-                        # These rows are addressed as `seed#fragment`, and the
-                        # `_load` at the top of this loop goes there. On a
-                        # JavaScript app that is a FULL RELOAD, not a same-document
-                        # jump — measured on GOSI 2026-08-12: after stamping two
-                        # panels, `goto(seed + "#1")` leaves
-                        # `document.querySelectorAll('[data-ff-panel]').length == 0`.
-                        #
-                        # So every row after the first found nothing. Row 1 worked
-                        # only by accident of ordering: for it `in_page_ready` was
-                        # still None, so _prepare_in_page() ran AFTER the navigation
-                        # and re-stamped. From row 2 the flag was cached True and
-                        # nothing re-stamped, which is why five of six GOSI Social
-                        # Insurance instruments and one of two Saned instruments
-                        # stored NO html while the first row held the whole page.
-                        #
                         # Re-prepare whenever the stamp this row needs is absent.
                         # Checking the selector rather than tracking navigations
-                        # means it does not matter WHY the stamps went away.
+                        # means it does not matter WHY the stamps went away --
+                        # GOSI 2026-08-12: a `goto(seed + "#1")` was a full reload
+                        # that left `[data-ff-panel]` empty, and five of six Social
+                        # Insurance instruments stored no html. With the duplicate
+                        # navigation gone the stamps normally survive from row to
+                        # row; this check is what makes that an optimisation rather
+                        # than an assumption.
                         if in_page_ready:
                             try:
                                 present = dp.evaluate(
@@ -1641,8 +2170,8 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                         if snap_html is not None and row_snap is None:
                             records.append(_record(r, section, seed))
                             continue
-                        if not r["href"] or not _load(dp, r["href"], wait_ms, tries=2,
-                                                      snap=row_snap):
+                        if not r["href"] or not guard.load(dp, r["href"], wait_ms, tries=2,
+                                                           snap=row_snap):
                             records.append(_record(r, section, seed))
                             continue
                         # Phase 2 loads a fresh tab, so anything the form expanded in
@@ -1750,9 +2279,16 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                     }))
                     if i % 25 == 0 or i == len(targets):
                         emit({"event": "detail_page", "done": i, "of": len(targets)})
+            except RunStopped as e:
+                # The refused row and every row after it were not opened.
+                # Recorded as detail_skipped (empty content hash), so nothing
+                # downstream reads an unopened page as an emptied one.
+                stopped = e
+                blocked += 1
+                skipped.extend(targets[max(progress["i"] - 1, 0):])
             finally:
                 dp.close()
-        else:
+        elif not do_details:
             records = [_record(r, section, seed) for r in rows]
             # A row whose link is already a PDF is a document in its own right;
             # without phase 2 it would otherwise be lost.
@@ -1772,7 +2308,13 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
                               " > ".join(r.get("section_trail") or []) or section,
                               declared=True)
 
-        browser.close()
+        bs.close()
+
+    if access_state is not None and stopped is None:
+        # Headed because the retry relaunched visibly, or because the run
+        # started that way (requires_headed, or the manifest's own word).
+        access_state.record_ok(headed=bs.headed_retry or bs.started_headed,
+                               script_needed=bs.script_retry)
 
     _stamp_hashes(records)
     docs = list(documents.values())
@@ -1812,6 +2354,14 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
         "detail_skipped": len(skipped),
         "fill_rates": _fill_rates(rows, hints),
         "blocked_pages": blocked,
+        "pace": ({"host": pace.host, "level": pace.level, "base_ms": list(pace.base_ms),
+                  "multiplier": pace.multiplier} if pace is not None else None),
+        # CHG-009. `stopped` is "" for a run that finished; `access` is the
+        # host's block memory after this run (None on a replay).
+        "refused": False,
+        "stopped": guard.stopped,
+        "access": _access_summary(access_state, guard),
+        "browser": bs.info(),
         # Provenance. A replay produces the same rows as a crawl, which is what
         # makes it useful and also what makes it dangerous: unlabelled, a snapshot
         # run would tell change detection "unchanged" forever while the site moved
@@ -1857,7 +2407,12 @@ def run(hints: dict, out_dir: str | Path, headless: bool = True, wait_ms: int = 
     (out / "pages.json").write_text(json.dumps(
         {"seed": seed, "shape": hints.get("shape"), "engine": "formfill",
          "source": summary["source"], "snapshot": summary["snapshot"],
-         "pages": records, "documents": docs}, ensure_ascii=False, indent=2), encoding="utf-8")
+         "pages": records, "documents": docs,
+         # CHG-009. pipeline.FormfillCrawler hands this file to the orchestrator
+         # as `last_result`, whose gate reads `run.blocked_pages` and
+         # `run.warnings` -- keys this file never carried, so a blocked form run
+         # reached the gate looking like a clean one with fewer rows.
+         "run": _run_block(summary)}, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "rows.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 

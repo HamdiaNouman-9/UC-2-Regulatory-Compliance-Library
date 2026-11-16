@@ -813,10 +813,20 @@ class Orchestrator:
         self._unchecked: List[str] = []
         crawl = getattr(self.crawler, "last_result", None) or {}
         run = crawl.get("run") or {}
+        # CHG-009 step 10: the host's block memory travels with the report so
+        # the run store can raise the alert after two blocked cycles.
+        self._access = run.get("access")
 
         blocked = run.get("blocked_pages", 0)
         if blocked:
             problems.append(f"{blocked} page(s) came back as a bot-protection challenge")
+        # CHG-009: a form run that never started (host in a backoff window) or
+        # that ended early after a refusal is not a reading of the site.
+        if run.get("refused"):
+            problems.append(("crawl refused before start: "
+                             + str(run.get("refused_reason") or "host is backing off"))[:160])
+        elif run.get("stopped"):
+            problems.append(f"crawl stopped early: {run['stopped']}"[:160])
         for w in run.get("warnings", []) or []:
             # "coverage gap": a source read fewer rows than the site's own list
             # holds. Untrusted, so its missing rows cannot be ruled `disappeared`
@@ -1314,6 +1324,7 @@ class Orchestrator:
                 "inventory_hash": inv,
                 "run_trustworthy": trustworthy,
                 "gate_problems": problems,
+                "access": getattr(self, "_access", None),
                 "disappeared_actioned": False,
                 # Nothing is absent on this path, but the streak memory is still
                 # written: a run that recorded nothing leaves every document
@@ -1379,6 +1390,7 @@ class Orchestrator:
             # still the best record of what the source now holds.
             "baseline_verdict": verdict,
             "gate_problems": problems,
+            "access": getattr(self, "_access", None),
             # Still False, and it is not the same claim as `withdrawals`: that
             # block is a proposal for a person, and no code here writes a status.
             "disappeared_actioned": False,

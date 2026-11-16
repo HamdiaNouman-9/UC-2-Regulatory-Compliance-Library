@@ -287,6 +287,7 @@ def run_pipeline_async(regulator: str):
 def scheduler_loop():
     logger.info("Scheduler started")
     while True:
+        _start_due_reattempts()
         now = datetime.utcnow().time()
         with repo._get_conn() as conn:
             cursor = conn.cursor()
@@ -1403,6 +1404,7 @@ def _run_monitor_job(name: str) -> None:
     try:
         result = _job_callable(name)()
         _persist_run(name, regulators, "finished", started, None, result)
+        _settle_reattempt(name, result)
         with _monitor_lock:
             _monitor_state[name] = {
                 "state": "finished", "started_at": started, "regulators": regulators,
@@ -1414,12 +1416,62 @@ def _run_monitor_job(name: str) -> None:
     except Exception as e:
         logger.error("monitor job %s failed: %s", name, e, exc_info=True)
         _persist_run(name, regulators, "failed", started, f"{type(e).__name__}: {e}", None)
+        _settle_reattempt(name, None)
         with _monitor_lock:
             _monitor_state[name] = {
                 "state": "failed", "started_at": started, "regulators": regulators,
                 "finished_at": datetime.utcnow().isoformat(),
                 "error": f"{type(e).__name__}: {e}",
             }
+
+
+def _settle_reattempt(name: str, result) -> None:
+    """CHG-009 step 10: a job whose site blocked the cycle's first attempt is
+    re-tried once, 6 hours later. The due time is written to
+    output/access/_reattempts.json so it survives a restart; `scheduler_loop`
+    starts the job when it is due. `result` None is a job that raised. Never
+    allowed to break the job's record."""
+    try:
+        from scheduler import reattempts
+        outcome = reattempts.settle(name, result) if result is not None else (
+            "removed" if reattempts.pop(name) else None)
+        if outcome:
+            logger.info("monitor job %s: re-attempt note %s", name, outcome)
+    except Exception as e:
+        logger.error("could not settle the re-attempt note for %s: %s", name, e, exc_info=True)
+
+
+def _start_due_reattempts() -> None:
+    """Called by `scheduler_loop` every tick. A job already running keeps its
+    note: its own end settles it."""
+    try:
+        from scheduler import reattempts
+        for job in reattempts.due():
+            if job not in _MONITOR_JOBS:
+                reattempts.pop(job)
+                continue
+            if _start_monitor_job(job)["state"] == "started":
+                reattempts.mark_started(job)
+                logger.info("monitor job %s: starting the cycle's re-attempt", job)
+    except Exception as e:
+        logger.error("re-attempt tick failed: %s", e, exc_info=True)
+
+
+def _start_monitor_job(job: str) -> dict:
+    with _monitor_lock:
+        current = _monitor_state.get(job) or {}
+        if current.get("state") == "running":
+            # Not an error: the caller asked for something already happening.
+            return {"job": job, "state": "already_running",
+                    "started_at": current.get("started_at")}
+        _monitor_state[job] = {"state": "running",
+                               "started_at": datetime.utcnow().isoformat()}
+
+    Thread(target=_run_monitor_job, args=(job,), daemon=True,
+           name=f"monitor-{job}").start()
+    return {"job": job, "state": "started",
+            "started_at": _monitor_state[job]["started_at"],
+            "poll": f"/trigger/monitor/{job}"}
 
 
 @app.post("/trigger/monitor/{job}", tags=["Monitoring"], status_code=202)
@@ -1433,22 +1485,10 @@ def trigger_monitor_job(job: str):
         raise HTTPException(status_code=404, detail={
             "error": f"unknown monitoring job {job!r}",
             "available": sorted(_MONITOR_JOBS)})
-
-    with _monitor_lock:
-        current = _monitor_state.get(job) or {}
-        if current.get("state") == "running":
-            # Not an error: the caller asked for something already happening.
-            return {"job": job, "state": "already_running",
-                    "started_at": current.get("started_at")}
-        _monitor_state[job] = {"state": "running",
-                               "started_at": datetime.utcnow().isoformat()}
-
-    Thread(target=_run_monitor_job, args=(job,), daemon=True,
-           name=f"monitor-{job}").start()
-    logger.info("monitoring job %s started via API", job)
-    return {"job": job, "state": "started",
-            "started_at": _monitor_state[job]["started_at"],
-            "poll": f"/trigger/monitor/{job}"}
+    out = _start_monitor_job(job)
+    if out["state"] == "started":
+        logger.info("monitoring job %s started via API", job)
+    return out
 
 
 @app.get("/trigger/monitor/{job}", tags=["Monitoring"])
