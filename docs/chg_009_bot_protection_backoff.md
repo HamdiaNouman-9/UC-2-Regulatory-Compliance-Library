@@ -194,6 +194,38 @@ What the runner does with it:
    host, the count, the streak's start and what the crawler does next,
    and ends with the four choices: wait, request an allowlist,
    unschedule, upload by hand.
+11. **The alert after N quiet runs** (the user's ask, 2026-11-17: a
+   regulator site that has returned no new update in more than four
+   iterations, the number configurable, 2 or 4). The run store counts,
+   per regulator, the consecutive runs of its job (scheduled or started
+   by hand through `POST /trigger/monitor/{job}`) that read the site and
+   classified nothing as new or modified, and stamps the count on the
+   run's report as `quiet_runs` next to the limit that applied
+   (`quiet_limit`). A quiet reading is a report with `crawled > 0`,
+   `run_trustworthy` not false, and zero `new` and `modified` in
+   `classified`; a reading with either resets the count to 0; a run
+   that could not read the site (blocked, stopped early, short count,
+   nothing crawled, or the job failed) neither counts nor resets, so a
+   blocked month does not pass for a quiet one and does not hide one
+   either. Disappeared documents are not an update. The count continues
+   from the newest stored report of the regulator in the same job's
+   rows (`QUIET_LOOKBACK_ROWS`, 50, read back; a report stored before
+   this change starts at 0). The limit comes from
+   `config/staleness.yml`: `quiet_runs` as one number, or a block with
+   `default` (4) and `regulators` exceptions by the name the orchestrator
+   reports; 0 turns the rule off for that regulator, and a missing or
+   unreadable file means the default. From the limit onward every quiet
+   run carries a critical `no_updates_for_runs` alert (the same path as
+   rule 10: on the run row, in `GET /alerts`, delivered by
+   `ALERT_CHANNEL`, so the email channel mails it with nothing else
+   set) whose sentence names the regulator, the count and the limit and
+   tells the person what to do: check whether the site changed shape or
+   the regulator is quiet, and raise its limit when the silence is
+   expected. Weekly jobs make the count weeks; a daily job counts days,
+   so its limit is set in runs. The older reading of "no update", days
+   since the last stored version (`jobs/staleness_alert.py`,
+   `GET /monitoring/staleness`, logged by the scheduler), is unchanged;
+   the two answer different questions, as the config file's header says.
 
 Downstream: `orchestrator/orchestrator.py` already turns `blocked_pages`
 into a problem and refuses a short run as a baseline, and `verify.py`
@@ -668,6 +700,39 @@ problems (three lines). The new summary keys (`refused`, `stopped`,
    full suite, as step 9 explains; run on its own after the review fixes
    it passed 26 in 4 min 5 s. Log:
    `full_suite_009_step10.log` in the session scratchpad.
+12. The quiet-runs alert (rule 11), 2026-11-17. `storage/run_store.py`:
+   `quiet_reading`, `quiet_limit`, `quiet_runs`, `quiet_message`, the
+   stamping step inside `save_run` (one `SELECT TOP 50 summary` of the
+   job's rows, before the alerts are read) and the rule in `alerts_for`;
+   `config/staleness.yml`: the `quiet_runs` block and a header that
+   tells the two readings apart; README section 5. Tests:
+   `tests/test_chg009_quiet_runs.py` (25: what counts as a reading, the
+   limit's three shapes and its off switch, the streak over stored rows
+   with failed runs and multi-regulator jobs in between, the rule at and
+   past the limit, and `save_run` through a fake cursor: the count and
+   limit stored on the summary, each regulator of a job at its own
+   limit, a failed run reading nothing back, a missing config file, a
+   lookback that fails keeping the run record and counting from 0).
+   Full suite: step 13.
+13. Full suite on this branch after step 12 (2026-11-17), against the
+   `main` numbers of step 9:
+
+   | | failed | passed | errors | skipped |
+   |---|---|---|---|---|
+   | `main` at 968f3cf (step 9) | 19 | 531 | 32 | 0 |
+   | this branch, after the review fixes (2026-11-16) | 19 | 632 | 32 | 1 |
+   | this branch, after step 12 (2026-11-17) | 19 | 672 | 32 | 2 |
+
+   The same 19 failures and 32 errors by name as in step 11 (compared
+   line by line). Of the extra passes, 24 are
+   `tests/test_chg009_quiet_runs.py` (25 after the final check added
+   one); the rest are tests the step-11 log
+   did not see because it was written before the last review edits of
+   the pushed commit (no test file changed between 1f11258 and this
+   step except the new one). The second skip is
+   `tests/test_snapshot_articles.py`'s one test that needs a saved real
+   page on disk. Log: `full_suite_009_step12.log` in the session
+   scratchpad, 7 min 2 s.
 
 ## Measurement before wiring (2026-11-10)
 
@@ -813,6 +878,17 @@ What this says, no more and no less:
   nothing, headless or visible; it earns no dependency.
 - `output/profiles/` holds cookies and is never committed; it sits under
   `output/`, which the ignore file already covers (checked in step 5).
+- The quiet-runs count is kept on the run's own report, not computed
+  from scratch each time: one SELECT of the job's recent rows instead
+  of a walk whose depth would have to grow with the limit, and the count is visible in
+  `GET /runs/{id}` with the limit it was judged against. Runs that
+  could not read the site carry the count rather than reset it: a reset
+  would let a blocked site look healthy, and counting them would make
+  a blocked site look quiet when the blocked alert already covers it.
+- The alert is critical and repeats on every quiet run from the limit
+  onward, like the blocked alert, so a mailbox set to criticals only
+  receives it and a regulator that publishes rarely is tuned by its own
+  limit in the config rather than by a quieter alert level.
 
 ## Register row text
 
@@ -824,7 +900,10 @@ cycle at three loads of a refused page (the attempt, one retry 2 minutes
 later, one re-attempt 6 hours later) and counts consecutive blocked
 cycles. `storage/run_store.py`: a critical `site_blocked_repeatedly`
 alert when a site has refused two scheduled cycles in a row, repeated
-each blocked cycle; `storage/alert_channels.py`, new: delivery by
+each blocked cycle, and a critical `no_updates_for_runs` alert when a
+regulator has been read a configurable number of scheduled runs in a
+row (`config/staleness.yml`, default 4, per regulator) with nothing new
+or modified; `storage/alert_channels.py`, new: delivery by
 `ALERT_CHANNEL`, email chosen (SMTP), webhook kept, Teams and Slack as
 placeholders. `scheduler/reattempts.py`, new, and `apis/pipeline_api.py`:
 the 6-hour re-attempt noted after a blocked first attempt and started
@@ -865,6 +944,9 @@ re-attempt follows 6 hours later, and a site that refuses the whole
 cycle is left alone until its next scheduled cycle. Two blocked cycles
 in a row raise a critical alert, stored with the run and emailed, and a
 person decides: wait, request an allowlist, unschedule, or upload by
-hand. The orchestrator's existing handling of `blocked_pages` and short
+hand. A regulator read for a configurable number of runs in a row with
+nothing new or modified raises a second critical alert on the same
+path, so a crawler that still runs but no longer sees the site's
+updates is noticed within the chosen number of weeks. The orchestrator's existing handling of `blocked_pages` and short
 runs is unchanged, so a stopped run is reported and never becomes a
 baseline.

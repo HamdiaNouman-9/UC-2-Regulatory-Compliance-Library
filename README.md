@@ -160,3 +160,12 @@ consecutive scheduled cycles raises a critical `site_blocked_repeatedly`
 alert, once per blocked cycle, and a person decides what to do (wait,
 request an allowlist, unschedule the site, upload by hand). Details in
 `docs/chg_009_bot_protection_backoff.md`, rules 9 and 10.
+
+The second alert: a regulator whose monitor runs (scheduled or by hand)
+read the site and find nothing new or modified `quiet_runs` times in a
+row (default 4; per regulator in `config/staleness.yml`) raises a
+critical `no_updates_for_runs` alert on that run and every quiet run
+after it. A
+person checks whether the site changed shape or the regulator is quiet,
+and raises the limit when the silence is expected. The count is on each
+run's summary as `quiet_runs`. Rule 11 in the same document.

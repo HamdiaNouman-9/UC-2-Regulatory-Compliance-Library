@@ -34,6 +34,12 @@ CHANGE_TYPES = ("new", "modified", "deleted")
 # (dynamic_crawler/formfill/access.py); the threshold lives here with the
 # rule that reads it.
 ESCALATE_AFTER_CYCLES = 2
+# CHG-009: how many consecutive readings of a regulator with nothing new or
+# modified raise the `no_updates_for_runs` alert when config/staleness.yml
+# names no limit. The count is kept on each run's report (`quiet_runs`).
+QUIET_RUNS_DEFAULT = 4
+# Rows of the same job read back when a run looks for the count it continues.
+QUIET_LOOKBACK_ROWS = 50
 
 
 class DecisionError(Exception):
@@ -111,6 +117,13 @@ def alerts_for(state: str, error: Optional[str], result: Optional[dict]) -> List
     if (int(acc.get("blocked_cycles") or 0) >= ESCALATE_AFTER_CYCLES
             and int(acc.get("cycle_attempt") or 0) == 0):
         add("critical", "site_blocked_repeatedly", blocked_message(acc))
+    # CHG-009: a regulator read N scheduled runs in a row with nothing new or
+    # modified. `quiet_runs` and `quiet_limit` are stamped on the report by
+    # save_run; the alert repeats on every quiet run from the limit onward
+    # and a person checks the site or raises the limit for that regulator.
+    limit = int(r.get("quiet_limit") or 0)
+    if limit and int(r.get("quiet_runs") or 0) >= limit:
+        add("critical", "no_updates_for_runs", quiet_message(r))
     if r.get("baseline_verdict") not in (None, "PASS"):
         add("warning", "baseline_not_passed", str(r.get("baseline_verdict")))
     feed = r.get("feed") or {}
@@ -143,6 +156,84 @@ def blocked_message(acc: dict) -> str:
             + (f" since {since}" if since else "")
             + ". It will be tried again on the next scheduled cycle. A person decides: "
             "wait, request an allowlist, unschedule the site, or upload by hand.")
+
+
+def quiet_message(rep: dict) -> str:
+    name = rep.get("regulator") or "the regulator"
+    return (f"{name} has returned no new or modified document in {int(rep.get('quiet_runs') or 0)} "
+            f"consecutive runs (limit {int(rep.get('quiet_limit') or 0)}). A person checks "
+            "whether the site changed shape or the regulator is quiet, and raises its quiet_runs "
+            "limit in config/staleness.yml when the silence is expected.")
+
+
+def quiet_reading(rep: dict) -> Optional[bool]:
+    """True: the site was read and nothing new or modified was found. False:
+    something was. None: not a reading (nothing crawled, or the run is not
+    trusted: blocked, stopped early, short count), which neither counts nor
+    resets the streak."""
+    if rep.get("run_trustworthy") is False or not rep.get("crawled"):
+        return None
+    c = rep.get("classified") or {}
+    return not (c.get("new") or c.get("modified"))
+
+
+def quiet_limit(regulator: str, cfg: dict) -> int:
+    """The regulator's limit from config/staleness.yml: `quiet_runs` is a
+    number for every regulator or a block with `default` and per-regulator
+    `regulators`. 0 turns the alert off; an unreadable value is the default."""
+    block = cfg.get("quiet_runs", QUIET_RUNS_DEFAULT)
+    if isinstance(block, dict):
+        block = (block.get("regulators") or {}).get(regulator, block.get("default", QUIET_RUNS_DEFAULT))
+    try:
+        return max(int(block), 0)
+    except (TypeError, ValueError):
+        return QUIET_RUNS_DEFAULT
+
+
+def _report_for(summary, regulator: str) -> Optional[dict]:
+    return next((rep for rep in _collect_results(summary) if rep.get("regulator") == regulator), None)
+
+
+def quiet_runs(previous: List[str], regulator: str, rep: dict) -> int:
+    """The streak this report continues: the newest stored report of the
+    regulator carries the count so far (0 before this change existed); a
+    quiet reading adds one, a reading with changes resets, anything else
+    carries the count unchanged."""
+    base = 0
+    for summary in previous:
+        try:
+            old = _report_for(json.loads(summary or "{}"), regulator)
+        except ValueError:
+            old = None
+        if old is not None:
+            base = int(old.get("quiet_runs") or 0)
+            break
+    quiet = quiet_reading(rep)
+    return base + 1 if quiet else 0 if quiet is False else base
+
+
+def _stamp_quiet(cur, job: str, reports: List[dict]) -> None:
+    """Put `quiet_runs` and `quiet_limit` on each report before its alerts are
+    read, from the job's stored runs and config/staleness.yml."""
+    if not reports:
+        return
+    try:
+        from jobs.staleness_alert import load_config
+        cfg = load_config()
+    except Exception as e:                         # no file, bad yaml: the default limit
+        logger.warning("config/staleness.yml not read (%s); quiet_runs limit %d", e, QUIET_RUNS_DEFAULT)
+        cfg = {}
+    try:
+        cur.execute("SELECT TOP (?) summary FROM run_results WHERE job = ? ORDER BY run_id DESC",
+                    QUIET_LOOKBACK_ROWS, job)
+        previous = [r[0] for r in cur.fetchall()]
+    except Exception as e:                         # the count restarts; the run record is kept
+        logger.warning("quiet_runs lookback for %s failed (%s); counting from 0", job, e)
+        previous = []
+    for rep in reports:
+        name = rep.get("regulator") or ""
+        rep["quiet_runs"] = quiet_runs(previous, name, rep)
+        rep["quiet_limit"] = quiet_limit(name, cfg)
 
 
 def _level(alerts: List[dict]) -> str:
@@ -189,23 +280,24 @@ def save_run(repo, job: str, regulators: List[str], state: str, started, finishe
     """Store one job run and the changes it found. Returns run_id."""
     reports = _collect_results(result)
     changes = [c for rep in reports for k in CHANGE_TYPES for c in (rep.get("changes") or {}).get(k, [])]
-    merged = dict(result) if isinstance(result, dict) else {}
-    if not reports:
-        alerts = alerts_for(state, error, merged)
-    else:
-        alerts = alerts_for(state, error, None)
-        for rep in reports:
-            for a in alerts_for("finished", None, rep):
-                if a not in alerts:
-                    alerts.append(a)
-    summary = json.loads(json.dumps(merged, default=str))
-    for rep in [summary] + [v for v in summary.values() if isinstance(v, dict)]:
-        rep.pop("changes", None)                       # the rows live in run_changes
     t0, t1 = _dt(started), _dt(finished)
     seconds = (t1 - t0).total_seconds() if t0 and t1 else None
     with repo._get_conn() as conn:
         cur = conn.cursor()
         ensure_tables(cur)
+        _stamp_quiet(cur, job, reports)
+        merged = dict(result) if isinstance(result, dict) else {}
+        if not reports:
+            alerts = alerts_for(state, error, merged)
+        else:
+            alerts = alerts_for(state, error, None)
+            for rep in reports:
+                for a in alerts_for("finished", None, rep):
+                    if a not in alerts:
+                        alerts.append(a)
+        summary = json.loads(json.dumps(merged, default=str))
+        for rep in [summary] + [v for v in summary.values() if isinstance(v, dict)]:
+            rep.pop("changes", None)                   # the rows live in run_changes
         cur.execute(
             "INSERT INTO run_results (job, regulators, state, started_at, finished_at, seconds, error, "
             "summary, alert_level, alerts) OUTPUT INSERTED.run_id VALUES (?,?,?,?,?,?,?,?,?,?)",

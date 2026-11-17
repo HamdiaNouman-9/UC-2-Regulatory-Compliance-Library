@@ -1,7 +1,15 @@
-# Alert when a regulator has produced no update (new or modified document,
-# or a withdrawal) for longer than its interval. See jobs/staleness_alert.py.
+# Two readings of "no update from a regulator".
 #
-# Served by GET /monitoring/staleness.
+# 1. Days since the library last stored a version for it (new, modified or
+#    withdrawn): jobs/staleness_alert.py, served by GET /monitoring/staleness,
+#    logged by the scheduler's staleness_check job, nothing sent.
+# 2. CHG-009: consecutive runs of its job that read the site and found
+#    nothing new or modified (weekly jobs: weeks). Counted by
+#    storage/run_store.py on each run's report (`quiet_runs`); from the
+#    limit onward every such run carries a critical `no_updates_for_runs`
+#    alert, stored with the run, shown by GET /alerts and delivered by
+#    ALERT_CHANNEL. A run that could not read the site (blocked, failed,
+#    untrusted) neither counts nor resets the streak.
 
 default_days: 30      # used for any regulator without its own entry
 
@@ -14,3 +22,11 @@ default_days: 30      # used for any regulator without its own entry
 #   "Central Bank of Bahrain": 14
 #   "Securities and Exchange Commission of Pakistan":
 #     days: 7
+
+# Reading 2. `default` is the limit for every regulator; `regulators` names
+# exceptions (names as the orchestrator reports them), not a watch list: every
+# regulator is counted. Runs started by hand count too. 0 turns the alert off.
+quiet_runs:
+  default: 4
+  # regulators:
+  #   "Central Bank of Bahrain": 2
