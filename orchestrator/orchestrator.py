@@ -74,6 +74,7 @@ from urllib3.util.retry import Retry
 import json
 from datetime import date, datetime, timezone
 from utils.countries import tree_path as country_tree_path
+from utils.file_links import claim_shared_files, holders_of
 from utils.file_links import normalise_all as normalise_files
 from dynamic_crawler import crawl_absence
 from dynamic_crawler.changesignal import (clean_fields, fields_of, files_of,
@@ -264,6 +265,29 @@ class Orchestrator:
             return meta["version_key"] or None
         return self.version_key
 
+    def _by_reference(self, ref, doc, seen_ids) -> Optional[dict]:
+        """The new-url tiebreak, guarded (CHG-026). The stored row with this
+        reference is this document only when its title agrees (where both
+        sides have one) and no other document of this run has claimed it
+        already.
+
+        A regulator that stamps one law's number on every article page
+        (SAMA) would otherwise fold every article whose identity missed into
+        the first row carrying that number. MEASURED 2026-11-17 on the live
+        Laws and Implementing Regulations sector: a law restructured into
+        chapters since the last crawl brought 106 articles whose paths no
+        longer matched, and the tiebreak turned them into 106 versions of
+        one stored article instead of 106 new documents.
+        """
+        row = self.repo.find_by_reference(ref)
+        if not row or row.get("id") in seen_ids:
+            return None
+        stored_title = _text(row.get("title")).strip().lower()
+        doc_title = _text(getattr(doc, "title", "")).strip().lower()
+        if stored_title and doc_title and stored_title != doc_title:
+            return None                             # a title on both sides, and they differ
+        return row
+
     def _identity_of(self, doc) -> tuple:
         """The identity as an ordered tuple — what logs and dedupe keys want."""
         return tuple(self._identity_fields_of(doc).values())
@@ -403,7 +427,7 @@ class Orchestrator:
             if existing is None and version_key:
                 ref = getattr(doc, version_key, None)
                 if ref:
-                    existing = self.repo.find_by_reference(ref)
+                    existing = self._by_reference(ref, doc, seen_ids)
 
             if existing is None:
                 doc.extra_meta = dict(getattr(doc, "extra_meta", None) or {})
@@ -1276,15 +1300,31 @@ class Orchestrator:
     #  THE RUN                                                            #
     # ------------------------------------------------------------------ #
 
+    def _shape_files(self, docs: List) -> List:
+        """Where every document's files end up, applied where EVERY document
+        passes. Done here rather than per crawler because each crawler had
+        invented its own spelling (org_pdf_link, arabic_pdf, pdf_link) and a
+        frontend had to know all of them. See utils/file_links.py.
+
+        First CHG-026's shared-file rule: a file that two or more documents
+        under one hub carry beside their pages (a law split into article
+        pages, each showing the law's PDF) moves to the hub, and a lone
+        document whose file a stored row above it already carries gives it
+        up. Then the file rule: one file -> document_url, several ->
+        extra_meta.attachment_links, never both.
+        """
+        try:
+            holders = holders_of(self._stored_for_source(docs))
+        except Exception as e:                     # the in-run rule still applies
+            logger.warning("stored rows not read for the shared-file rule: %s", e)
+            holders = {}
+        claim_shared_files(docs, holders)
+        return normalise_files(docs)
+
     def run_for_regulator(self, regulator_name: str) -> Dict:
         self._run_changes = []
         docs = self.crawler.fetch_documents()
-        # THE FILE RULE, applied where EVERY document passes: one file ->
-        # document_url, several -> extra_meta.attachment_links, never both.
-        # Done here rather than per crawler because each crawler had
-        # invented its own spelling (org_pdf_link, arabic_pdf, pdf_link)
-        # and a frontend had to know all of them. See utils/file_links.py.
-        docs = normalise_files(docs)
+        docs = self._shape_files(docs)
         logger.warning("crawler returned %d documents", len(docs))
 
         trustworthy, problems = self.check_run_trustworthy(docs)

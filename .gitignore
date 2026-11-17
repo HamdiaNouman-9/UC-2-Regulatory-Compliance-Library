@@ -54,3 +54,5 @@ benchmarks/runs/
 /*.xlsx
 /*.pptx
 pptx_extract/
+
+*.bak

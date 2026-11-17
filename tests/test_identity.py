@@ -302,7 +302,10 @@ def test_a_repo_without_the_generic_lookup_says_so():
 # --------------------------------------------------------------------------- #
 
 def test_version_key_comes_from_the_source():
-    repo = FakeRepo([stored(id=5, reference_no="C-9",
+    # CHG-026: the tiebreak now also wants the titles to agree where both
+    # sides have one -- a republished document keeps its title; a SAMA law's
+    # 106 articles sharing the law's number do not share a title.
+    repo = FakeRepo([stored(id=5, reference_no="C-9", title="Circular 9",
                             document_url="https://x/old.pdf")])
     doc = Doc(title="Circular 9", reference_no="C-9",
               document_url="https://x/new.pdf", content_hash="H",

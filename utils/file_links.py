@@ -41,8 +41,10 @@ way in.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import List
+from collections import Counter
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,158 @@ def normalise(doc):
     return doc
 
 
+def _is_file(url: str) -> bool:
+    try:
+        from dynamic_crawler.formfill.runner import _is_doc
+        return bool(_is_doc(url))
+    except Exception:                       # pragma: no cover - import guard
+        return str(url or "").lower().rsplit("?", 1)[0].endswith(
+            (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"))
+
+
+def doc_path_of(obj) -> List[str]:
+    """A document's or a stored row's doc_path as a list: the model holds a
+    list, the database JSON text, the workbook an arrow-joined string."""
+    v = obj.get("doc_path") if isinstance(obj, dict) else getattr(obj, "doc_path", None)
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    s = str(v or "").strip()
+    if s.startswith("["):
+        try:
+            return [str(x) for x in json.loads(s)]
+        except ValueError:
+            return []
+    return [p.strip() for p in s.split(" > ") if p.strip()] if s else []
+
+
+def carried_file(doc) -> str:
+    """The one file a document carries BESIDE its page, or ''.
+
+    The shape of a law split into article pages: `document_url` is the page
+    and the crawler named exactly one file next to it. A document whose
+    `document_url` is itself a file has no page to fall back to and is not
+    a carrier; a document naming several files is a bundle and is left alone.
+    """
+    url = str(getattr(doc, "document_url", "") or "").strip()
+    if not url.lower().startswith("http") or _is_file(url):
+        return ""
+    files = explicit_files(doc)
+    return files[0] if len(files) == 1 else ""
+
+
+def _drop_file(doc, url: str) -> None:
+    meta = dict(getattr(doc, "extra_meta", None) or {})
+    for key in LEGACY_FILE_KEYS:
+        if str(meta.get(key) or "").strip() == url:
+            meta.pop(key, None)
+    links = [u for u in split_links(meta.get("attachment_links")) if u != url]
+    if "attachment_links" in meta:
+        if links:
+            meta["attachment_links"] = " | ".join(links)
+        else:
+            meta.pop("attachment_links", None)
+    doc.extra_meta = meta
+    doc.file_type = "HTML" if getattr(doc, "document_html", None) else None
+
+
+def holders_of(rows) -> Dict[str, List[List[str]]]:
+    """file url -> the doc_paths of the stored rows whose `document_url` it
+    is: the laws that already carry their file, for `claim_shared_files`."""
+    out: Dict[str, List[List[str]]] = {}
+    for r in rows or []:
+        url = str((r.get("document_url") if isinstance(r, dict)
+                   else getattr(r, "document_url", "")) or "").strip()
+        if url and _is_file(url):
+            out.setdefault(url, []).append(doc_path_of(r))
+    return out
+
+
+def claim_shared_files(docs, holders: Optional[Dict[str, List[List[str]]]] = None) -> int:
+    """CHG-026: a file that two or more documents under one hub carry beside
+    their pages is the hub's file, not theirs. Returns how many documents
+    gave a file up.
+
+    A regulator that publishes a law as one PDF plus a page per article
+    shows the PDF on every article page, so the crawl brought back one
+    document per article each carrying the whole-law file, and the law's
+    own page (the hub) carried none; the pipeline then fetched and
+    extracted that file once per article. Measured 2026-11-17: 3,285 SAMA
+    rows under 595 laws, a trace of the same in CBE, CMA and CBB.
+
+    Hubs are the documents whose doc_path is a strict prefix of other
+    documents' paths; they are taken deepest first, so a chapter claims its
+    articles' file and the law above then claims it from its chapters: the
+    file ends on the top-most hub under which two or more documents carried
+    it. The hub takes the file as its one attachment (the file rule below
+    then makes it the hub's `document_url`); the carriers keep their page
+    and their text. A hub with one carrier claims nothing; a hub that
+    already carries a different file claims nothing; two documents at the
+    same path are ambiguous and neither claims; a document whose
+    `document_url` is itself the file (no page) is never a carrier; nor is
+    a document whose page another document under the hub shares (two
+    files listed on one page are two documents, not two articles).
+
+    `holders` (`holders_of` over the stored rows of the run) covers the
+    document that arrives alone, with no hub in the run: a discovery job
+    that ingests one new article of a law the library already holds. Its
+    file is dropped when a stored row above it in the tree already carries
+    that file. Runs here, at the orchestrator, for the same reason the file
+    rule does: one rule, one place, every regulator.
+    scripts/chg026_split_laws.py applies the same rule to rows already
+    stored.
+    """
+    docs = list(docs or [])
+    paths = [tuple(doc_path_of(d)) for d in docs]
+    # Every document registers under each of its strict prefixes, so a hub's
+    # descendants are one lookup: linear in documents times depth, which a
+    # 35,000-document crawl (CBB) can afford where a scan of every pair cannot.
+    at_path: Dict[tuple, List[int]] = {}
+    under: Dict[tuple, List[int]] = {}
+    for i, p in enumerate(paths):
+        if not p:
+            continue
+        at_path.setdefault(p, []).append(i)
+        for k in range(1, len(p)):
+            under.setdefault(p[:k], []).append(i)
+    hubs = sorted((p for p in at_path if p in under), key=len, reverse=True)
+    changed = 0
+    for p in hubs:
+        if len(at_path[p]) > 1:
+            continue                                    # two documents at one path: whose file? a person's call
+        hub = docs[at_path[p][0]]
+        below = under[p]
+        # A carrier's page must be its own: two documents under the hub with
+        # the same page are file links listed on that page (CBE's cheque
+        # clearing house: two laws linked from one page), not articles of a
+        # law with a page each. They keep their files.
+        pages = Counter(str(getattr(docs[j], "document_url", "") or "").strip() for j in below)
+        own_page = {j for j in below if pages[str(getattr(docs[j], "document_url", "") or "").strip()] == 1}
+        carried = Counter(carried_file(docs[j]) for j in below if j in own_page and carried_file(docs[j]))
+        url, n = next(iter(carried.most_common(1)), ("", 0))
+        if n < 2:
+            continue
+        own = explicit_files(hub)
+        if own and own != [url]:
+            continue                                    # the hub has a file of its own
+        if not own:
+            hub.extra_meta = dict(getattr(hub, "extra_meta", None) or {})
+            hub.extra_meta["attachment_links"] = url
+            hub.file_type = "PDF" if url.lower().split("?")[0].endswith(".pdf") else "FILE"
+        for j in below:
+            if j in own_page and carried_file(docs[j]) == url:
+                _drop_file(docs[j], url)
+                changed += 1
+    if holders:
+        for d, p in zip(docs, paths):
+            url = carried_file(d)
+            if url and any(len(h) < len(p) and tuple(h) == p[:len(h)] for h in holders.get(url, [])):
+                _drop_file(d, url)
+                changed += 1
+    if changed:
+        logger.info("shared-file rule: %d document(s) left their file to the hub above", changed)
+    return changed
+
+
 def normalise_all(docs):
     """Apply the rule to every document. Call at the orchestrator, not per crawler."""
     out = [normalise(d) for d in (docs or [])]
@@ -196,5 +350,5 @@ def normalise_all(docs):
     return out
 
 
-__all__ = ["normalise", "normalise_all", "files_of", "split_links",
-           "LEGACY_FILE_KEYS", "PROVENANCE_KEYS"]
+__all__ = ["normalise", "normalise_all", "files_of", "split_links", "claim_shared_files",
+           "holders_of", "carried_file", "doc_path_of", "LEGACY_FILE_KEYS", "PROVENANCE_KEYS"]
