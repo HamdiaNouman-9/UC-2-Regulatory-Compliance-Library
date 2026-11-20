@@ -190,9 +190,8 @@ def row_to_dict(row, columns):
 
 def _attach_regulation_counts(cursor, categories: list):
     """Mark each category dict with whether it has regulations directly
-    attached and how many child categories it has, so a category that is
-    both a folder (has children) and a leaf (owns a regulation) surfaces
-    both facts instead of just the tree.
+    attached, so a category that is both a folder (has children) and a
+    leaf (owns a regulation) surfaces both facts instead of just the tree.
 
     MEASURED 2026-08-28: this used to filter with
     `WHERE compliancecategory_id IN (?,?,?,...)`, one placeholder per category
@@ -213,21 +212,10 @@ def _attach_regulation_counts(cursor, categories: list):
         "GROUP BY compliancecategory_id"
     )
     counts = {row[0]: row[1] for row in cursor.fetchall()}
-    # CHG-026: how many categories sit directly beneath each one, the same
-    # way (one unfiltered aggregate, looked up by id). A category that owns a
-    # document AND has children is a law split into articles; the page needs
-    # both numbers to show the law's own document next to its articles, and
-    # it used to fetch every node's children to find out.
-    cursor.execute(
-        "SELECT parentid, COUNT(*) FROM compliancecategory "
-        "WHERE parentid IS NOT NULL GROUP BY parentid"
-    )
-    kids = {row[0]: row[1] for row in cursor.fetchall()}
     for c in categories:
         cnt = counts.get(c["compliancecategory_id"], 0)
         c["has_regulations"] = cnt > 0
         c["regulation_count"] = cnt
-        c["child_count"] = kids.get(c["compliancecategory_id"], 0)
 
 
 # ================================================================== #

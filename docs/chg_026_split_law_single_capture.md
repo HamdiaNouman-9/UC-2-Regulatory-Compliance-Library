@@ -129,13 +129,14 @@ alone.
    matches on the node url, which stays reachable from both columns.
 6. **The library page.** A hub that owns a document and has children was
    drawn as a folder and its own document was not listed. With the PDF
-   on the law's row, that row must be reachable: the category endpoints
-   return `child_count` (`apis/pipeline_api.py`,
-   `_attach_regulation_counts`, one grouped query), and the page lists a
-   hub's own document(s) before its children in the browse grid and the
-   tree (`web/app.js`, `ownDocuments`, `ownDocLi`; a failed fetch lists
-   nothing and the children still render). The dead-end check and the
-   icon choice read `child_count` when present.
+   on the law's row, that row must be reachable. An earlier version of
+   this branch carried a `child_count` on the category endpoints and an
+   own-document row in the page; both were removed from this change on
+   2026-11-20 and are delivered, in full, by CHG-032
+   (`feature/chg-032-library-kind-flags`, docs/chg_032_library_kind_flags.md:
+   `has_children`, `child_count` and a derived `kind` on every category
+   row, rendering by kind, the own document listed first). This change
+   touches neither `apis/pipeline_api.py` nor `web/app.js`.
 7. **The reference-number tiebreak, guarded** (`orchestrator/orchestrator.py`,
    `_by_reference`). When identity misses, the orchestrator has long
    looked for a stored row with the document's reference number, so a
@@ -377,9 +378,9 @@ above it already carries gives it up. `orchestrator/orchestrator.py`:
 file rule. `scripts/chg026_split_laws.py`: the same rule over the stored
 rows of one regulator, dry run by default, backed up and verified; applied
 to SAMA (155 law rows, 3,373 article rows) on the local copy; CBE, CMA and
-CBB have nothing to move. `apis/pipeline_api.py`: the category endpoints return a child
-count. `web/app.js`: the library page lists a hub's own document before
-its children. `orchestrator/orchestrator.py`, `_by_reference`: the
+CBB have nothing to move. The library page and the category endpoints are
+not touched here; making a hub's own document reachable is CHG-032.
+`orchestrator/orchestrator.py`, `_by_reference`: the
 reference-number tiebreak matches only a stored row with the same title,
 and a row at most once per run (a restructured SAMA law had folded 106
 articles into one row). No crawler changed.
