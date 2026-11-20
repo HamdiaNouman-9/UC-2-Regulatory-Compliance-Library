@@ -233,6 +233,28 @@ class MSSQLRepository(DocumentRepository):
         conn.commit()
         return int(row[0])
 
+    def mark_category_owns_document(self, cursor, compliancecategory_id) -> None:
+        """CHG-032: keep `compliancecategory.type` meaning "owns a document".
+
+        The column is set once, at insert, by position in the document's
+        path (`Orchestrator._walk_folders`) or copied from the workbook
+        (`promote`), and was never revised. A folder created first as an
+        intermediate node and later given a document of its own stayed F
+        (measured 2026-11-19 on the local copy: 20 such nodes, CMA's
+        "Prospectuses" holding 12 documents in one). This runs on the cursor
+        of the transaction that files a regulation into a node, so the node
+        is R from the moment it owns a document. Idempotent: the WHERE clause
+        makes it a no-op on a node that is already R. Folder-ness is NOT
+        stored: whether a node has children is derived from `parentid` when
+        read (`apis.pipeline_api._attach_regulation_counts`)."""
+        if compliancecategory_id is None:
+            return
+        cursor.execute(
+            "UPDATE compliancecategory SET type = 'R' "
+            "WHERE compliancecategory_id = ? AND (type IS NULL OR type <> 'R')",
+            [compliancecategory_id],
+        )
+
     def find_folder_in_subtree(self, title: str, ancestor_id: int) -> Optional[int]:
         """
         Search for a category with the given title anywhere in the subtree
@@ -500,6 +522,10 @@ class MSSQLRepository(DocumentRepository):
                     document.regulator, document.source_system, reg_id)
                 cursor.execute(
                     "UPDATE regulations SET ref_key = ? WHERE id = ?", (ref_key, reg_id))
+                # CHG-032: the node this regulation was filed into now owns a
+                # document, whatever letter it was created with.
+                self.mark_category_owns_document(
+                    cursor, getattr(document, "compliancecategory_id", None))
                 conn.commit()
 
             document.id = reg_id
@@ -537,6 +563,10 @@ class MSSQLRepository(DocumentRepository):
             with self._get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query, tuple(values))
+                # CHG-032: a regulation moved to another node makes that node
+                # own a document.
+                if "compliancecategory_id" in kwargs:
+                    self.mark_category_owns_document(cursor, kwargs["compliancecategory_id"])
                 conn.commit()
             logger.info(f"Updated regulation {regulation_id}: {list(kwargs.keys())}")
         except Exception as e:

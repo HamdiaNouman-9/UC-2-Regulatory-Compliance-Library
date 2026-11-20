@@ -15,6 +15,12 @@ regulator put them there, and we copy that structure.
 The leaf rule is unchanged: a document's own node (type `R`) is never shared
 with a different document.
 
+Since CHG-032 (2026-11-20) `type` means only "owns a document": the
+repository retypes a node to R the moment a regulation is filed into it,
+and whether a node is also a folder is derived from `parentid` when read
+(`has_children`, `child_count`, `kind` on every category row the API
+returns). A node can be both; see docs/chg_032_library_kind_flags.md.
+
 ## What was wrong
 
 Both the tree walk (`orchestrator._walk_folders`) and `promote` had a fallback.

@@ -13,7 +13,7 @@ const state = {
   formfillBase: localStorage.getItem("rcl_formfill_base") || DEFAULT_FORMFILL_BASE,
   formfillListLoaded: false,
   // browse (grid) state
-  currentFolder: null,       // {id, title, type, has_regulations} | null = roots
+  currentFolder: null,       // folderEntry(): {id, title, type, kind, has_regulations, regulation_count, child_count} | null = roots
   folderPath: [],            // breadcrumb stack of the same shape
   // detail state
   selectedRegulationId: null,
@@ -163,108 +163,96 @@ function fmtYear(y) {
 }
 
 /* ---------------------------------------------------------------- *
- *  TEMP FIX: hide category branches that lead nowhere.               *
- *  Some regulator category trees (e.g. CBE) have dead-end folders  *
- *  -- no regulation of their own AND no real content a few levels  *
- *  down (crawl-time nav items that never got populated). Rather    *
- *  than show them and reveal "(empty)" after a click, look a few   *
- *  levels ahead and filter them out of the list before it renders. *
- *  Real fix belongs in the category data itself, not the UI.       *
+ *  What a category node IS (CHG-032)                                *
+ *                                                                   *
+ *  One node can own a document AND have sub-categories: "Banking   *
+ *  Control Law" is stored with its full text and is also the parent *
+ *  of 26 Article nodes. The DB's one-letter `type` (F/R) cannot say *
+ *  "both", so the API now sends, per node, has_regulations /        *
+ *  regulation_count, has_children / child_count and a derived       *
+ *  `kind`: "folder", "document" or "both". Everything below renders *
+ *  from `kind`. Until CHG-032 this page fetched every R node's       *
+ *  children to decide its icon, gave up guessing past 60 cards, and *
+ *  hid a node's own document the moment it had children to show.    *
  * ---------------------------------------------------------------- */
 
-// Kept small on purpose: a naive recursive check here can fan out into
-// hundreds or thousands of concurrent DB queries the moment it hits a
-// wide branch (some category subtrees run to the thousands of rows), and
-// did exactly that against the real DB during testing. depth=1 already
-// catches both a plain dead-end (no children) and a one-hop dead chain
-// (a folder whose only child is itself a dead end) -- deeper chains are
-// rare enough to accept missing, for a temp fix.
-const EMPTY_CHECK_MAX_DEPTH = 1;
-// Never fan out past a node with more than this many children -- a wide
-// branch is overwhelmingly real content, not worth the query volume to
-// rule out the edge case.
-const EMPTY_CHECK_MAX_FANOUT = 30;
-const emptyCheckCache = new Map(); // compliancecategory_id -> Promise<boolean>
-
-// Shared by the empty-branch check above AND the folder/document icon
-// resolution below, so a category's children are never fetched twice.
-const childrenFetchCache = new Map(); // compliancecategory_id -> Promise<node[]>
-
-function fetchChildrenCached(categoryId) {
-  if (childrenFetchCache.has(categoryId)) return childrenFetchCache.get(categoryId);
-  const promise = api(`/categories/children/${categoryId}`)
-    .then((r) => r.data || [])
-    .catch(() => []); // fetch failed -- fail open (treat as childless rather than retry-loop)
-  childrenFetchCache.set(categoryId, promise);
-  return promise;
+// The API's answer when it sends one; otherwise the same rule applied to
+// the counts, or, against an API older than CHG-032, the type letter
+// (R = document, anything else = folder), which is what this page did before.
+function nodeKind(node) {
+  if (node.kind) return node.kind;
+  const hasRegs = !!node.has_regulations;
+  const hasKids = typeof node.child_count === "number" ? node.child_count > 0 : node.type !== "R";
+  if (hasRegs && hasKids) return "both";
+  return hasRegs ? "document" : "folder";
 }
 
-function isEmptyBranch(node, depth) {
-  if (node.has_regulations) return Promise.resolve(false);
-  const key = node.compliancecategory_id;
-  if (emptyCheckCache.has(key)) return emptyCheckCache.get(key);
-  const promise = (async () => {
-    const kids = await fetchChildrenCached(key);
-    if (!kids.length) return true;
-    if (kids.length > EMPTY_CHECK_MAX_FANOUT) return false;
-    if (depth >= EMPTY_CHECK_MAX_DEPTH) return false; // assume non-empty past the depth cap
-    const results = await Promise.all(kids.map((k) => isEmptyBranch(k, depth + 1)));
-    return results.every(Boolean);
-  })();
-  emptyCheckCache.set(key, promise);
-  return promise;
+// A folder with nothing beneath it and no document of its own leads
+// nowhere (crawl-time navigation items that were never populated). It is
+// dropped from a listing on the counts alone, with no fetch. A folder whose
+// children are all such dead ends still shows and says "(empty)" when opened;
+// the real fix for those belongs in the category data, not here.
+function dropEmpty(nodes) {
+  return nodes.filter((n) => !(nodeKind(n) === "folder" && n.child_count === 0));
 }
 
-async function filterNonEmpty(nodes) {
-  const flags = await Promise.all(nodes.map((n) => isEmptyBranch(n, 0)));
-  return nodes.filter((_, i) => !flags[i]);
+// The node's own document(s), fetched only for a "both" node. Empty on a
+// fetch failure so the children still render.
+async function ownDocuments(categoryId) {
+  try {
+    return await fetchRegulationsForCategory(categoryId);
+  } catch (e) {
+    return [];
+  }
 }
 
 /* ---------------------------------------------------------------- *
  *  Tree (left sidebar)                                              *
  * ---------------------------------------------------------------- */
 
-// A category flagged type "R" (has a regulation of its own) can ALSO have
-// real sub-categories underneath it -- e.g. "Banking Control Law" is both
-// the whole-law document AND the parent of 26 Article sub-categories. Type
-// alone can't tell the two apart, so an R-node's icon is only "document"
-// once we've actually checked it has no children; otherwise it's a folder,
-// same as any other node you can still drill into.
-const ICON_CHECK_MAX_LIST = 60; // skip the lookahead for a very wide list of cards
+const GLYPH_FOLDER = "&#128193;";
+const GLYPH_DOC = "&#128196;";
 
-async function resolveIconKind(node) {
-  if (node.type !== "R") return "folder";
-  const kids = await fetchChildrenCached(node.compliancecategory_id);
-  return kids.length > 0 ? "folder" : "doc";
+// Folder icon for anything you can drill into; a "both" node adds a small
+// document badge so the reader sees it also has text of its own.
+function iconHtml(kind, cls) {
+  const glyph = kind === "document" ? GLYPH_DOC : GLYPH_FOLDER;
+  const badge = kind === "both"
+    ? `<span class="kind-badge" title="Has its own document and sub-sections">${GLYPH_DOC}</span>`
+    : "";
+  return `<span class="${cls}">${glyph}${badge}</span>`;
 }
 
-async function resolveIconKinds(nodes) {
-  const map = new Map();
-  if (nodes.length > ICON_CHECK_MAX_LIST) {
-    // Too many cards to check individually without hammering the API --
-    // fall back to the type-based default. In every wide list observed,
-    // a type "R" node at this scale is a single document with nothing
-    // beneath it, so this is a safe approximation, not a guess.
-    nodes.forEach((n) => map.set(n.compliancecategory_id, n.type === "R" ? "doc" : "folder"));
-    return map;
-  }
-  const kinds = await Promise.all(nodes.map(resolveIconKind));
-  nodes.forEach((n, i) => map.set(n.compliancecategory_id, kinds[i]));
-  return map;
+function ownDocLi(reg) {
+  const li = document.createElement("li");
+  li.className = "own-doc";
+  li.innerHTML = `
+    <div class="tree-node">
+      <span class="tree-caret" style="visibility:hidden">&#9656;</span>
+      <span class="tree-icon">${GLYPH_DOC}</span>
+      <span class="tree-label" title="${esc(reg.title || "")}">${esc(reg.title || "")}</span>
+    </div>`;
+  li.querySelector(".tree-node").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    $$(".tree-node.selected").forEach((n) => n.classList.remove("selected"));
+    li.querySelector(".tree-node").classList.add("selected");
+    openRegulation(reg.id);
+  });
+  return li;
 }
 
-const iconGlyph = (kind) => (kind === "doc" ? "&#128196;" : "&#128193;");
-
-function treeNodeLi(node, iconKind) {
+function treeNodeLi(node) {
+  const kind = nodeKind(node);
   const li = document.createElement("li");
   li.dataset.id = node.compliancecategory_id;
   li.dataset.type = node.type;
+  li.dataset.kind = kind;
 
   const row = document.createElement("div");
   row.className = "tree-node";
   row.innerHTML = `
-    <span class="tree-caret">&#9656;</span>
-    <span class="tree-icon">${iconGlyph(iconKind || (node.type === "R" ? "doc" : "folder"))}</span>
+    <span class="tree-caret"${kind === "document" ? ' style="visibility:hidden"' : ""}>&#9656;</span>
+    ${iconHtml(kind, "tree-icon")}
     <span class="tree-label" title="${esc(node.title)}">${esc(node.title)}</span>
     ${node.regulation_count ? `<span class="tree-count">${node.regulation_count}</span>` : ""}
   `;
@@ -278,6 +266,11 @@ function treeNodeLi(node, iconKind) {
   let loaded = false;
 
   async function toggle() {
+    // A document with nothing beneath it: nothing to expand, open it.
+    if (kind === "document") {
+      openRegulationForCategory(node);
+      return;
+    }
     if (!childUl.classList.contains("hidden")) {
       childUl.classList.add("hidden");
       caret.style.transform = "rotate(0deg)";
@@ -288,36 +281,24 @@ function treeNodeLi(node, iconKind) {
       childUl.classList.remove("hidden");
       try {
         const resp = await api(`/categories/children/${node.compliancecategory_id}`);
-        const kids = await filterNonEmpty(resp.data || []);
-
-        // A leaf regulation with nothing beneath it: expanding to show a
-        // single "itself" row is pointless -- open it directly instead.
-        if (!kids.length && node.has_regulations) {
-          childUl.classList.add("hidden");
-          caret.style.visibility = "hidden";
-          openRegulationForCategory(node);
-          return;
-        }
-
-        // A category can be BOTH a folder (real sub-categories below it)
-        // AND a regulation in its own right -- e.g. "Banking Control Law"
-        // has 26 Article sub-categories but is also itself the whole-text
-        // regulation. Once it has real children to show, only THOSE are
-        // listed -- no same-named leaf for the folder's own document; its
-        // own text is redundant with browsing the real children.
+        const kids = dropEmpty(resp.data || []);
         childUl.innerHTML = "";
-        if (!kids.length) {
-          // Reachable only via the depth-cap fail-open path in
-          // filterNonEmpty -- genuinely empty in the DB. Say so, or an
-          // empty expand looks identical to a stuck/broken fetch.
+        // "both": the node's own document(s) come first, then the
+        // sub-sections. Nothing is hidden and nothing is duplicated.
+        if (kind === "both") {
+          (await ownDocuments(node.compliancecategory_id)).forEach((reg) =>
+            childUl.appendChild(ownDocLi(reg)));
+        }
+        if (!kids.length && !childUl.childElementCount) {
+          // Genuinely empty in the DB (every child was a dead end). Say so,
+          // or an empty expand looks identical to a stuck fetch.
           caret.style.visibility = "hidden";
           const emptyLi = document.createElement("li");
           emptyLi.className = "tree-loading";
           emptyLi.textContent = "(empty)";
           childUl.appendChild(emptyLi);
         }
-        const iconKinds = await resolveIconKinds(kids);
-        kids.forEach((k) => childUl.appendChild(treeNodeLi(k, iconKinds.get(k.compliancecategory_id))));
+        kids.forEach((k) => childUl.appendChild(treeNodeLi(k)));
         loaded = true;
       } catch (e) {
         childUl.innerHTML = `<li class="tree-loading">Failed to load</li>`;
@@ -345,7 +326,7 @@ async function renderTreeRoots() {
   try {
     const resp = await api("/categories/roots");
     root.innerHTML = "";
-    (resp.data || []).forEach((n) => root.appendChild(treeNodeLi(n)));
+    dropEmpty(resp.data || []).forEach((n) => root.appendChild(treeNodeLi(n)));
   } catch (e) {
     root.innerHTML = `<li class="tree-loading">Could not load categories: ${esc(e.message)}</li>`;
   }
@@ -374,6 +355,14 @@ async function fetchRegulationsForCategory(categoryId) {
   return resp.data || [];
 }
 
+// The breadcrumb entry for a category node: what the grid pushes when a
+// card is clicked and what the detail view pushes to browse a law's articles.
+function folderEntry(node) {
+  return { id: node.compliancecategory_id, title: node.title, type: node.type,
+           kind: nodeKind(node), has_regulations: node.has_regulations,
+           regulation_count: node.regulation_count, child_count: node.child_count };
+}
+
 async function renderBrowse(folder) {
   state.currentFolder = folder;
   state.selectedRegulationId = null;
@@ -390,17 +379,9 @@ async function renderBrowse(folder) {
   setCrumbs(crumbParts);
 
   try {
-    let kids = [];
-    if (!folder) {
-      kids = (await api("/categories/roots")).data || [];
-    } else {
-      kids = (await api(`/categories/children/${folder.id}`)).data || [];
-    }
-    kids = await filterNonEmpty(kids);
-
-    // Leaf regulation category with nothing else under it -- skip the
-    // redundant single-card screen and open the document directly.
-    if (folder && folder.has_regulations && kids.length === 0) {
+    // A document with nothing beneath it: skip the redundant single-card
+    // screen and open it directly, with no children fetch.
+    if (folder && folder.kind === "document") {
       const regs = await fetchRegulationsForCategory(folder.id);
       if (regs.length) {
         openRegulation(regs[0].id);
@@ -408,32 +389,55 @@ async function renderBrowse(folder) {
       }
     }
 
-    // A category can be BOTH a folder (real sub-categories below it) AND a
-    // regulation in its own right -- e.g. "Banking Control Law" also has 26
-    // Article sub-categories. Once it has real children to show, only
-    // THOSE are listed here, not a same-named card for the folder's own
-    // document -- its own text is redundant with browsing the real
-    // children.
+    let kids = [];
+    if (!folder) {
+      kids = (await api("/categories/roots")).data || [];
+    } else {
+      kids = (await api(`/categories/children/${folder.id}`)).data || [];
+    }
+    kids = dropEmpty(kids);
+
     grid.innerHTML = "";
-    const iconKinds = await resolveIconKinds(kids);
+
+    // "both": the folder's own document(s) are the first cards, then the
+    // sub-sections. Opening one pushes the folder again so Back returns to
+    // this listing rather than to the level above it.
+    if (folder && folder.kind === "both") {
+      (await ownDocuments(folder.id)).forEach((reg) => {
+        const card = document.createElement("div");
+        card.className = "folder-card own-doc";
+        card.title = "This entry's own document";
+        card.innerHTML = `
+          <span class="ic">${GLYPH_DOC}</span>
+          <span class="lbl">${esc(reg.title || "")}</span>
+        `;
+        card.addEventListener("click", () => {
+          state.folderPath.push(folder);
+          openRegulation(reg.id);
+        });
+        grid.appendChild(card);
+      });
+    }
+
     kids.forEach((k) => {
+      const kind = nodeKind(k);
       const card = document.createElement("div");
       card.className = "folder-card";
+      card.dataset.kind = kind;
       card.innerHTML = `
-        <span class="ic">${iconGlyph(iconKinds.get(k.compliancecategory_id))}</span>
+        ${iconHtml(kind, "ic")}
         <span class="lbl">${esc(k.title)}</span>
         ${k.regulation_count ? `<span class="cnt">${k.regulation_count}</span>` : ""}
       `;
       card.addEventListener("click", () => {
-        state.folderPath.push({ id: k.compliancecategory_id, title: k.title, type: k.type,
-                                has_regulations: k.has_regulations });
-        renderBrowse({ id: k.compliancecategory_id, title: k.title, type: k.type,
-                       has_regulations: k.has_regulations });
+        const entry = folderEntry(k);
+        state.folderPath.push(entry);
+        renderBrowse(entry);
       });
       grid.appendChild(card);
     });
 
-    if (!kids.length) emptyEl.classList.remove("hidden");
+    if (!grid.childElementCount) emptyEl.classList.remove("hidden");
   } catch (e) {
     grid.innerHTML = `<div class="error-box">Failed to load: ${esc(e.message)}</div>`;
   }
@@ -509,6 +513,24 @@ function metaChips(detail) {
   return chips.length ? `<div class="meta-chip-row">${chips.join("")}</div>` : "";
 }
 
+// CHG-032: a document whose category has sub-categories is a law or section
+// whose articles are filed beneath it. The way back down to them.
+function subSectionsNote(detail) {
+  const cat = detail.category_info || {};
+  const n = Number(cat.child_count || 0);
+  if (!n || !cat.id) return "";
+  return `<div class="sub-sections-note">${GLYPH_FOLDER} Contains ${n} sub-section${n === 1 ? "" : "s"}
+    <a href="#" id="browseSubSections">Browse them</a></div>`;
+}
+
+function browseSubSections(detail) {
+  const cat = detail.category_info || {};
+  const entry = { id: cat.id, title: cat.title || detail.title || "", type: cat.type,
+                  kind: "both", has_regulations: true, child_count: Number(cat.child_count || 0) };
+  state.folderPath.push(entry);
+  renderBrowse(entry);
+}
+
 function renderRegulationTab(detail) {
   const meta = detail.extra_meta || {};
   const statusText = meta.status || detail.status || "";
@@ -530,6 +552,7 @@ function renderRegulationTab(detail) {
     </div>
 
     ${metaChips(detail)}
+    ${subSectionsNote(detail)}
 
     <div class="section-label">&#128196; Description</div>
     <div class="desc-box">
@@ -560,6 +583,8 @@ function renderRegulationTab(detail) {
     <div class="section-label">&#128193; Attached documents</div>
     ${attachmentsList(detail)}
   `;
+  const link = $("#browseSubSections");
+  if (link) link.addEventListener("click", (ev) => { ev.preventDefault(); browseSubSections(detail); });
 }
 
 /* ---------------------------------------------------------------- *

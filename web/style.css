@@ -121,6 +121,12 @@ html, body {
 .folder-card .ic { font-size: 18px; flex: 0 0 auto; }
 .folder-card .lbl { font-size: 14px; }
 .folder-card .cnt { margin-left: auto; font-size: 11px; color: var(--muted); }
+/* CHG-032: a node that owns a document AND has sub-sections */
+.kind-badge { font-size: 10px; margin-left: -4px; vertical-align: super; }
+.folder-card.own-doc { border-style: dashed; }
+.tree li.own-doc > .tree-node { font-style: italic; }
+.sub-sections-note { margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
+.sub-sections-note a { margin-left: 6px; }
 .empty-state { color: var(--muted); font-size: 13px; padding: 20px 4px; }
 
 /* ---------- Tabs / detail view ---------- */

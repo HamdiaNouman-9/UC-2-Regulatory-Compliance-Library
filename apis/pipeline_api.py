@@ -188,10 +188,40 @@ def row_to_dict(row, columns):
     return {col: serialize_datetime(value) for col, value in zip(columns, row)}
 
 
+def category_kind(has_regulations: bool, has_children: bool) -> str:
+    """CHG-032: what a category node IS, derived from the data, never from
+    `compliancecategory.type`.
+
+    One node can own a document AND have sub-categories: SAMA's "Banking
+    Control Law" is stored as a regulation with its full text and is also the
+    parent of 26 Article nodes. The `type` column holds one letter (F folder,
+    R regulation) chosen once at insert by position in the document's path,
+    so it cannot say "both" and was set by arrival order. The three answers
+    the page needs are:
+
+        both      owns at least one regulation and has at least one child
+        document  owns at least one regulation, no children
+        folder    everything else (including an empty node)
+    """
+    if has_regulations and has_children:
+        return "both"
+    if has_regulations:
+        return "document"
+    return "folder"
+
+
 def _attach_regulation_counts(cursor, categories: list):
     """Mark each category dict with whether it has regulations directly
     attached, so a category that is both a folder (has children) and a
     leaf (owns a regulation) surfaces both facts instead of just the tree.
+
+    CHG-032 (2026-11-20): also marks how many categories sit directly beneath
+    each one (`has_children`, `child_count`) and the derived `kind` (see
+    `category_kind`). Same shape as the regulation count: one unfiltered
+    aggregate, looked up by id, zero parameters, so it holds for the
+    full-tree callers and the small-list callers alike. Before this the web
+    page fetched every R node's children to find out whether it was a
+    folder, and gave up guessing past 60 cards.
 
     MEASURED 2026-08-28: this used to filter with
     `WHERE compliancecategory_id IN (?,?,?,...)`, one placeholder per category
@@ -212,10 +242,20 @@ def _attach_regulation_counts(cursor, categories: list):
         "GROUP BY compliancecategory_id"
     )
     counts = {row[0]: row[1] for row in cursor.fetchall()}
+    cursor.execute(
+        "SELECT parentid, COUNT(*) FROM compliancecategory "
+        "WHERE parentid IS NOT NULL "
+        "GROUP BY parentid"
+    )
+    kids = {row[0]: row[1] for row in cursor.fetchall()}
     for c in categories:
         cnt = counts.get(c["compliancecategory_id"], 0)
         c["has_regulations"] = cnt > 0
         c["regulation_count"] = cnt
+        kid = kids.get(c["compliancecategory_id"], 0)
+        c["has_children"] = kid > 0
+        c["child_count"] = kid
+        c["kind"] = category_kind(cnt > 0, kid > 0)
 
 
 # ================================================================== #
@@ -2256,11 +2296,17 @@ def get_regulation_detail(
                    r.reference_no, r.department, r.doc_path, r.[year], r.source_page_url,
                    r.extra_meta, TRY_CAST(r.created_at AS DATETIME) AS created_at,
                    TRY_CAST(r.updated_at AS DATETIME) AS updated_at, r.status, r.compliancecategory_id,
-                   cc.title AS category_title, cc.parentid AS category_parent_id, cc.type AS category_type
+                   cc.title AS category_title, cc.parentid AS category_parent_id, cc.type AS category_type,
+                   (SELECT COUNT(*) FROM compliancecategory k
+                     WHERE k.parentid = r.compliancecategory_id) AS category_child_count
             FROM regulations r
             LEFT JOIN compliancecategory cc ON r.compliancecategory_id = cc.compliancecategory_id
             WHERE r.id = ?
         """
+        # CHG-032: `category_child_count` (returned as category_info.child_count)
+        # is how many sub-categories sit under the node this regulation lives
+        # in. Non-zero means the document is a law or section whose articles
+        # are filed beneath it; the page shows the way back down to them.
         with repo._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(query, [regulation_id])
@@ -2283,11 +2329,16 @@ def get_regulation_detail(
                         reg_dict["extra_meta"])
                 except Exception:
                     pass
+            child_count = int(reg_dict.pop("category_child_count", 0) or 0)
             reg_dict["category_info"] = {
                 "id":        reg_dict.pop("compliancecategory_id", None),
                 "title":     reg_dict.pop("category_title", None),
                 "parent_id": reg_dict.pop("category_parent_id", None),
                 "type":      reg_dict.pop("category_type", None),
+                # CHG-032: this regulation owns the node, so its kind is
+                # "both" when the node also has sub-categories.
+                "child_count": child_count,
+                "kind":      category_kind(True, child_count > 0),
             }
 
         if lang == "ar":

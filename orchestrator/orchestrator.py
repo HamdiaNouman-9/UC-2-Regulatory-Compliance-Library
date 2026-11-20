@@ -639,6 +639,14 @@ class Orchestrator:
             cat_type = "R" if (is_last and is_leaf) else "F"
 
         Intermediate nodes are folders; the last segment is the regulation.
+
+        CHG-032 (2026-11-20): the letter is set here only when a node is
+        CREATED. A last segment that reuses a node created earlier as an
+        intermediate (the folder existed first, the document arrived later)
+        is retyped to R by the repository when the regulation is inserted
+        (`MSSQLRepository.mark_category_owns_document`), so `type` means
+        "owns a document" and nothing else. Whether a node is also a folder
+        is never stored; the API derives it from `parentid` at read time.
         """
         with self._folder_lock:
             return self._walk_folders(hierarchy, for_regulation_id)
