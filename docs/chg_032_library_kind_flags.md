@@ -118,9 +118,18 @@ were. 968 stored texts were hidden that way.
    `output/backup_chg032_<stamp>.json` first and verifying by re-reading.
    Lists the R nodes that own no document to
    `output/chg032_orphans_<stamp>.json` with their child count and branch
-   root, and never writes them. All 228 are childless, so each is a dead
-   leaf left behind by a failed insert or a document that moved folders;
-   deleting them is the obvious action but is the user's decision.
+   root. All 228 are childless, so each is a dead leaf left behind by a
+   failed insert or a document that moved folders. The user chose deletion
+   on 2026-11-20: `--delete-orphans --apply` backs the childless ones up
+   to `output/backup_chg032_orphans_<stamp>.json`, deletes them with the
+   three selection conditions re-checked in the `DELETE` itself (typed R,
+   no regulation, no child), and verifies none remain. Checked before
+   deleting: the only foreign keys to `compliancecategory` are its own
+   `parentid` and `regulations.compliancecategory_id`, and no regulation
+   points at any of the 228. An orphan WITH children is a folder in all
+   but letter and is never deleted by the script. A later crawl of the
+   same site may create such a leaf again for a document whose insert
+   fails; that is the orchestrator's existing behaviour, not a regression.
 
 ## What was checked
 
@@ -146,8 +155,10 @@ were. 968 stored texts were hidden that way.
   document first and the badge on the node; rendering the root listing
   makes zero `/categories/children` lookups; no page errors.
 - Data fix applied on the local copy on 2026-11-20: 20 nodes retyped
-  F to R, verified; backup in `output/`. The 228 orphans reported, not
-  written. Dry-run output and the apply output are in the handoff below.
+  F to R, verified; then the 228 childless orphan R nodes deleted,
+  verified none remain; both backed up in `output/`. The report after
+  both runs: 60,145 nodes (F 13,354; R 46,791), 968 of kind both,
+  0 orphans. Nothing on the shared database was touched.
 - Full offline suite on the branch, 2026-11-20: 560 passed, 19 failed,
   1 skipped, 32 errors (`--continue-on-collection-errors`; three files
   never collect on this laptop). Main at 968f3cf, run the same day in a
@@ -168,8 +179,6 @@ branch's version, which is a superset.
 
 ## Not in this change, for the user to decide
 
-- Delete the 228 childless R nodes that own no document (the script
-  reports them; a one-line `DELETE` keyed on the report's ids would do).
 - Whether `/regulations/by-category/{id}` should stop returning
   `document_html` for every row. The page uses it only to list titles;
   for a node holding many documents the response is heavy. Pre-existing.
@@ -189,6 +198,8 @@ Files: `apis/pipeline_api.py` (`category_kind`,
 Run: `python -m pytest tests/test_chg032_kind_flags.py -q`; start the API
 (`python -m uvicorn apis.pipeline_api:app --port 8000`) and open
 `web/index.html`; `python -m scripts.chg032_retype_categories` for the
-report, `--apply` to retype.
+report, `--apply` to retype, `--delete-orphans --apply` to also delete
+the childless orphan nodes. On the shared database: dry run first, then
+both writes on the user's word.
 
 Not committed; the user commits.

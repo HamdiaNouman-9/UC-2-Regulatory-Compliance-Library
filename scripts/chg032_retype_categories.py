@@ -1,7 +1,9 @@
 """CHG-032: make `compliancecategory.type` mean "owns a document" on stored rows.
 
-    python -m scripts.chg032_retype_categories            # dry run: report only
-    python -m scripts.chg032_retype_categories --apply    # retype, with a backup
+    python -m scripts.chg032_retype_categories                            # dry run: report only
+    python -m scripts.chg032_retype_categories --apply                    # retype, with a backup
+    python -m scripts.chg032_retype_categories --delete-orphans           # dry run of the delete
+    python -m scripts.chg032_retype_categories --delete-orphans --apply   # delete, with a backup
 
 WHAT IS WRONG TODAY
 -------------------
@@ -23,11 +25,17 @@ WHAT IT DOES
 1. F nodes that own at least one regulation: retyped to R. Every original
    value is written to output/backup_chg032_<stamp>.json first, and the
    update is verified by re-reading the rows.
-2. R nodes that own no regulation: REPORTED ONLY, to
+2. R nodes that own no regulation: reported to
    output/chg032_orphans_<stamp>.json and to the console, with their child
-   count and the root of their branch. Whether they are deleted (a childless
-   one is a dead leaf) or retyped to F (one with children is a folder in all
-   but letter) is a decision for the user; this script never writes them.
+   count and the root of their branch. With --delete-orphans, the CHILDLESS
+   ones are deleted (a dead leaf: a path segment created for a document
+   whose row never arrived, or that later moved folders; measured
+   2026-11-20 on the local copy, all 228 were childless and nothing
+   referenced them: the only foreign keys to compliancecategory are its own
+   parentid and regulations.compliancecategory_id). Backed up first to
+   output/backup_chg032_orphans_<stamp>.json and verified by re-reading.
+   One WITH children is a folder in all but letter and is never deleted
+   here; it is listed for the user. The user chose deletion on 2026-11-20.
 
 Whether a node is a FOLDER is never stored: the API derives it from
 `parentid` at read time (`apis.pipeline_api._attach_regulation_counts`).
@@ -84,6 +92,14 @@ def _root_of(nodes, nid):
     return nodes[nid]["title"]
 
 
+def orphan_ids(nodes, regs, kids):
+    """The R nodes that own no regulation, split into (childless, with_children).
+    Only the first list is ever deleted."""
+    orphans = sorted(i for i, n in nodes.items() if n["type"] == "R" and not regs.get(i))
+    return ([i for i in orphans if not kids.get(i)],
+            [i for i in orphans if kids.get(i)])
+
+
 def _regulators_of(cur, ids):
     if not ids:
         return {}
@@ -102,7 +118,10 @@ def _regulators_of(cur, ids):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--apply", action="store_true", help="retype the F-with-document nodes")
+    ap.add_argument("--apply", action="store_true",
+                    help="write: retype the F-with-document nodes (and, with --delete-orphans, delete)")
+    ap.add_argument("--delete-orphans", action="store_true",
+                    help="delete the childless R nodes that own no regulation (with --apply; a dry run otherwise)")
     a = ap.parse_args()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     out_dir = REPO_ROOT / "output"
@@ -127,7 +146,8 @@ def main() -> int:
               f"own more than one document: {sum(1 for v in regs.values() if v > 1)}")
 
         to_retype = sorted(i for i, n in nodes.items() if n["type"] != "R" and regs.get(i))
-        orphans = sorted(i for i, n in nodes.items() if n["type"] == "R" and not regs.get(i))
+        childless, with_kids = orphan_ids(nodes, regs, kids)
+        orphans = sorted(childless + with_kids)
         who = _regulators_of(cur, to_retype)
 
         print(f"\n1. nodes typed {sorted(set(nodes[i]['type'] for i in to_retype)) or '-'} "
@@ -138,10 +158,9 @@ def main() -> int:
             print(f"   {i:>6}  {n['type']!s:>4}  docs={cnt:<3} kids={kids.get(i, 0):<3} "
                   f"[{reg}] {n['title'][:60]!r}")
 
-        childless = [i for i in orphans if not kids.get(i)]
-        with_kids = [i for i in orphans if kids.get(i)]
-        print(f"\n2. R nodes with no document (REPORTED ONLY): {len(orphans)} "
-              f"= {len(childless)} childless + {len(with_kids)} with children")
+        print(f"\n2. R nodes with no document: {len(orphans)} "
+              f"= {len(childless)} childless ({'to delete' if a.delete_orphans else 'reported'}) "
+              f"+ {len(with_kids)} with children (never deleted here)")
         roots = {}
         for i in orphans:
             r = _root_of(nodes, i)
@@ -156,11 +175,15 @@ def main() -> int:
 
         if not a.apply:
             print("\nDRY RUN -- nothing written to the database. Re-run with --apply "
-                  "to retype the nodes in 1.")
+                  "to retype the nodes in 1" + (" and delete the childless nodes in 2." if a.delete_orphans else "."))
             return 0
+
+        rc = 0
+        if a.delete_orphans:
+            rc = _delete_orphans(cur, conn, nodes, childless, out_dir, stamp)
         if not to_retype:
             print("\nnothing to retype.")
-            return 0
+            return rc
 
         backup = out_dir / f"backup_chg032_{stamp}.json"
         backup.write_text(json.dumps(
@@ -181,7 +204,41 @@ def main() -> int:
         print(f"retyped {changed} of {len(to_retype)}; verified: "
               f"{'all R' if not wrong else f'{len(wrong)} NOT R: {wrong[:20]}'}")
         print(f"{backup} holds every original value.")
-        return 0 if not wrong else 1
+        return rc or (0 if not wrong else 1)
+
+
+def _delete_orphans(cur, conn, nodes, childless, out_dir, stamp) -> int:
+    if not childless:
+        print("\nno childless orphan nodes to delete.")
+        return 0
+    backup = out_dir / f"backup_chg032_orphans_{stamp}.json"
+    backup.write_text(json.dumps(
+        [{"id": i, "title": nodes[i]["title"], "parentid": nodes[i]["parentid"],
+          "type": nodes[i]["type"]} for i in childless],
+        indent=1, ensure_ascii=False), encoding="utf-8")
+    print(f"\nbacked up -> {backup}")
+    deleted = 0
+    for i in range(0, len(childless), 500):
+        chunk = childless[i:i + 500]
+        # the same three conditions as the selection, re-checked at delete time
+        cur.execute(
+            "DELETE c FROM compliancecategory c "
+            f"WHERE c.compliancecategory_id IN ({','.join('?' * len(chunk))}) AND c.type = 'R' "
+            "AND NOT EXISTS (SELECT 1 FROM regulations r WHERE r.compliancecategory_id = c.compliancecategory_id) "
+            "AND NOT EXISTS (SELECT 1 FROM compliancecategory k WHERE k.parentid = c.compliancecategory_id)",
+            chunk)
+        deleted += cur.rowcount if cur.rowcount is not None else 0
+    conn.commit()
+    left = 0
+    for i in range(0, len(childless), 500):
+        chunk = childless[i:i + 500]
+        cur.execute("SELECT COUNT(*) FROM compliancecategory "
+                    f"WHERE compliancecategory_id IN ({','.join('?' * len(chunk))})", chunk)
+        left += cur.fetchone()[0]
+    print(f"deleted {deleted} of {len(childless)}; verified: "
+          f"{'none remain' if left == 0 else f'{left} STILL PRESENT'}")
+    print(f"{backup} holds every deleted row.")
+    return 0 if left == 0 else 1
 
 
 if __name__ == "__main__":

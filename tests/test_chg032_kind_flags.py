@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from apis.pipeline_api import _attach_regulation_counts, category_kind  # noqa: E402
+from scripts.chg032_retype_categories import orphan_ids  # noqa: E402
 from storage.mssql_repo import MSSQLRepository  # noqa: E402
 
 
@@ -219,3 +220,22 @@ def test_an_update_that_does_not_move_the_regulation_retypes_nothing():
     repo.update_regulation(9, title="renamed", content_hash="1" * 32)
     assert len(conn.cursor_obj.executed) == 1
     assert _retypes(conn.cursor_obj) == []
+
+
+# --------------------------------------------------------------------------- #
+#  the stored-rows script: which nodes it may delete                            #
+# --------------------------------------------------------------------------- #
+
+def test_only_childless_r_nodes_without_a_document_are_offered_for_deletion():
+    nodes = {
+        1: {"id": 1, "title": "dead leaf", "parentid": 9, "type": "R"},
+        2: {"id": 2, "title": "folder typed R", "parentid": 9, "type": "R"},
+        3: {"id": 3, "title": "a document", "parentid": 9, "type": "R"},
+        4: {"id": 4, "title": "empty folder", "parentid": 9, "type": "F"},
+        5: {"id": 5, "title": "untyped empty", "parentid": 9, "type": None},
+    }
+    regs = {3: 1}
+    kids = {2: 4}
+    childless, with_kids = orphan_ids(nodes, regs, kids)
+    assert childless == [1]
+    assert with_kids == [2]
